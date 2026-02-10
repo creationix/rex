@@ -35,9 +35,9 @@ Six entries, six rules — each repeating the same conditional structure. At 200
 With Rex, the data is a table and the logic is one rule:
 
 ```ts
-export default [
+export default [ { code:
   rex`
-    actions = {
+     actions = {
       'create-user':       'users/create'
       'delete-user':       'users/delete'
       'update-profile':    'users/update-profile'
@@ -52,7 +52,7 @@ export default [
       // If there was a matching handler, set it in the x-handler header.
       (set headers 'x-handler' handler))
   `
-]
+} ]
 ```
 
 At 200 actions, the data is 200 lines and the logic is still two. Adding a new action is one line — no new rules, no new conditions.
