@@ -47,7 +47,9 @@ export default [
       // ... 200+ more actions
     }
 
+    // Get handler based on x-action request header and actions lookup table.
     (when handler=(actions (headers 'x-action'))
+      // If there was a matching handler, set it in the x-handler header.
       (set headers 'x-handler' handler))
   `
 ]
