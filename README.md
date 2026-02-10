@@ -35,22 +35,22 @@ Six entries, six rules — each repeating the same conditional structure. At 200
 With Rex, the data is a table and the logic is one rule:
 
 ```ts
+// We can use normal TS/JS syntax to define or generate the data.
+const actions = {
+  'create-user':       'users/create',
+  'delete-user':       'users/delete',
+  'update-profile':    'users/update-profile',
+  'create-order':      'orders/create',
+  'process-payment':   'payments/process',
+  'send-notification': 'notifications/send'
+  // ... 200+ more actions
+}
 export default [ { code:
   rex`
-     actions = {
-      'create-user':       'users/create'
-      'delete-user':       'users/delete'
-      'update-profile':    'users/update-profile'
-      'create-order':      'orders/create'
-      'process-payment':   'payments/process'
-      'send-notification': 'notifications/send'
-      // ... 200+ more actions
-    }
-
     // Get handler based on x-action request header and actions lookup table.
-    (when handler=(actions (headers 'x-action'))
+    (when (read ${actions} (read req.headers 'x-action'))
       // If there was a matching handler, set it in the x-handler header.
-      (set headers 'x-handler' handler))
+      (write req.headers 'x-handler' self))
   `
 } ]
 ```
@@ -63,28 +63,8 @@ When serialized as random-access strings, this is 1 string for the entire data a
 The `rex` template tag can return JSON or random-access string.  For clarity, this is what the JSON output would look like this.  Notice that the large JSON data block is inserted inline without any escaping.  Rex is JSON native.
 
 ```json
-[ { "code": ["$do",
-  ["$set", "actions", {
-      "create-user": "users/create",
-      "delete-user": "users/delete",
-      "update-profile": "users/update-profile",
-      "create-order": "orders/create",
-      "process-payment": "payments/process",
-      "send-notification": "notifications/send"
-      // ... 200+ more actions
-  } ],
-  ["$when",
-    ["$set", "handler", ["$read", ["$get", "actions"], ["$read", ["$headers"], "x-action"]]],
-    ["$write", ["$headers"], "x-handler", ["$get", "handler"] ]
-  ]
-] } ]
-```
-
-An optimizer could then remove the two local variables, use implicit read positions, remove the `$do` block and inline the actions and use the implicit `self` from the `when` condition.  But in general, the data section will outweigh the logic so this optimization isn't really critical.
-
-```json
 [ { "code":
-  ["$when", [{
+  ["$when", ["$read", {
     "create-user": "users/create",
     "delete-user": "users/delete",
     "update-profile": "users/update-profile",
@@ -92,7 +72,7 @@ An optimizer could then remove the two local variables, use implicit read positi
     "process-payment": "payments/process",
     "send-notification": "notifications/send"
     // ... 200+ more actions
-  }, [["$headers"], "x-action"]]],
+  }, ["$read", ["$headers"], "x-action"]]],
   ["$write", ["$headers"], "x-handler", ["$self"] ]
 } ]
 ```
