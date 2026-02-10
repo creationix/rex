@@ -48,7 +48,7 @@ export default [
     }
 
     (when handler=(actions (headers 'x-action'))
-      (append headers 'x-handler' handler))
+      (set headers 'x-handler' handler))
   `
 ]
 ```
