@@ -1,0 +1,131 @@
+Rex {
+  program
+    = Expr*
+
+  Expr
+    = Binding
+    | Call
+    | Atom
+
+  Binding
+    = bareWord "=" Expr
+
+  Call
+    = "(" Many<Expr> ")"
+
+  Atom
+    = String
+    | Number
+    | Bytes
+    | Boolean
+    | Null
+    | Undefined
+    | Array
+    | Object
+    | bareWord
+
+  Array
+    = "[" Any<Expr> "]"
+
+  Object
+    = "{" Any<Pair> "}"
+
+  Bytes
+    = "<" Any<HexByte> ">"
+
+  HexByte
+    = hex hex
+
+  Pair
+    = (bareWord | String | Number) ":" Expr
+
+  // Helper: zero or more items separated by commas and/or whitespace, trailing comma allowed
+  Any<item>
+    = Many<item>
+    | 
+
+  // At least one item separated by commas and/or whitespace, trailing comma allowed
+  Many<item>
+    = item ("," item)* ","?
+    | item item+
+
+  String
+    = DQuotedString
+    | SQuotedString
+
+  DQuotedString
+    = "\"" dStringChar* "\""
+
+  dStringChar
+    = ~("\"" | "\\") sourceCharacter
+    | escape
+
+  SQuotedString
+    = "'" sStringChar* "'"
+
+  sStringChar
+    = ~("'" | "\\") sourceCharacter
+    | escape
+
+  escape
+    = "\\" ("\"" | "'" | "\\" | "/" | "b" | "f" | "n" | "r" | "t" | ("u" hex hex hex hex))
+
+  hex
+    = digit
+    | "A".."F"
+    | "a".."f"
+
+  Number
+    = HexNumber
+    | BinaryNumber
+    | DecimalNumber
+
+  HexNumber
+    = "-"? "0x" hex+
+
+  BinaryNumber
+    = "-"? "0b" bit+
+
+  DecimalNumber
+    = "-"? ("0" | nonZeroDigit digit*) ("." digit+)? exponent?
+
+  bit
+    = "0" | "1"
+
+  exponent
+    = ("e" | "E") ("+" | "-")? digit+
+
+  bareWord
+    = letter (letter | digit | "." | "-" | "_")*
+
+  letter
+    = "a".."z"
+    | "A".."Z"
+    | "_"
+
+  Boolean
+    = "true" | "false"
+
+  Null
+    = "null"
+
+  Undefined
+    = "undefined"
+
+  digit
+    = "0".."9"
+
+  nonZeroDigit
+    = "1".."9"
+
+  comment
+    = lineComment
+    | blockComment
+
+  lineComment
+    = "//" ~"\n"* "\n"?
+
+  blockComment
+    = "/*" (~"*" | "*" ~"/")* "*/"
+}
+
