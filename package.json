@@ -2,7 +2,10 @@
 	"name": "rex-vscode-ext",
 	"displayName": "Rex VSCode Extension",
 	"description": "Syntax highlighting for the Rex Language",
-	"version": "0.1.0",
+	"version": "0.1.1",
+	"publisher": "creationix",
+	"icon": "img/rex-icon-dark.png",
+	"repository": "https://github.com/creationix/rex",
 	"engines": {
 		"vscode": "^1.75.0"
 	},

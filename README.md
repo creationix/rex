@@ -79,6 +79,6 @@ The `rex` template tag can return JSON or random-access string.  For clarity, th
 
 ## Tooling
 
-The inclded vscode extension provides syntax highlighting for rex.  It supports rex inside markdown code blocks with `rex` language tag, and also rex inside template literals tagged with `rex`.  It even supports res inside typescript inside of markdown code blocks.
+The included vscode extension provides syntax highlighting for rex.  It supports rex inside markdown code blocks with `rex` language tag, and also rex inside template literals tagged with `rex`.  It even supports res inside typescript inside of markdown code blocks.
 
 ![highlighted example](img/highlight-example.png)
