@@ -1,0 +1,58 @@
+{
+	"name": "rex-vscode-ext",
+	"displayName": "Rex VSCode Extension",
+	"description": "Syntax highlighting for the Rex Language",
+	"version": "0.1.0",
+	"engines": {
+		"vscode": "^1.75.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"contributes": {
+		"languages": [
+			{
+				"id": "rex",
+				"aliases": [
+					"Rex Language",
+					"rex"
+				],
+				"extensions": [
+					".rex"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "rex",
+				"scopeName": "source.rex",
+				"path": "./syntaxes/rex.tmLanguage.json"
+			},
+			{
+				"scopeName": "markdown.rex.codeblock",
+				"path": "./syntaxes/rex-markdown.tmLanguage.json",
+				"injectTo": [
+					"text.html.markdown"
+				],
+				"embeddedLanguages": {
+					"meta.embedded.block.rex": "rex"
+				}
+			},
+			{
+				"scopeName": "inline.rex.tagged-template",
+				"path": "./syntaxes/rex-typescript.tmLanguage.json",
+				"injectTo": [
+					"source.ts",
+					"source.tsx",
+					"source.js",
+					"source.jsx",
+					"text.html.markdown"
+				],
+				"embeddedLanguages": {
+					"meta.embedded.block.rex": "rex"
+				}
+			}
+		]
+	}
+}
