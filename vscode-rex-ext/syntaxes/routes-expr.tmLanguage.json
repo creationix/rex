@@ -1,0 +1,161 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "Rex Language",
+	"scopeName": "source.rex",
+	"patterns": [{ "include": "#expressions" }],
+	"repository": {
+		"expressions": {
+			"patterns": [
+				{ "include": "#comment" },
+				{ "include": "#string-single" },
+				{ "include": "#string-double" },
+				{ "include": "#number" },
+				{ "include": "#boolean" },
+				{ "include": "#null" },
+				{ "include": "#binding" },
+				{ "include": "#inline-keyword" },
+				{ "include": "#paren-expression" },
+				{ "include": "#paren-expression-generic" },
+				{ "include": "#bracket-array" },
+				{ "include": "#brace-object" },
+				{ "include": "#interpolation" },
+				{ "include": "#builtin-variable" },
+				{ "include": "#bare-word" }
+			]
+		},
+		"comment": {
+			"patterns": [
+				{ "include": "#comment-line" },
+				{ "include": "#comment-block" }
+			]
+		},
+		"comment-line": {
+			"match": "//.*$",
+			"name": "comment.line.double-slash.rex"
+		},
+		"comment-block": {
+			"begin": "/\\*",
+			"end": "\\*/",
+			"name": "comment.block.rex"
+		},
+		"string-single": {
+			"begin": "'",
+			"end": "'",
+			"name": "string.quoted.single.rex",
+			"beginCaptures": {
+				"0": { "name": "punctuation.definition.string.begin.rex" }
+			},
+			"endCaptures": {
+				"0": { "name": "punctuation.definition.string.end.rex" }
+			}
+		},
+		"string-double": {
+			"begin": "\"",
+			"end": "\"",
+			"name": "string.quoted.double.rex",
+			"beginCaptures": {
+				"0": { "name": "punctuation.definition.string.begin.rex" }
+			},
+			"endCaptures": {
+				"0": { "name": "punctuation.definition.string.end.rex" }
+			},
+			"patterns": [
+				{
+					"match": "\\\\.",
+					"name": "constant.character.escape.rex"
+				}
+			]
+		},
+		"number": {
+			"match": "(?<![a-zA-Z_])-?\\b[0-9]+(\\.[0-9]+)?\\b",
+			"name": "constant.numeric.rex"
+		},
+		"boolean": {
+			"match": "\\b(true|false)\\b",
+			"name": "constant.language.boolean.rex"
+		},
+		"null": {
+			"match": "\\b(null)\\b",
+			"name": "constant.language.null.rex"
+		},
+		"binding": {
+			"match": "([a-zA-Z_][a-zA-Z0-9_.-]*)(=)",
+			"captures": {
+				"1": { "name": "variable.other.binding.rex" },
+				"2": { "name": "keyword.operator.assignment.rex" }
+			}
+		},
+		"inline-keyword": {
+			"match": "\\b(else-when|else-if|else)\\b",
+			"name": "keyword.control.inline.rex"
+		},
+		"paren-expression": {
+			"begin": "(\\()\\s*(when|if|else-when|else-if|do|match|map|filter|each|reduce|reverse)(?=\\s|\\)|$)",
+			"beginCaptures": {
+				"1": { "name": "punctuation.section.parens.begin.rex" },
+				"2": { "name": "keyword.control.rex" }
+			},
+			"end": "\\)",
+			"endCaptures": { "0": { "name": "punctuation.section.parens.end.rex" } },
+			"patterns": [{ "include": "#expressions" }]
+		},
+		"paren-expression-generic": {
+			"comment": "Fallback for non-keyword opcodes",
+			"begin": "(\\()\\s*([a-zA-Z_][a-zA-Z0-9_.-]*)(?=\\s|\\)|$)",
+			"beginCaptures": {
+				"1": { "name": "punctuation.section.parens.begin.rex" },
+				"2": { "name": "entity.name.function.rex" }
+			},
+			"end": "\\)",
+			"endCaptures": { "0": { "name": "punctuation.section.parens.end.rex" } },
+			"patterns": [{ "include": "#expressions" }]
+		},
+		"bracket-array": {
+			"begin": "\\[",
+			"end": "\\]",
+			"beginCaptures": {
+				"0": { "name": "punctuation.section.brackets.begin.rex" }
+			},
+			"endCaptures": {
+				"0": { "name": "punctuation.section.brackets.end.rex" }
+			},
+			"patterns": [{ "include": "#expressions" }]
+		},
+		"brace-object": {
+			"begin": "\\{",
+			"end": "\\}",
+			"beginCaptures": {
+				"0": { "name": "punctuation.section.braces.begin.rex" }
+			},
+			"endCaptures": { "0": { "name": "punctuation.section.braces.end.rex" } },
+			"patterns": [{ "include": "#object-key" }, { "include": "#expressions" }]
+		},
+		"object-key": {
+			"match": "([a-zA-Z_][a-zA-Z0-9_.-]*|'[^']*'|\"[^\"]*\")\\s*(:)",
+			"captures": {
+				"1": { "name": "support.type.property-name.rex" },
+				"2": { "name": "punctuation.separator.key-value.rex" }
+			}
+		},
+		"interpolation": {
+			"begin": "\\$\\{",
+			"end": "\\}",
+			"name": "meta.interpolation.rex",
+			"beginCaptures": {
+				"0": { "name": "punctuation.section.interpolation.begin.rex" }
+			},
+			"endCaptures": {
+				"0": { "name": "punctuation.section.interpolation.end.rex" }
+			},
+			"contentName": "source.ts"
+		},
+		"builtin-variable": {
+			"match": "\\b(self|data|config|headers|query|cookies|method|path|host|url|status|res|path\\.segments|host\\.segments)\\b",
+			"name": "variable.language.rex"
+		},
+		"bare-word": {
+			"match": "\\b[a-zA-Z_][a-zA-Z0-9_.-]*\\b",
+			"name": "variable.other.rex"
+		}
+	}
+}
