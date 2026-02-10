@@ -32,7 +32,7 @@ export default [
 
 Six entries, six rules — each repeating the same conditional structure. At 200 actions, that's 400+ lines of rules (2,800+ strings, 1000+ objects).
 
-With Rex, the data is a table and the logic is one rule:
+With Rex, the *data* is a table and the logic is one rule:
 
 ```ts
 // We can use normal TS/JS syntax to define or generate the data.
@@ -76,3 +76,9 @@ The `rex` template tag can return JSON or random-access string.  For clarity, th
   ["$write", ["$headers"], "x-handler", ["$self"] ]
 } ]
 ```
+
+## Tooling
+
+The inclded vscode extension provides syntax highlighting for rex.  It supports rex inside markdown code blocks with `rex` language tag, and also rex inside template literals tagged with `rex`.  It even supports res inside typescript inside of markdown code blocks.
+
+![highlighted example](img/highlight-example.png)
