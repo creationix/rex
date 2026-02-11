@@ -40,24 +40,21 @@ Every entry duplicates the same conditional logic. At 200 actions, that's 200 co
 
 In Rex, the data is a lookup table and the logic is written once:
 
-```ts
-// A single Rex expression handles all actions in the table.
-export default = rex`
-  // A table mapping actions to handlers.
-  actions = {
-    'create-user':       'users/create',
-    'delete-user':       'users/delete',
-    'update-profile':    'users/update-profile',
-    'create-order':      'orders/create',
-    'process-payment':   'payments/process',
-    'send-notification': 'notifications/send',
-    // ... 200+ more entries
-  }
+```rex
+actions = {
+  'create-user':       'users/create',
+  'delete-user':       'users/delete',
+  'update-profile':    'users/update-profile',
+  'create-order':      'orders/create',
+  'process-payment':   'payments/process',
+  'send-notification': 'notifications/send',
+  // ... 200+ more entries
+}
 
-  // Read the action from the header, lookup the handler in the table,
-  (when handler=(read actions (read headers 'x-action'))
-    // If a handler was found, write it back to the headers.
-    (write headers 'x-handler' handler))`
+// Read the action from the header, lookup the handler in the table,
+(when handler=(actions (headers 'x-action'))
+  // If a handler was found, write it back to the headers.
+  (write headers 'x-handler' handler))`
 ```
 
 Adding a new action is one line in the table. The logic doesn't change.
