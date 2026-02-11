@@ -1,0 +1,27 @@
+{
+	"name": "@creationix/rex",
+	"version": "0.1.0",
+	"description": "Compiler and parser for the Rex language",
+	"type": "module",
+	"main": "rex.ts",
+	"exports": {
+		".": "./rex.ts"
+	},
+	"scripts": {
+		"test": "bun test",
+		"build:grammar": "ohm generateBundles --withTypes rex.ohm"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/creationix/rex",
+		"directory": "packages/rex-lang"
+	},
+	"license": "MIT",
+	"dependencies": {
+		"ohm-js": "^17.1.0"
+	},
+	"devDependencies": {
+		"@ohm-js/cli": "^2.0.1",
+		"@types/bun": "latest"
+	}
+}
