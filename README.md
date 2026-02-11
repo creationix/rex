@@ -42,12 +42,12 @@ In Rex, the data is a lookup table and the logic is written once:
 
 ```rex
 actions = {
-  'create-user':       'users/create',
-  'delete-user':       'users/delete',
-  'update-profile':    'users/update-profile',
-  'create-order':      'orders/create',
-  'process-payment':   'payments/process',
-  'send-notification': 'notifications/send',
+  'create-user':       'users/create'
+  'delete-user':       'users/delete'
+  'update-profile':    'users/update-profile'
+  'create-order':      'orders/create'
+  'process-payment':   'payments/process'
+  'send-notification': 'notifications/send'
   // ... 200+ more entries
 }
 
