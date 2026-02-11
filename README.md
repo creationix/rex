@@ -1,10 +1,10 @@
+# 🦖 Rex
+
 <picture align="right">
   <source media="(prefers-color-scheme: dark)" srcset="img/rex-mascot-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="img/rex-mascot-light.png">
   <img alt="Rex mascot" src="img/rex-mascot-light.png" align="right" width="200">
 </picture>
-
-# 🦖 Rex
 
 Programmable JSON. Small arms, big bite!
 
