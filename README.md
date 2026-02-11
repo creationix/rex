@@ -10,7 +10,9 @@ Programmable JSON. Small arms, big bite!
 
 Rex is a small utility for adding *just enough* flexibility to structured configuration.
 
-It is designed for cases where static JSON is too rigid, but embedding a general-purpose scripting language (Lua, JavaScript, etc.) would be unnecessary overhead.
+Three containers: `{}` for objects, `[]` for arrays, `()` for code.
+
+Any valid JSON is already valid Rex — you just add logic where you need it.
 
 If you like tools that feel inevitable once you see them, you’re in the right place.
 
