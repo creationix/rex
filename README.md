@@ -54,7 +54,7 @@ actions = {
 // Read the action from the header, lookup the handler in the table,
 (when handler=(actions (headers 'x-action'))
   // If a handler was found, write it back to the headers.
-  (write headers 'x-handler' handler))`
+  (write headers 'x-handler' handler))
 ```
 
 Adding a new action is one line in the table. The logic doesn't change.
