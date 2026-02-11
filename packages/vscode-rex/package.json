@@ -62,5 +62,9 @@
 			}
 		]
 	},
+	"scripts": {
+		"package": "bunx @vscode/vsce package --no-dependencies",
+		"publish": "bunx @vscode/vsce publish --no-dependencies"
+	},
 	"private": true
 }
