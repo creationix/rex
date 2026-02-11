@@ -8,11 +8,7 @@
 
 Programmable JSON. Small arms, big bite!
 
-Rex is a small utility for adding *just enough* flexibility to structured configuration.
-
-Three containers: `{}` for objects, `[]` for arrays, `()` for code.
-
-Any valid JSON is already valid Rex — you just add logic where you need it.
+Rex is a data format with three containers: `{}` for objects, `[]` for arrays, `()` for code. Any valid JSON is already valid Rex — you just add parentheses where you need logic. Source compiles to compact JSON bytecode that you can store, serialize, and diff like any other data.
 
 If you like tools that feel inevitable once you see them, you’re in the right place.
 
