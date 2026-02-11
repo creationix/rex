@@ -1,0 +1,66 @@
+{
+	"name": "rex-vscode",
+	"displayName": "Rex",
+	"description": "Rex language support for Visual Studio Code",
+	"version": "0.2.0",
+	"publisher": "creationix",
+	"icon": "img/rex-icon-dark.png",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/creationix/rex",
+		"directory": "packages/vscode-rex"
+	},
+	"engines": {
+		"vscode": "^1.75.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"contributes": {
+		"languages": [
+			{
+				"id": "rex",
+				"aliases": [
+					"Rex Language",
+					"rex"
+				],
+				"extensions": [
+					".rex"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "rex",
+				"scopeName": "source.rex",
+				"path": "./syntaxes/rex.tmLanguage.json"
+			},
+			{
+				"scopeName": "markdown.rex.codeblock",
+				"path": "./syntaxes/rex-markdown.tmLanguage.json",
+				"injectTo": [
+					"text.html.markdown"
+				],
+				"embeddedLanguages": {
+					"meta.embedded.block.rex": "rex"
+				}
+			},
+			{
+				"scopeName": "inline.rex.tagged-template",
+				"path": "./syntaxes/rex-typescript.tmLanguage.json",
+				"injectTo": [
+					"source.ts",
+					"source.tsx",
+					"source.js",
+					"source.jsx",
+					"text.html.markdown"
+				],
+				"embeddedLanguages": {
+					"meta.embedded.block.rex": "rex"
+				}
+			}
+		]
+	},
+	"private": true
+}
