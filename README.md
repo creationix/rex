@@ -14,6 +14,16 @@ If you like tools that feel inevitable once you see them, you’re in the right 
 
 ## What Problem This Solves
 
+You have structured data. JSON handles it fine. Then you need a little logic — a lookup, a conditional, a fallback — and suddenly you're choosing between:
+
+- Hardcoding every case — rigid, verbose, duplicated across rules.
+- Embedding a scripting language — Lua, JS, WASM — a whole new runtime and security surface for a few if statements.
+- Writing a custom DSL — fun at first, maintenance forever.
+
+Rex is the fourth option. Your data stays JSON. You add `()` where you need logic. The compiled output is JSON arrays — storable, serializable, diffable.
+
+## Example
+
 Consider an application with hundreds of actions, each identified by a name and mapped to a handler. In the JSON system, we had tried to be flexible by having rather generic rules that could match on arrays of conditions that map to arrays of actions with different actions and parameters.  But it is still very rigid and verbose. Each new action requires a new rule, and the logic is duplicated across all rules.
 
 ```ts
