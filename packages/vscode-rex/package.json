@@ -2,7 +2,7 @@
 	"name": "rex-vscode",
 	"displayName": "Rex",
 	"description": "Rex language support for Visual Studio Code",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"publisher": "creationix",
 	"icon": "img/rex-icon-dark.png",
 	"repository": {
