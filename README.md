@@ -24,75 +24,54 @@ Rex is the fourth option. Your data stays JSON. You add `()` where you need logi
 
 ## Example
 
-Consider an application with hundreds of actions, each identified by a name and mapped to a handler. In the JSON system, we had tried to be flexible by having rather generic rules that could match on arrays of conditions that map to arrays of actions with different actions and parameters.  But it is still very rigid and verbose. Each new action requires a new rule, and the logic is duplicated across all rules.
+A common pattern: hundreds of named actions, each mapped to a handler. In plain JSON, every action needs its own rule:
 
 ```ts
 export default [
-  { when: [ { condition: "header", key: "x-action", equals: "create-user" } ],
-    do: [ { action: "set-header", key: "x-handler", value: "users/create" } ] },
-  { when: [ { condition: "header", key: "x-action", equals: "delete-user" } ],
-    do: [ { action: "set-header", key: "x-handler", value: "users/delete" } ] },
-  { when: [ { condition: "header", key: "x-action", equals: "update-profile" } ],
-    do: [ { action: "set-header", key: "x-handler", value: "users/update-profile" } ] },
-  { when: [ { condition: "header", key: "x-action", equals: "create-order" } ],
-    do: [ { action: "set-header", key: "x-handler", value: "orders/create" } ] },
-  { when: [ { condition: "header", key: "x-action", equals: "process-payment" } ],
-    do: [ { action: "set-header", key: "x-handler", value: "payments/process" } ] },
-  { when: [ { condition: "header", key: "x-action", equals: "send-notification" } ],
-    do: [ { action: "set-header", key: "x-handler", value: "notifications/send"  } ] }
-  // ... 200+ more actions
+  { when: [{ condition: "header", key: "x-action", equals: "create-user" }],
+    do:   [{ action: "set-header", key: "x-handler", value: "users/create" }] },
+  { when: [{ condition: "header", key: "x-action", equals: "delete-user" }],
+    do:   [{ action: "set-header", key: "x-handler", value: "users/delete" }] },
+  // ... 200+ more rules, each repeating the same structure
 ]
 ```
 
-Six entries, six rules — each repeating the same conditional structure. At 200 actions, that's 400+ lines of rules (2,800+ strings, 1000+ objects).
+Every entry duplicates the same conditional logic. At 200 actions, that's 200 copy-pasted rules.
 
-With Rex, the *data* is a table and the logic is one rule:
+In Rex, the data is a lookup table and the logic is written once:
 
 ```ts
-// We can use normal TS/JS syntax to define or generate the data.
-const actions = {
-  'create-user':       'users/create',
-  'delete-user':       'users/delete',
-  'update-profile':    'users/update-profile',
-  'create-order':      'orders/create',
-  'process-payment':   'payments/process',
-  'send-notification': 'notifications/send'
-  // ... 200+ more actions
-}
-export default [ { code:
-  rex`
-    // Get handler based on x-action request header and actions lookup table.
-    (when (read ${actions} (read req.headers 'x-action'))
-      // If there was a matching handler, set it in the x-handler header.
-      (write req.headers 'x-handler' self))
-  `
-} ]
+// A single Rex expression handles all actions in the table.
+export default = rex`
+  // A table mapping actions to handlers.
+  actions = {
+    'create-user':       'users/create',
+    'delete-user':       'users/delete',
+    'update-profile':    'users/update-profile',
+    'create-order':      'orders/create',
+    'process-payment':   'payments/process',
+    'send-notification': 'notifications/send',
+    // ... 200+ more entries
+  }
+
+  // Read the action from the header, lookup the handler in the table,
+  (when handler=(read actions (read headers 'x-action'))
+    // If a handler was found, write it back to the headers.
+    (write headers 'x-handler' handler))`
 ```
 
-At 200 actions, the data is 200 lines and the logic is still two. Adding a new action is one line — no new rules, no new conditions.
+Adding a new action is one line in the table. The logic doesn't change.
 
-When serialized as JSON, this is 14 strings for the code and 400 strings for the data.
-When serialized as random-access strings, this is 1 string for the entire data and code combined.
-
-The `rex` template tag can return JSON or random-access string.  For clarity, this is what the JSON output would look like this.  Notice that the large JSON data block is inserted inline without any escaping.  Rex is JSON native.
+This compiles to JSON bytecode. Notice the data object embeds directly — no escaping, no wrapping. Rex is JSON-native:
 
 ```json
-[ { "code":
-  ["$when", ["$read", {
-    "create-user": "users/create",
-    "delete-user": "users/delete",
-    "update-profile": "users/update-profile",
-    "create-order": "orders/create",
-    "process-payment": "payments/process",
-    "send-notification": "notifications/send"
-    // ... 200+ more actions
-  }, ["$read", ["$headers"], "x-action"]]],
-  ["$write", ["$headers"], "x-handler", ["$self"] ]
-} ]
+["$when", ["$read", {
+  "create-user": "users/create",
+  "delete-user": "users/delete",
+  "update-profile": "users/update-profile",
+  "create-order": "orders/create",
+  "process-payment": "payments/process",
+  "send-notification": "notifications/send"
+}, ["$read", ["$headers"], "x-action"]],
+["$write", ["$headers"], "x-handler", ["$self"]]]
 ```
-
-## Tooling
-
-The included vscode extension provides syntax highlighting for rex.  It supports rex inside markdown code blocks with `rex` language tag, and also rex inside template literals tagged with `rex`.  It even supports res inside typescript inside of markdown code blocks.
-
-![highlighted example](img/highlight-example.png)
