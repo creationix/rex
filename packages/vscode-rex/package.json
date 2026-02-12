@@ -42,6 +42,19 @@
 				"configuration": "./rexc-language-configuration.json"
 			}
 		],
+		"semanticTokenTypes": [
+			{
+				"id": "objectKey",
+				"description": "Object key in rexc encoding"
+			}
+		],
+		"semanticTokenScopes": [
+			{
+				"scopes": {
+					"objectKey": ["support.type.property-name"]
+				}
+			}
+		],
 		"grammars": [
 			{
 				"language": "rex",
