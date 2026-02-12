@@ -1,0 +1,20 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"scopeName": "markdown.rexc.codeblock",
+	"injectionSelector": "L:text.html.markdown",
+	"patterns": [
+		{
+			"begin": "(^|\\G)(\\s*)(\\`{3,}|~{3,})\\s*(?i:(rexc))\\s*$",
+			"end": "(^|\\G)(\\2)(\\3)\\s*$",
+			"beginCaptures": {
+				"3": { "name": "punctuation.definition.markdown" },
+				"4": { "name": "fenced_code.block.language.markdown" }
+			},
+			"endCaptures": {
+				"3": { "name": "punctuation.definition.markdown" }
+			},
+			"contentName": "meta.embedded.block.rexc",
+			"patterns": [{ "include": "source.rexc" }]
+		}
+	]
+}

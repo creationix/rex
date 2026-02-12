@@ -3,5 +3,7 @@
 !README.md
 !package.json
 !language-configuration.json
+!rexc-language-configuration.json
+!dist/**
 !img/**
 !syntaxes/**
