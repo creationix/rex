@@ -17,6 +17,7 @@ export const TOKEN_TYPES = [
 	"property", // 7 - references (@, /)
 	"modifier", // 8 - count (#), index (|)
 	"annotation", // 9 - line-drawing annotations
+	"objectKey", // 10 - object keys
 ] as const;
 
 const T = {
@@ -30,6 +31,7 @@ const T = {
 	property: 7,
 	modifier: 8,
 	annotation: 9,
+	objectKey: 10,
 } as const;
 
 export interface Token {
@@ -128,6 +130,8 @@ export function tokenize(text: string): Token[] {
 		}
 	}
 
+	let objectKeyMode = false;
+
 	function parseOneValue(parentCount?: number) {
 		skipNonCode();
 		if (pos >= text.length) return;
@@ -152,31 +156,43 @@ export function tokenize(text: string): Token[] {
 		const tagCol = col;
 
 		switch (tag) {
-			// Paired containers
+			// Paired containers (non-object)
 			case "(":
 			case "[":
-			case "{":
 			case "<": {
-				const close =
-					tag === "("
-						? ")"
-						: tag === "["
-							? "]"
-							: tag === "{"
-								? "}"
-								: ">";
+				const close = tag === "(" ? ")" : tag === "[" ? "]" : ">";
 				if (pos > prefixStart)
 					emit(prefixLine, prefixCol, pos - prefixStart, T.comment);
 				advance(); // open delimiter
-				// Parse nested values until close
 				while (pos < text.length) {
 					skipNonCode();
 					if (pos >= text.length || text[pos] === close) break;
 					const prev = pos;
 					parseOneValue();
-					if (pos === prev) advance(); // skip unknown char
+					if (pos === prev) advance();
 				}
 				if (pos < text.length && text[pos] === close) advance();
+				break;
+			}
+
+			// Object container — alternates key/value
+			case "{": {
+				if (pos > prefixStart)
+					emit(prefixLine, prefixCol, pos - prefixStart, T.comment);
+				advance(); // open delimiter
+				let isKey = true;
+				while (pos < text.length) {
+					skipNonCode();
+					if (pos >= text.length || text[pos] === "}") break;
+					const prev = pos;
+					const saved = objectKeyMode;
+					objectKeyMode = isKey;
+					parseOneValue();
+					objectKeyMode = saved;
+					if (pos === prev) advance();
+					isKey = !isKey;
+				}
+				if (pos < text.length && text[pos] === "}") advance();
 				break;
 			}
 
@@ -281,7 +297,7 @@ export function tokenize(text: string): Token[] {
 
 			case ":":
 				advance();
-				emit(prefixLine, prefixCol, pos - prefixStart, T.string);
+				emit(prefixLine, prefixCol, pos - prefixStart, objectKeyMode ? T.objectKey : T.string);
 				break;
 
 			case "?":

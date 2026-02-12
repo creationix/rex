@@ -91,9 +91,5 @@ This compiles to JSON bytecode. Notice the data object embeds directly — no es
 Or in Rex's compact encoding — a single UTF-8 string, 265 bytes vs 358 for the minified JSON:
 
 ```rexc
-46;39=actions$2Z{create-user:c,users/createdelete-user:c,us
-ers/deleteupdate-profile:k,users/update-profilecreate-order:
-d,orders/createprocess-payment:g,payments/processsend-notifi
-cation:i,notifications/send}T(?u=handler$j(actions$5/x-acti
-on:)k=5/x-handler:handler$)
+46;39=actions$2Z{create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profilecreate-order:d,orders/createprocess-payment:g,payments/processsend-notification:i,notifications/send}T(?u=handler$j(actions$5/x-action:)k=5/x-handler:handler$)
 ```
