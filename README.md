@@ -25,15 +25,16 @@ Rex is the fourth option. Your data stays JSON. You add `()` where you need logi
 
 ## Core Language
 
-Rex is desgined to be used in various problem domains with a flexible core.
+Rex is designed to be used in various problem domains with a flexible core.
 
-- `when`, `if`, `else-when`, `else-if`, `else` - conditional control flow
-- `match`, `string`, `number`, `boolean`, `array`, `object` - type and value matching
-- `read`, `write` - path traversal reads and writes for objects/arrays
-- `get` ,`set`, name, name`=` - local variables
-- `gt`, `lt`, `gte`, `lte`, `eq`, `neq` - comparision
+- `when`, `unless`, `do` - conditional control flow
+- `alt`, `all` - short-circuit operators
+- `set`, `delete` - place operations
+- `eq`, `neq`, `gt`, `gte`, `lt`, `lte` - comparison (return value or `undefined`)
+- `and`, `or`, `not`, `xor` - boolean / bitwise operators
 - `add`, `sub`, `mul`, `div`, `mod`, `neg` - arithmetic
-- `join`, `split`, `upper`, `lower`, `starts-with`, `ends-with`, `contains` - string operations
+- `string`, `number`, `object`, `array`, `boolean`, `bytes` - type predicates
+- `literal` - escape hatch for data that looks like code
 
 ## Example
 
@@ -55,19 +56,18 @@ In Rex, the data is a lookup table and the logic is written once:
 
 ```rex
 actions = {
-  'create-user':       'users/create'
-  'delete-user':       'users/delete'
-  'update-profile':    'users/update-profile'
-  'create-order':      'orders/create'
-  'process-payment':   'payments/process'
-  'send-notification': 'notifications/send'
+  create-user:       'users/create'
+  delete-user:       'users/delete'
+  update-profile:    'users/update-profile'
+  create-order:      'orders/create'
+  process-payment:   'payments/process'
+  send-notification: 'notifications/send'
   // ... 200+ more entries
 }
 
-// Read the action from the header, lookup the handler in the table,
+// Look up the action header in the table. If found, set the handler header.
 (when handler=(actions (headers 'x-action'))
-  // If a handler was found, write it back to the headers.
-  (write headers 'x-handler' handler))
+  headers.x-handler = handler)
 ```
 
 Adding a new action is one line in the table. The logic doesn't change.
@@ -75,13 +75,25 @@ Adding a new action is one line in the table. The logic doesn't change.
 This compiles to JSON bytecode. Notice the data object embeds directly — no escaping, no wrapping. Rex is JSON-native:
 
 ```json
-["$when", ["$read", {
-  "create-user": "users/create",
-  "delete-user": "users/delete",
-  "update-profile": "users/update-profile",
-  "create-order": "orders/create",
-  "process-payment": "payments/process",
-  "send-notification": "notifications/send"
-}, ["$read", ["$headers"], "x-action"]],
-["$write", ["$headers"], "x-handler", ["$self"]]]
+["$do",
+  ["$set", ["$$actions"], {
+    "create-user": "users/create",
+    "delete-user": "users/delete",
+    "update-profile": "users/update-profile",
+    "create-order": "orders/create",
+    "process-payment": "payments/process",
+    "send-notification": "notifications/send"
+  }],
+  ["$when", ["$set", ["$$handler"], ["$$actions", ["$headers", "x-action"]]],
+    ["$set", ["$headers", "x-handler"], ["$$handler"]]]]
+```
+
+Or in Rex's compact encoding — a single UTF-8 string, 284 bytes vs 358 for the minified JSON:
+
+```
+4o(2!3b(5!actions$2Z{create-user:c,users/createdelete-user:
+c,users/deleteupdate-profile:k,users/update-profilecreate-o
+rder:d,orders/createprocess-payment:g,payments/processsend-n
+otification:i,notifications/send})13(!z(5!handler$m(actions$
+b(5@x-action:)))p(5!c(5@x-handler:)handler$)))
 ```

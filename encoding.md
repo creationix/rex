@@ -57,6 +57,13 @@ Digits form a **big-endian base-64 integer**. Zero is **no digits** (zero-length
 
 Paired containers use closing delimiters for visual coherence and error checking. The `,` string has no closing delimiter — strings are common and the byte savings add up.
 
+### Modifiers
+
+| Tag | Type | Digits encode |
+|-----|------|---------------|
+| `#` | Count | Item count (wraps next value) |
+| `\|` | Index | Pointer width − 1 (wraps next value with pointer array) |
+
 ## Integers
 
 Positive integers use `+`, negative use `~`. The two ranges don't overlap: `+` encodes 0 and up, `~` encodes -1 and down.
@@ -247,6 +254,56 @@ Avoid pointer chains — always point directly to the final value, not to anothe
   │ ╰──── ^    pointer, offset 0 → 11+ (immediately after)
   ╰────── 1^   pointer, offset 1 → 11+ (1 byte after, skipping the ^)
 ```
+
+## Indexes
+
+Containers can be prefixed with count and index modifiers for fast access.
+
+**`#` — Count.** Digit prefix is the item count. For arrays, count = number of elements. For objects, count = number of key-value pairs. Consumes the next value.
+
+**`|` — Index.** Digit prefix is pointer width minus 1 (1-biased: `|` = width 1, `1|` = width 2, `2|` = width 3). Reads count × width bytes as a fixed-width pointer array, then consumes the next value. Pointers are byte offsets into the container body.
+
+Width 1 covers offsets 0–63, width 2 covers 0–4,095, width 3 covers 0–262,143.
+
+Count alone annotates a container without indexing. Count + index enables fast access:
+
+```
+3#6[1+2+3+]                count only (3 items)
+3#|0246[1+2+3+]            indexed: O(1) array access
+2#|0ah{color:red:size:G+}  indexed: O(log n) object lookup
+```
+
+### Indexed Array
+
+For arrays, pointer *i* points to element *i*. Access is O(1) — multiply index by pointer width, read the offset, jump into the body.
+
+**`[1, 2, 3]`** with index:
+
+```
+3#|0246[1+2+3+]
+├╯│╰┬╯╰───┬───╯
+│ │ │     ╰──── 6[1+2+3+]   the array
+│ │ ╰────────── 024          index: 0→1+, 2→2+, 4→3+
+│ ╰──────────── |            pointer width 1
+╰────────────── 3#           3 items
+```
+
+### Indexed Object
+
+For objects, pointers point to keys, sorted by key value for binary search. The value follows immediately after each key in the body.
+
+**`{color: "red", size: 42}`** with index:
+
+```
+2#|0ah{color:red:size:G+}
+├╯│├╯╰────────┬────────╯
+│ ││          ╰──── h{color:red:size:G+}
+│ │╰─────────────── 0a    sorted index: 0→color:, a→size:
+│ ╰──────────────── |     pointer width 1
+╰────────────────── 2#    2 pairs
+```
+
+To look up `"size"`: binary search the 2 sorted pointers, compare the key at each offset. One comparison finds `size:` at body offset 10.
 
 ## Worked Examples
 
