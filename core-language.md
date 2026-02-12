@@ -150,10 +150,6 @@ foo.bar = 100        → ["$set", ["$$foo", "bar"], 100]
 (when x=(get-data)
   (use x))
 // x is bound AND the when checks if the result is not undefined
-
-(when obj.key=(lookup 'something')
-  (use obj.key))
-// writes to obj.key AND checks the result
 ```
 
 ### Navigable Expressions
@@ -179,15 +175,16 @@ actions = {a: 1, b: 2}
 
 Bare words resolve in this order:
 
-1. **Local variable** (bound by `=` or `set`) → `["$$name", ...]`
-2. **Domain built-in** (e.g. `headers` in an HTTP context) → `["$name", ...]`
-3. **Reserved keyword** — always resolves to its keyword meaning
+1. **Reserved keyword** — always resolves to its keyword meaning, cannot be shadowed
+2. **Local variable** (bound by `=` or `set`) → `["$$name", ...]`
+3. **Domain built-in** (e.g. `headers` in an HTTP context) → `["$name", ...]`
+4. **Error** — unknown identifier
 
-Variables shadow domain built-ins. Reserved keywords cannot be shadowed.
+Local variables shadow domain built-ins.
 
 ### Implicit Self
 
-`self` refers to the implicit value in the current scope. It is set by `when`, `if`, each `match` arm, and other scope-creating forms:
+`self` refers to the implicit value in the current scope. It is set by `when` and `unless` when the condition is evaluated:
 
 ```rex
 (when (some-expr)
@@ -203,11 +200,8 @@ Named bindings are aliases for `self` — useful to avoid shadowing in nested sc
 `self` is navigable like any other place:
 
 ```rex
-(match user
-  object (concat self.name " <" self.email ">")
-  else   "unknown")
-
-// self.name → ["$self", "name"]
+self.name      → ["$self", "name"]
+self.email     → ["$self", "email"]
 ```
 
 ### Object Key Semantics
@@ -222,26 +216,27 @@ In object literals, bare words are literal string keys, not variable references:
 
 ## Core Keywords
 
+All operators in Rex work on a single principle: operations either succeed and return a value, or fail and return `undefined`. Control flow checks for existence (defined vs `undefined`). There is no separate concept of truthiness.
+
 ### Control Flow
 
-#### `when` / `if`
+#### `when` / `unless`
 
-`when` checks existence (not `undefined`). `if` checks truthiness (not `undefined`, `null`, or `false`). Both have fixed arity with an optional else branch:
+`when` runs its body if the condition is defined (not `undefined`). `unless` runs its body if the condition is `undefined`. Both take a condition, a then-expression, and an optional else-expression:
 
 ```
-["$when", condition, then-expr, else-expr?]
-["$if",   condition, then-expr, else-expr?]
+["$when",   condition, then-expr, else-expr?]
+["$unless", condition, then-expr, else-expr?]
 ```
 
-Multi-expression bodies auto-wrap in `$do`. Inline keywords (`else`, `else-when`, `else-if`) split the body into branches that compile to nested forms:
+Both set `self` to the condition value. Use `do` for multi-expression bodies. Chain by nesting:
 
 ```rex
 (when x=(get-primary)
-    (use x)
-  else-when y=(get-fallback)
+  (use x)
+  (when y=(get-fallback)
     (use y)
-  else
-    (use-default))
+    (use-default)))
 ```
 
 Compiles to:
@@ -254,46 +249,12 @@ Compiles to:
     ["$use-default"]]]
 ```
 
-`if` / `else-if` chains work the same way with `$if`.
-
-#### `match`
-
-Dispatches on a value using alternating predicate/body pairs. Each predicate is evaluated with `self` set to the match subject. A predicate matches when it returns non-`undefined`:
+`unless` handles the negated case:
 
 ```rex
-(match value
-  string  (handle-string)
-  number  (handle-number)
-  'GET'   (handle-get)
-  42      (handle-42)
-  null    (handle-null)
-  some    (handle-any)
-  else    (fallback))
+(unless (string value)
+  (handle-non-string))
 ```
-
-Compiles to:
-
-```json
-["$match", ["$$value"],
-  ["$as-string"], ["$handle-string"],
-  ["$as-number"], ["$handle-number"],
-  ["$is", "GET"], ["$handle-get"],
-  ["$is", 42], ["$handle-42"],
-  ["$is", null], ["$handle-null"],
-  ["$self"], ["$handle-any"],
-  ["$fallback"]]
-```
-
-How match labels compile:
-
-| Match label | Compiled predicate | Meaning |
-|---|---|---|
-| Type name (`string`, `number`, ...) | `["$as-TYPE"]` | Type check |
-| `some` | `["$self"]` | Any non-undefined value |
-| Literal (`'GET'`, `42`, `null`, ...) | `["$is", value]` | Equality check |
-| `else` | *(trailing body, no predicate)* | Unconditional fallback |
-
-Each branch body has `self` set to the match subject.
 
 #### `do`
 
@@ -310,41 +271,94 @@ Sequences multiple expressions, returns the last:
 ["$do", ["$set", ["$$x"], 10], ["$set", ["$$y"], 20], ["$add", ["$$x"], ["$$y"]]]
 ```
 
-#### `coalesce`
+### Short-Circuit Operators
 
-Returns the first non-`undefined` value. `null` is considered a value:
+Both are variadic and return actual values (not booleans):
+
+| Keyword | Usage | Returns |
+|---|---|---|
+| `alt` | `(alt a b c ...)` | First non-`undefined` value |
+| `all` | `(all a b c ...)` | Last value if all defined, first `undefined` otherwise |
+
+`alt` is nullish coalescing — `null` is a value, not absence:
 
 ```rex
-(coalesce primary fallback "default")
+(alt user.preferred-name user.name "anonymous")
 ```
 
-```json
-["$coalesce", ["$$primary"], ["$$fallback"], "default"]
+`all` is like optional chaining — proceed only if everything exists:
+
+```rex
+(all user user.name user.email)   // user.email if all exist
 ```
 
-### Variables
+### Place Operations
 
 | Keyword | Usage | Bytecode |
 |---|---|---|
-| `self` | bare word | `["$self"]` |
 | `set` | `(set lvalue expr)` | `["$set", place, expr]` |
-
-`self` is the implicit value in the current scope. `set` writes to a place and returns the value.
-
-### Containers
-
-| Keyword | Usage | Bytecode |
-|---|---|---|
 | `delete` | `(delete lvalue)` | `["$delete", place]` |
+
+`set` writes to a place and returns the value. `delete` removes a key from a place.
 
 ```rex
 obj = {a: 1, b: {c: 2}}
 
 obj.a                     // 1 — read from place
 obj.b.c                   // 2 — nested read
-
 obj.d = 4                 // write to place
 (delete obj.a)            // delete at place
+```
+
+### Comparison
+
+All comparisons return the first argument if the comparison succeeds, `undefined` otherwise:
+
+| Keyword | Usage | Returns |
+|---|---|---|
+| `eq` | `(eq a b)` | `a` if a = b, else `undefined` |
+| `neq` | `(neq a b)` | `a` if a ≠ b, else `undefined` |
+| `gt` | `(gt a b)` | `a` if a > b, else `undefined` |
+| `gte` | `(gte a b)` | `a` if a ≥ b, else `undefined` |
+| `lt` | `(lt a b)` | `a` if a < b, else `undefined` |
+| `lte` | `(lte a b)` | `a` if a ≤ b, else `undefined` |
+
+Comparisons compose naturally with `when` and `all`:
+
+```rex
+// Branch on comparison
+(when (gt age 18)
+  (allow self))
+
+// Combine comparisons
+(when (all (gt age 18) (lt age 65))
+  (process self))
+```
+
+### Boolean / Bitwise
+
+Value operators that work on booleans and numbers. These are NOT logical operators — they operate on the values themselves:
+
+| Keyword | Usage | Booleans | Numbers |
+|---|---|---|---|
+| `and` | `(and a b ...)` | Boolean AND | Bitwise AND |
+| `or` | `(or a b ...)` | Boolean OR | Bitwise OR |
+| `not` | `(not a)` | Boolean NOT | Bitwise NOT |
+| `xor` | `(xor a b ...)` | Boolean XOR | Bitwise XOR |
+
+```rex
+// Boolean algebra
+(and true false)         // false
+(or false true)          // true
+(not true)               // false
+
+// Bitwise operations
+(and 0xFF 0x0F)          // 15
+(or 0x0F 0xF0)           // 255
+(xor 0xFF 0x0F)          // 240
+
+// Computing with boolean data
+user.can-edit = (and user.is-admin (not user.is-suspended))
 ```
 
 ### Arithmetic
@@ -358,66 +372,30 @@ obj.d = 4                 // write to place
 | `mod` | `(mod a b)` | `["$mod", a, b]` |
 | `neg` | `(neg a)` | `["$neg", a]` |
 
-### Comparison
-
-| Keyword | Usage | Bytecode | Returns |
-|---|---|---|---|
-| `eq` | `(eq a b)` | `["$eq", a, b]` | `true` / `false` |
-| `neq` | `(neq a b)` | `["$neq", a, b]` | `true` / `false` |
-| `gt` | `(gt a b)` | `["$gt", a, b]` | `true` / `false` |
-| `gte` | `(gte a b)` | `["$gte", a, b]` | `true` / `false` |
-| `lt` | `(lt a b)` | `["$lt", a, b]` | `true` / `false` |
-| `lte` | `(lte a b)` | `["$lte", a, b]` | `true` / `false` |
-| `is` | `(is a b)` | `["$is", a, b]` | `a` if equal, else `undefined` |
-
-`is` is existence-friendly: returns the value on match, `undefined` otherwise. Use `is` with `when` and in match contexts. Use `eq` when you need a boolean.
-
-### Boolean Logic
-
-| Keyword | Usage | Bytecode |
-|---|---|---|
-| `and` | `(and a b ...)` | `["$and", a, b, ...]` |
-| `or` | `(or a b ...)` | `["$or", a, b, ...]` |
-| `not` | `(not a)` | `["$not", a]` |
-
 ### Type Predicates
 
-| Keyword | With argument | Implicit self |
+Type predicates return the value if it matches the type, `undefined` otherwise:
+
+| Keyword | Usage | Returns |
 |---|---|---|
-| `string` | `["$as-string", expr]` | `["$as-string"]` |
-| `number` | `["$as-number", expr]` | `["$as-number"]` |
-| `object` | `["$as-object", expr]` | `["$as-object"]` |
-| `array` | `["$as-array", expr]` | `["$as-array"]` |
-| `boolean` | `["$as-boolean", expr]` | `["$as-boolean"]` |
-| `bytes` | `["$as-bytes", expr]` | `["$as-bytes"]` |
-
-Type predicates return the value if it matches the type, `undefined` otherwise. When the value argument is omitted, `self` is used implicitly.
+| `string` | `(string expr)` | `expr` if string, else `undefined` |
+| `number` | `(number expr)` | `expr` if number, else `undefined` |
+| `object` | `(object expr)` | `expr` if object, else `undefined` |
+| `array` | `(array expr)` | `expr` if array, else `undefined` |
+| `boolean` | `(boolean expr)` | `expr` if boolean, else `undefined` |
+| `bytes` | `(bytes expr)` | `expr` if bytes, else `undefined` |
 
 ```rex
-// Explicit argument
-(string "hello")             // "hello"
-(string 42)                  // undefined
+// Type check with when
+(when (string value)
+  (process self))
 
-// With when
-(when x=(number value)
-  (add x 1))
-
-// In match (implicit self)
-(match value
-  string (process self)
-  number (add self 1))
-```
-
-`is` follows the same implicit-self pattern:
-
-```rex
-// Explicit argument
-(is method 'GET')            // method if equal, undefined otherwise
-
-// In match (implicit self)
-(match method
-  'GET'  (handle-get)        // compiles to ["$is", "GET"]
-  'POST' (handle-post))
+// Type-based dispatch with chained when
+(when (string value)
+  (handle-string)
+  (when (number value)
+    (handle-number)
+    (handle-other)))
 ```
 
 ### Escaping
@@ -438,19 +416,19 @@ All reserved keywords, grouped by category:
 
 **Literals:** `true`, `false`, `null`, `undefined`
 
-**Control flow:** `when`, `if`, `else`, `else-when`, `else-if`, `match`, `do`, `coalesce`
+**Control flow:** `when`, `unless`, `do`
 
-**Variables:** `self`, `set`
+**Short-circuit:** `alt`, `all`
 
-**Containers:** `delete`
+**Place operations:** `self`, `set`, `delete`
+
+**Comparison:** `eq`, `neq`, `gt`, `gte`, `lt`, `lte`
+
+**Boolean / Bitwise:** `and`, `or`, `not`, `xor`
 
 **Arithmetic:** `add`, `sub`, `mul`, `div`, `mod`, `neg`
 
-**Comparison:** `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `is`
-
-**Boolean:** `and`, `or`, `not`
-
-**Type predicates:** `string`, `number`, `object`, `array`, `boolean`, `bytes`, `some`
+**Type predicates:** `string`, `number`, `object`, `array`, `boolean`, `bytes`
 
 **Escaping:** `literal`
 
@@ -463,7 +441,7 @@ Rex is designed to be:
 3. **Composable** — Build complex logic from simple parts
 4. **Portable** — Compiles to JSON, runs anywhere
 5. **Domain-agnostic** — Core language is reusable across problem domains
-6. **Uniform** — Places are the single model for reading, writing, and navigating data
+6. **Uniform** — Places are the single model for reading, writing, and navigating data. Operations return value or `undefined`. Control flow checks existence. One model, not two.
 
 ## Extension Points
 
