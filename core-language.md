@@ -1,15 +1,15 @@
 # Rex Core Language
 
-A minimal, reusable expression language that is a superset of JSON for data processing and control flow. Rex can be encoded as compact JSON bytecode (s-expressions encoded as arrays). The core language is domain-agnostic and can be extended for specific use cases.
+A minimal expression language that is a superset of JSON. Rex adds `()` for code to JSON's `{}` and `[]`. Source compiles to compact JSON bytecode (s-expressions encoded as arrays). The core language is domain-agnostic and can be extended for specific use cases.
 
 ## Syntax
 
-See [rex.ohm](rex.ohm) for the complete Ohm grammar.
+See [rex.ohm](packages/rex-lang/rex.ohm) for the complete Ohm grammar.
 
 ### Expressions
 
-```rex
-program   = Expr*
+```
+Program   = Expr*
 Expr      = Binding | Call | Atom
 Binding   = bareWord "=" Expr
 Call      = "(" Expr+ ")"
@@ -32,17 +32,13 @@ Atom      = String | Number | Bytes | Boolean | Null | Undefined | Array | Objec
 
 Three container types with flexible separator rules:
 
-1. **Calls** `()` — Code execution, first element is the opcode
+1. **Calls** `()` — Code execution, first element is the operator
 2. **Arrays** `[]` — Data lists
 3. **Objects** `{}` — Key-value maps
 
-**Separator rules:**
-- Whitespace and commas are interchangeable separators
-- Trailing commas are allowed
-- Comments allowed anywhere whitespace is permitted
+Whitespace and commas are interchangeable separators. Trailing commas allowed. Comments allowed anywhere whitespace is permitted.
 
 ```rex
-// All valid
 [1 2 3]
 [1, 2, 3]
 [1, 2, 3,]
@@ -60,308 +56,361 @@ Three container types with flexible separator rules:
    block comment */
 ```
 
-### Bindings
-
-Variable bindings use `=` syntax:
-
-```rex
-x = 42
-name = "Alice"
-result = (add x 10)
-```
-
-### Calls
-
-Function calls are prefix notation with parentheses:
-
-```rex
-(add 1 2)
-(if condition body... else other-body...)
-(map items (mul self 2))
-```
-
 ## Semantics
 
-### Bytecode Compilation
+### Bytecode Format
 
-Rex source compiles to JSON s-expressions. Opcodes are prefixed with `$`:
+Rex source compiles to JSON. The fundamental rule:
+
+> **A JSON array whose first element is a `$`-prefixed string is code. Everything else is data.**
 
 ```rex
-(add 1 2)
+(add 1 2)        → ["$add", 1, 2]       // code
+[1, 2, 3]        → [1, 2, 3]            // data
+{a: 1}           → {"a": 1}             // data
+42               → 42                    // data
+"hello"          → "hello"              // data
+```
+
+Special values that have no JSON primitive representation:
+
+```rex
+self             → ["$self"]
+undefined        → ["$undefined"]
+```
+
+To embed a data array that happens to start with a `$`-prefixed string, use `literal`:
+
+```rex
+(literal ["$not-code" 1 2])  → ["$literal", ["$not-code", 1, 2]]
+```
+
+### Bare Word Resolution
+
+Bare words in value position resolve in this order:
+
+1. **Local variable** (bound by `=` or `set`) → `["$get", "name"]`
+2. **Domain built-in** (e.g. `headers` in an HTTP context) → `["$name"]`
+3. **Reserved keyword** — always resolves to its keyword meaning
+
+Variables shadow domain built-ins. Reserved keywords cannot be shadowed.
+
+### Navigable Expressions
+
+When a non-keyword bare word appears in call position (first element of a `()`), the call compiles to a `$read` expression:
+
+```rex
+// Variable in call position
+actions = {a: 1, b: 2}
+(actions 'a')             → ["$read", ["$get", "actions"], "a"]
+
+// Domain built-in in call position
+(headers 'x-action')      → ["$read", ["$headers"], "x-action"]
+
+// Keyword in call position — normal opcode, not $read
+(add 1 2)                 → ["$add", 1, 2]
+```
+
+Any expression resolving to an object or array can be navigated this way. The compiler emits `$read` wrapping the resolved expression.
+
+### Bindings
+
+`name = expr` is sugar for `(set name expr)`:
+
+```rex
+x = 42               → ["$set", "x", 42]
+(set x 42)           → ["$set", "x", 42]
+x                    → ["$get", "x"]
+(get x)              → ["$get", "x"]
+```
+
+Variable names in `get` and `set` are always bare words (unquoted identifiers), never expressions.
+
+`$set` returns the value being set, which allows binding in conditions:
+
+```rex
+(when x=(read obj 'key')
+  (process x))
+// x is bound AND the when checks if the result is not undefined
+```
+
+### Implicit Self
+
+`self` refers to the implicit value in the current scope. It is set by `when`, `if`, each `match` arm, and other scope-creating forms:
+
+```rex
+(when (read obj 'key')
+  (process self))
+
+(when x=(read obj 'key')
+  (process x)              // x and self are both the value
+  (process self))
+```
+
+Named bindings are aliases for `self` — useful to avoid shadowing in nested scopes.
+
+### Object Key Semantics
+
+In object literals, bare words are literal string keys, not variable references:
+
+```rex
+{foo: 1, bar: 2}              // keys are "foo" and "bar" (strings)
+{"foo": 1, bar: 2}            // same
+{200: "OK", 404: "Not Found"} // number keys allowed
+```
+
+## Core Keywords
+
+### Control Flow
+
+#### `when` / `if`
+
+`when` checks existence (not `undefined`). `if` checks truthiness (not `undefined`, `null`, or `false`). Both have fixed arity with an optional else branch:
+
+```
+["$when", condition, then-expr, else-expr?]
+["$if",   condition, then-expr, else-expr?]
+```
+
+Multi-expression bodies auto-wrap in `$do`. Inline keywords (`else`, `else-when`, `else-if`) split the body into branches that compile to nested forms:
+
+```rex
+(when x=(get primary)
+    (use x)
+  else-when y=(get fallback)
+    (use y)
+  else
+    (use-default))
 ```
 
 Compiles to:
 
 ```json
-["$add", 1, 2]
+["$when", ["$set", "x", ["$get", "primary"]],
+  ["$use", ["$get", "x"]],
+  ["$when", ["$set", "y", ["$get", "fallback"]],
+    ["$use", ["$get", "y"]],
+    ["$use-default"]]]
 ```
 
-### Object Key Semantics
+`if` / `else-if` chains work the same way with `$if`.
 
-In object literals, bare words are treated as **literal string keys**, not variable references:
+#### `match`
 
-```rex
-{foo: 1, bar: 2}     // Keys are "foo" and "bar" (strings)
-{"foo": 1, bar: 2}   // Same thing
-{200: "OK", 404: "Not Found"}  // Number keys are allowed
-```
-
-### Variable Scoping
-
-- `bareWord` in value position → variable reference
-- `bareWord` in key position → string literal
-- `self` → implicit value in current scope (iteration, match, etc.)
-
-## Core Keywords
-
-### Literals
-
-- `true` — Boolean true
-- `false` — Boolean false
-- `null` — Null value
-- `undefined` — Missing/absent value
-
-### Control Flow
-
-| Keyword | Usage | Description |
-|---------|-------|-------------|
-| `when` | `(when cond body...)` | Execute body if `cond` is not `undefined` |
-| `if` | `(if cond body...)` | Truthy check (not `undefined`/`null`/`false`) |
-| `else` | inline keyword | Unconditional fallback branch (splits body sections) |
-| `else-when` | inline keyword | Chain existence check (splits body sections) |
-| `else-if` | inline keyword | Chain truthy check (splits body sections) |
-| `match` | `(match expr label body...)` | Multi-branch dispatch by type or value |
-| `do` | `(do expr...)` | Sequence multiple expressions |
-| `coalesce` | `(coalesce a b c ...)` | First non-undefined value |
-
-**Note:** Inline keywords (`else`, `else-when`, `else-if`) split the body into branches within `when`, `if`, and `match` expressions.
-
-**Examples:**
+Dispatches on a value using alternating predicate/body pairs. Each predicate is evaluated with `self` set to the match subject. A predicate matches when it returns non-`undefined`:
 
 ```rex
-// When: check for existence
-(when x=(get 'config')
-  (process x))
-
-// When with else-when chain
-(when x=(get 'primary')
-  (use x)
-  else-when y=(get 'fallback')
-  (use y)
-  else
-  (use-default))
-
-// If-else chain
-(if (gt x 10)
-  "large"
-  else-if (gt x 5)
-  "medium"
-  else
-  "small")
-
-// Match by type
 (match value
-  string (upper value)
-  number (mul value 2)
-  array (count value)
-  else undefined)
+  string  (handle-string)
+  number  (handle-number)
+  'GET'   (handle-get)
+  42      (handle-42)
+  null    (handle-null)
+  some    (handle-any)
+  else    (fallback))
+```
 
-// Do: sequence expressions
+Compiles to:
+
+```json
+["$match", ["$get", "value"],
+  ["$as-string"], ["$handle-string"],
+  ["$as-number"], ["$handle-number"],
+  ["$is", "GET"], ["$handle-get"],
+  ["$is", 42], ["$handle-42"],
+  ["$is", null], ["$handle-null"],
+  ["$self"], ["$handle-any"],
+  ["$fallback"]]
+```
+
+How match labels compile:
+
+| Match label | Compiled predicate | Meaning |
+|---|---|---|
+| Type name (`string`, `number`, ...) | `["$as-TYPE"]` | Type check |
+| `some` | `["$self"]` | Any non-undefined value |
+| Literal (`'GET'`, `42`, `null`, ...) | `["$is", value]` | Equality check |
+| `else` | *(trailing body, no predicate)* | Unconditional fallback |
+
+Each branch body has `self` set to the match subject. The `else` body also receives the original match subject as `self`.
+
+#### `do`
+
+Sequences multiple expressions, returns the last:
+
+```rex
 (do
-  (set 'x' 10)
-  (set 'y' 20)
+  x = 10
+  y = 20
   (add x y))
+```
+
+```json
+["$do", ["$set", "x", 10], ["$set", "y", 20], ["$add", ["$get", "x"], ["$get", "y"]]]
+```
+
+#### `coalesce`
+
+Returns the first non-`undefined` value. `null` is considered a value:
+
+```rex
+(coalesce (get primary) (get fallback) "default")
+```
+
+```json
+["$coalesce", ["$get", "primary"], ["$get", "fallback"], "default"]
 ```
 
 ### Variables
 
-| Keyword | Usage | Description |
-|---------|-------|-------------|
-| `self` | bare word | Implicit value in current scope |
-| `get` | `(get name)` | Read named variable |
-| `set` | `(set name value)` | Bind variable (also `name=expr` sugar) |
+| Keyword | Usage | Bytecode |
+|---|---|---|
+| `self` | bare word | `["$self"]` |
+| `get` | `(get name)` | `["$get", "name"]` |
+| `set` | `(set name value)` | `["$set", "name", value]` |
+
+### Containers
+
+| Keyword | Usage | Bytecode |
+|---|---|---|
+| `read` | `(read root ...keys)` | `["$read", root, keys...]` |
+| `write` | `(write root ...keys value)` | `["$write", root, keys..., value]` |
+| `delete` | `(delete root ...keys)` | `["$delete", root, keys...]` |
 
 ```rex
-// Variable binding
-(set 'counter' 42)
-x = (get 'counter')
+obj = {a: 1, b: {c: 2}}
 
-// Implicit self in iteration
-(map items (mul self 2))
-```
-
-### Container Operations
-
-| Keyword | Usage | Description |
-|---------|-------|-------------|
-| `read` | `(read root ...keys)` | Read value at path |
-| `write` | `(write root ...keys value)` | Set value at path |
-| `append` | `(append root ...keys value)` | Append to multi-value path |
-| `delete` | `(delete root ...keys)` | Delete at path |
-| `has` | `(has root ...keys)` | Check if key exists |
-| `missing` | `(missing root ...keys)` | Check if key is absent |
-| `read-all` | `(read-all root ...keys)` | All values for multi-value key |
-| `count` | `(count root ...keys)` | Length of array/string/object |
-| `keys` | `(keys root ...keys)` | Object keys as array |
-| `values` | `(values root ...keys)` | Object values as array |
-| `entries` | `(entries root ...keys)` | Key-value pairs as `[key, value]` arrays |
-| `clear` | `(clear root ...keys)` | Remove all entries |
-
-```rex
-obj = {a: 1, b: 2, c: 3}
-
-(read obj 'a')              // 1, equivalent to (obj 'a')
-(write obj 'd' 4)           // {a: 1, b: 2, c: 3, d: 4} 
-(has obj 'a')               // true
-(missing obj 'z')           // true
-(keys obj)                  // ["a", "b", "c"]
-(count obj)                 // 3
-```
-
-### String Operations
-
-| Keyword | Usage | Description |
-|---------|-------|-------------|
-| `upper` | `(upper s)` | Convert to uppercase |
-| `lower` | `(lower s)` | Convert to lowercase |
-| `split` | `(split s [sep])` | Split on whitespace or separator |
-| `concat` | `(concat a b ...)` | Concatenate strings |
-| `join` | `(join sep a b ...)` | Join with separator |
-| `starts-with` | `(starts-with s prefix)` | Check if starts with prefix |
-| `ends-with` | `(ends-with s suffix)` | Check if ends with suffix |
-
-```rex
-(upper "hello")                    // "HELLO"
-(split "a,b,c" ",")               // ["a", "b", "c"]
-(concat "hello" " " "world")      // "hello world"
-(starts-with "hello" "hel")       // true
+(read obj 'a')            // 1
+(read obj 'b' 'c')        // 2
+(write obj 'd' 4)         // {a: 1, b: {c: 2}, d: 4}
+(delete obj 'a')          // {b: {c: 2}}
 ```
 
 ### Arithmetic
 
-| Keyword | Usage | Description |
-|---------|-------|-------------|
-| `add` | `(add a b ...)` | Sum |
-| `sub` | `(sub a b)` | Subtract |
-| `mul` | `(mul a b ...)` | Multiply |
-| `div` | `(div a b)` | Divide |
-| `mod` | `(mod a b)` | Modulo |
-| `neg` | `(neg a)` | Negate |
-
-```rex
-(add 1 2 3)        // 6
-(sub 10 3)         // 7
-(mul 2 3 4)        // 24
-(div 10 2)         // 5
-(mod 10 3)         // 1
-(neg 5)            // -5
-```
+| Keyword | Usage | Bytecode |
+|---|---|---|
+| `add` | `(add a b ...)` | `["$add", a, b, ...]` |
+| `sub` | `(sub a b)` | `["$sub", a, b]` |
+| `mul` | `(mul a b ...)` | `["$mul", a, b, ...]` |
+| `div` | `(div a b)` | `["$div", a, b]` |
+| `mod` | `(mod a b)` | `["$mod", a, b]` |
+| `neg` | `(neg a)` | `["$neg", a]` |
 
 ### Comparison
 
-| Keyword | Usage | Description |
-|---------|-------|-------------|
-| `eq` | `(eq a b)` | Equal |
-| `neq` | `(neq a b)` | Not equal |
-| `gt` | `(gt a b)` | Greater than |
-| `gte` | `(gte a b)` | Greater than or equal |
-| `lt` | `(lt a b)` | Less than |
-| `lte` | `(lte a b)` | Less than or equal |
+| Keyword | Usage | Bytecode | Returns |
+|---|---|---|---|
+| `eq` | `(eq a b)` | `["$eq", a, b]` | `true` / `false` |
+| `neq` | `(neq a b)` | `["$neq", a, b]` | `true` / `false` |
+| `gt` | `(gt a b)` | `["$gt", a, b]` | `true` / `false` |
+| `gte` | `(gte a b)` | `["$gte", a, b]` | `true` / `false` |
+| `lt` | `(lt a b)` | `["$lt", a, b]` | `true` / `false` |
+| `lte` | `(lte a b)` | `["$lte", a, b]` | `true` / `false` |
+| `is` | `(is a b)` | `["$is", a, b]` | `a` if equal, else `undefined` |
 
-```rex
-(eq 1 1)           // true
-(neq "a" "b")      // true
-(gt 5 3)           // true
-(lte 2 2)          // true
-```
+`is` is existence-friendly: returns the value on match, `undefined` otherwise. Use `is` with `when` and in match contexts. Use `eq` when you need a boolean.
 
 ### Boolean Logic
 
-| Keyword | Usage | Description |
-|---------|-------|-------------|
-| `and` | `(and a b ...)` | Logical AND |
-| `or` | `(or a b ...)` | Logical OR |
-| `not` | `(not a)` | Logical NOT |
+| Keyword | Usage | Bytecode |
+|---|---|---|
+| `and` | `(and a b ...)` | `["$and", a, b, ...]` |
+| `or` | `(or a b ...)` | `["$or", a, b, ...]` |
+| `not` | `(not a)` | `["$not", a]` |
+
+### Type Predicates
+
+| Keyword | With argument | Implicit self |
+|---|---|---|
+| `string` | `["$as-string", expr]` | `["$as-string"]` |
+| `number` | `["$as-number", expr]` | `["$as-number"]` |
+| `object` | `["$as-object", expr]` | `["$as-object"]` |
+| `array` | `["$as-array", expr]` | `["$as-array"]` |
+| `boolean` | `["$as-boolean", expr]` | `["$as-boolean"]` |
+| `bytes` | `["$as-bytes", expr]` | `["$as-bytes"]` |
+
+Type predicates return the value if it matches the type, `undefined` otherwise. When the value argument is omitted, `self` is used implicitly.
 
 ```rex
-(and true true false)      // false
-(or false false true)      // true
-(not false)                // true
-```
+// Explicit argument
+(string "hello")             // "hello"
+(string 42)                  // undefined
 
-### Iteration
+// With when
+(when x=(number value)
+  (add x 1))
 
-| Keyword | Usage | Description |
-|---------|-------|-------------|
-| `map` | `(map iter body)` | Transform each element (`self` = element) |
-| `filter` | `(filter iter body)` | Keep elements where body is truthy |
-| `each` | `(each iter body)` | Iterate with side effects |
-
-```rex
-(map [1 2 3] (mul self 2))                    // [2, 4, 6]
-(filter [1 2 3 4] (gt self 2))                // [3, 4]
-(each [1 2 3] (print self))                    // side effects
-```
-
-### Type Filters
-
-| Keyword | Usage | Description |
-|---------|-------|-------------|
-| `as-string` | `(as-string expr)` | Pass value if string, else `undefined` |
-| `as-number` | `(as-number expr)` | Pass value if number, else `undefined` |
-| `as-object` | `(as-object expr)` | Pass value if object, else `undefined` |
-| `as-array` | `(as-array expr)` | Pass value if array, else `undefined` |
-| `as-bytes` | `(as-bytes expr)` | Pass value if bytes, else `undefined` |
-
-```rex
-(as-string "hello")        // "hello"
-(as-string 42)             // undefined
-(when x=(as-number value)
-  (mul x 2))
-```
-
-### Match Type Labels
-
-Used as case labels in `match` expressions for type-based dispatch:
-
-| Label | Description |
-|-------|-------------|
-| `string` | String type |
-| `number` | Number type |
-| `object` | Object type |
-| `array` | Array type |
-| `boolean` | Boolean type |
-| `bytes` | Bytes type |
-| `some` | Any non-undefined value |
-
-```rex
+// In match (implicit self)
 (match value
-  string (upper value)
-  number (add value 1)
-  array (count value)
-  bytes (count value)
-  boolean (not value)
-  else undefined)
+  string (process self)
+  number (add self 1))
 ```
+
+`is` follows the same implicit-self pattern:
+
+```rex
+// Explicit argument
+(is method 'GET')            // method if equal, undefined otherwise
+
+// In match (implicit self)
+(match method
+  'GET'  (handle-get)        // compiles to ["$is", "GET"]
+  'POST' (handle-post))
+```
+
+### Escaping
+
+| Keyword | Usage | Bytecode |
+|---|---|---|
+| `literal` | `(literal expr)` | `["$literal", expr]` |
+
+Prevents code interpretation. Use when embedding data that would otherwise be treated as bytecode:
+
+```rex
+(literal ["$not-code" 1 2])  // produces the data array ["$not-code", 1, 2]
+```
+
+## Reserved Words
+
+All reserved keywords, grouped by category:
+
+**Literals:** `true`, `false`, `null`, `undefined`
+
+**Control flow:** `when`, `if`, `else`, `else-when`, `else-if`, `match`, `do`, `coalesce`
+
+**Variables:** `self`, `get`, `set`
+
+**Containers:** `read`, `write`, `delete`
+
+**Arithmetic:** `add`, `sub`, `mul`, `div`, `mod`, `neg`
+
+**Comparison:** `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `is`
+
+**Boolean:** `and`, `or`, `not`
+
+**Type predicates:** `string`, `number`, `object`, `array`, `boolean`, `bytes`, `some`
+
+**Escaping:** `literal`
 
 ## Design Philosophy
 
 Rex is designed to be:
 
-1. **Minimal** — Small core with few concepts
+1. **Minimal** — Small core, few concepts, easy to implement
 2. **Readable** — Clean syntax for humans
 3. **Composable** — Build complex logic from simple parts
-4. **Portable** — Compiles to JSON (runs anywhere)
-5. **Domain-agnostic** — Core language is reusable
-6. **Type-aware** — Built-in type filtering and matching
+4. **Portable** — Compiles to JSON, runs anywhere
+5. **Domain-agnostic** — Core language is reusable across problem domains
+6. **Type-aware** — Built-in type predicates and matching
 
 ## Extension Points
 
-The core language can be extended with domain-specific keywords and primitives. For example, the routing domain adds:
+The core language can be extended with domain-specific keywords. Extensions add new bare words that resolve as domain built-ins (after local variables, before reserved keywords). For example, an HTTP routing domain might add:
 
-- HTTP primitives: `headers`, `query`, `cookies`, `method`, `path`, `host`, etc.
-- Routing mutations: `rewrite`, `redirect`, `respond`
+- Request fields: `headers`, `query`, `cookies`, `method`, `path`, `host`, `status`
+- Mutations: `rewrite`, `redirect`, `respond`
 - Pattern matching: `path-match`, `domain-match`
 - Configuration: `config`, `env`
 
-See [language.md](language.md) for the full routing extension.
+Domain extensions do not modify the core grammar or bytecode format — they simply register additional bare words that the compiler recognizes.

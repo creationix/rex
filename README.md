@@ -22,6 +22,19 @@ You have structured data. JSON handles it fine. Then you need a little logic —
 
 Rex is the fourth option. Your data stays JSON. You add `()` where you need logic. The compiled output is JSON arrays — storable, serializable, diffable.
 
+
+## Core Language
+
+Rex is desgined to be used in various problem domains with a flexible core.
+
+- `when`, `if`, `else-when`, `else-if`, `else` - conditional control flow
+- `match`, `string`, `number`, `boolean`, `array`, `object` - type and value matching
+- `read`, `write` - path traversal reads and writes for objects/arrays
+- `get` ,`set`, name, name`=` - local variables
+- `gt`, `lt`, `gte`, `lte`, `eq`, `neq` - comparision
+- `add`, `sub`, `mul`, `div`, `mod`, `neg` - arithmetic
+- `join`, `split`, `upper`, `lower`, `starts-with`, `ends-with`, `contains` - string operations
+
 ## Example
 
 A common pattern: hundreds of named actions, each mapped to a handler. In plain JSON, every action needs its own rule:
