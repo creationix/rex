@@ -10,6 +10,7 @@
 		"url": "https://github.com/creationix/rex",
 		"directory": "packages/vscode-rex"
 	},
+	"main": "./dist/extension.js",
 	"engines": {
 		"vscode": "^1.75.0"
 	},
@@ -28,6 +29,17 @@
 					".rex"
 				],
 				"configuration": "./language-configuration.json"
+			},
+			{
+				"id": "rexc",
+				"aliases": [
+					"Rex Compact Encoding",
+					"rexc"
+				],
+				"extensions": [
+					".rexc"
+				],
+				"configuration": "./rexc-language-configuration.json"
 			}
 		],
 		"grammars": [
@@ -59,12 +71,45 @@
 				"embeddedLanguages": {
 					"meta.embedded.block.rex": "rex"
 				}
+			},
+			{
+				"language": "rexc",
+				"scopeName": "source.rexc",
+				"path": "./syntaxes/rexc.tmLanguage.json"
+			},
+			{
+				"scopeName": "markdown.rexc.codeblock",
+				"path": "./syntaxes/rexc-markdown.tmLanguage.json",
+				"injectTo": [
+					"text.html.markdown"
+				],
+				"embeddedLanguages": {
+					"meta.embedded.block.rexc": "rexc"
+				}
+			},
+			{
+				"scopeName": "inline.rexc.tagged-template",
+				"path": "./syntaxes/rexc-typescript.tmLanguage.json",
+				"injectTo": [
+					"source.ts",
+					"source.tsx",
+					"source.js",
+					"source.jsx",
+					"text.html.markdown"
+				],
+				"embeddedLanguages": {
+					"meta.embedded.block.rexc": "rexc"
+				}
 			}
 		]
 	},
 	"scripts": {
-		"package": "bunx @vscode/vsce package --no-dependencies",
-		"publish": "bunx @vscode/vsce publish --no-dependencies"
+		"build": "bun build src/extension.ts --outfile dist/extension.js --external vscode --format cjs --target node",
+		"package": "bun run build && bunx @vscode/vsce package --no-dependencies",
+		"publish": "bun run build && bunx @vscode/vsce publish --no-dependencies"
+	},
+	"devDependencies": {
+		"@types/vscode": "^1.75.0"
 	},
 	"private": true
 }
