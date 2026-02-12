@@ -10,10 +10,10 @@ See [rex.ohm](packages/rex-lang/rex.ohm) for the complete Ohm grammar.
 
 ```
 Program   = Expr*
-Expr      = Binding | Call | Atom
-Binding   = bareWord "=" Expr
+Expr      = LValue "=" Expr | Call | Atom
+LValue    = bareWord ("." bareWord)*
 Call      = "(" Expr+ ")"
-Atom      = String | Number | Bytes | Boolean | Null | Undefined | Array | Object | bareWord
+Atom      = String | Number | Bytes | Boolean | Null | Undefined | Array | Object | LValue
 ```
 
 ### Data Types
@@ -26,7 +26,8 @@ Atom      = String | Number | Bytes | Boolean | Null | Undefined | Array | Objec
 - **Undefined**: `undefined` (represents missing/absent values)
 - **Arrays**: `[1 2 3]`, `[1, 2, 3,]`, `["a" "b" "c"]`
 - **Objects**: `{key: value}`, `{a: 1, b: 2}`, `{"key": 3, 200: "OK"}`
-- **Bare words**: Identifiers with dots/hyphens: `foo`, `foo.bar`, `some-value`
+- **Bare words**: Identifiers with dashes/underscores: `foo`, `foo-bar`, `some_value`
+- **Dotted paths**: Navigation into nested structures: `foo.bar`, `user.name.first`
 
 ### Containers
 
@@ -85,69 +86,129 @@ To embed a data array that happens to start with a `$`-prefixed string, use `lit
 (literal ["$not-code" 1 2])  → ["$literal", ["$not-code", 1, 2]]
 ```
 
-### Bare Word Resolution
+### Places
 
-Bare words in value position resolve in this order:
+Places are the central concept in Rex. A `$$`-prefixed array represents a **place** — a reference to a location in data. The same place can be read from or written to depending on context:
 
-1. **Local variable** (bound by `=` or `set`) → `["$get", "name"]`
-2. **Domain built-in** (e.g. `headers` in an HTTP context) → `["$name"]`
-3. **Reserved keyword** — always resolves to its keyword meaning
-
-Variables shadow domain built-ins. Reserved keywords cannot be shadowed.
-
-### Navigable Expressions
-
-When a non-keyword bare word appears in call position (first element of a `()`), the call compiles to a `$read` expression:
-
-```rex
-// Variable in call position
-actions = {a: 1, b: 2}
-(actions 'a')             → ["$read", ["$get", "actions"], "a"]
-
-// Domain built-in in call position
-(headers 'x-action')      → ["$read", ["$headers"], "x-action"]
-
-// Keyword in call position — normal opcode, not $read
-(add 1 2)                 → ["$add", 1, 2]
+```
+["$$name"]                    place: variable name
+["$$name", "key"]             place: key in variable name
+["$$name", "k1", "k2"]       place: k1.k2 in variable name
 ```
 
-Any expression resolving to an object or array can be navigated this way. The compiler emits `$read` wrapping the resolved expression.
+When a place appears in value context, it is **read**. When it appears as the first argument to `$set` or `$delete`, it is **written** or **deleted**:
+
+```json
+["$add", ["$$x"], 1]                  // read x, add 1
+["$set", ["$$x"], 42]                 // write 42 to x
+["$set", ["$$foo", "bar"], 100]       // write 100 to foo.bar
+["$delete", ["$$foo", "bar"]]         // delete foo.bar
+```
+
+Domain built-ins use the same pattern with a single `$`:
+
+```json
+["$headers", "content-type"]                         // read header
+["$set", ["$headers", "content-type"], "text/html"]  // write header
+```
+
+Single `$` for domain built-ins, `$$` for user variables. Both are navigable, both work as places.
+
+### Dot Navigation
+
+Dots in the source language are path separators. A dotted path compiles to a place with multiple keys:
+
+```rex
+x              → ["$$x"]
+x.bar          → ["$$x", "bar"]
+x.bar.baz      → ["$$x", "bar", "baz"]
+self.name      → ["$self", "name"]
+headers.host   → ["$headers", "host"]
+```
+
+Dashes and underscores remain part of the name:
+
+```rex
+foo-bar        → ["$$foo-bar"]
+my_var.key     → ["$$my_var", "key"]
+```
 
 ### Bindings
 
-`name = expr` is sugar for `(set name expr)`:
+`lvalue = expr` is sugar for `(set lvalue expr)`. The left side is a dotted path:
 
 ```rex
-x = 42               → ["$set", "x", 42]
-(set x 42)           → ["$set", "x", 42]
-x                    → ["$get", "x"]
-(get x)              → ["$get", "x"]
+x = 42               → ["$set", ["$$x"], 42]
+foo.bar = 100        → ["$set", ["$$foo", "bar"], 100]
+(set x 42)           → ["$set", ["$$x"], 42]
+(set foo.bar 100)    → ["$set", ["$$foo", "bar"], 100]
 ```
-
-Variable names in `get` and `set` are always bare words (unquoted identifiers), never expressions.
 
 `$set` returns the value being set, which allows binding in conditions:
 
 ```rex
-(when x=(read obj 'key')
-  (process x))
+(when x=(get-data)
+  (use x))
 // x is bound AND the when checks if the result is not undefined
+
+(when obj.key=(lookup 'something')
+  (use obj.key))
+// writes to obj.key AND checks the result
 ```
+
+### Navigable Expressions
+
+When a non-keyword bare word or dotted path appears in call position (first element of a `()`), the arguments become additional path keys:
+
+```rex
+// Variable in call position
+actions = {a: 1, b: 2}
+(actions 'a')             → ["$$actions", "a"]
+
+// Dotted path in call position
+(config.routes 'api')     → ["$$config", "routes", "api"]
+
+// Domain built-in in call position
+(headers 'x-action')      → ["$headers", "x-action"]
+
+// Keyword in call position — normal opcode, not navigation
+(add 1 2)                 → ["$add", 1, 2]
+```
+
+### Bare Word Resolution
+
+Bare words resolve in this order:
+
+1. **Local variable** (bound by `=` or `set`) → `["$$name", ...]`
+2. **Domain built-in** (e.g. `headers` in an HTTP context) → `["$name", ...]`
+3. **Reserved keyword** — always resolves to its keyword meaning
+
+Variables shadow domain built-ins. Reserved keywords cannot be shadowed.
 
 ### Implicit Self
 
 `self` refers to the implicit value in the current scope. It is set by `when`, `if`, each `match` arm, and other scope-creating forms:
 
 ```rex
-(when (read obj 'key')
+(when (some-expr)
   (process self))
 
-(when x=(read obj 'key')
+(when x=(some-expr)
   (process x)              // x and self are both the value
   (process self))
 ```
 
 Named bindings are aliases for `self` — useful to avoid shadowing in nested scopes.
+
+`self` is navigable like any other place:
+
+```rex
+(match user
+  object (concat self.name " <" self.email ">")
+  else   "unknown")
+
+// self.name → ["$self", "name"]
+```
 
 ### Object Key Semantics
 
@@ -175,9 +236,9 @@ In object literals, bare words are literal string keys, not variable references:
 Multi-expression bodies auto-wrap in `$do`. Inline keywords (`else`, `else-when`, `else-if`) split the body into branches that compile to nested forms:
 
 ```rex
-(when x=(get primary)
+(when x=(get-primary)
     (use x)
-  else-when y=(get fallback)
+  else-when y=(get-fallback)
     (use y)
   else
     (use-default))
@@ -186,10 +247,10 @@ Multi-expression bodies auto-wrap in `$do`. Inline keywords (`else`, `else-when`
 Compiles to:
 
 ```json
-["$when", ["$set", "x", ["$get", "primary"]],
-  ["$use", ["$get", "x"]],
-  ["$when", ["$set", "y", ["$get", "fallback"]],
-    ["$use", ["$get", "y"]],
+["$when", ["$set", ["$$x"], ["$get-primary"]],
+  ["$use", ["$$x"]],
+  ["$when", ["$set", ["$$y"], ["$get-fallback"]],
+    ["$use", ["$$y"]],
     ["$use-default"]]]
 ```
 
@@ -213,7 +274,7 @@ Dispatches on a value using alternating predicate/body pairs. Each predicate is 
 Compiles to:
 
 ```json
-["$match", ["$get", "value"],
+["$match", ["$$value"],
   ["$as-string"], ["$handle-string"],
   ["$as-number"], ["$handle-number"],
   ["$is", "GET"], ["$handle-get"],
@@ -232,7 +293,7 @@ How match labels compile:
 | Literal (`'GET'`, `42`, `null`, ...) | `["$is", value]` | Equality check |
 | `else` | *(trailing body, no predicate)* | Unconditional fallback |
 
-Each branch body has `self` set to the match subject. The `else` body also receives the original match subject as `self`.
+Each branch body has `self` set to the match subject.
 
 #### `do`
 
@@ -246,7 +307,7 @@ Sequences multiple expressions, returns the last:
 ```
 
 ```json
-["$do", ["$set", "x", 10], ["$set", "y", 20], ["$add", ["$get", "x"], ["$get", "y"]]]
+["$do", ["$set", ["$$x"], 10], ["$set", ["$$y"], 20], ["$add", ["$$x"], ["$$y"]]]
 ```
 
 #### `coalesce`
@@ -254,11 +315,11 @@ Sequences multiple expressions, returns the last:
 Returns the first non-`undefined` value. `null` is considered a value:
 
 ```rex
-(coalesce (get primary) (get fallback) "default")
+(coalesce primary fallback "default")
 ```
 
 ```json
-["$coalesce", ["$get", "primary"], ["$get", "fallback"], "default"]
+["$coalesce", ["$$primary"], ["$$fallback"], "default"]
 ```
 
 ### Variables
@@ -266,24 +327,24 @@ Returns the first non-`undefined` value. `null` is considered a value:
 | Keyword | Usage | Bytecode |
 |---|---|---|
 | `self` | bare word | `["$self"]` |
-| `get` | `(get name)` | `["$get", "name"]` |
-| `set` | `(set name value)` | `["$set", "name", value]` |
+| `set` | `(set lvalue expr)` | `["$set", place, expr]` |
+
+`self` is the implicit value in the current scope. `set` writes to a place and returns the value.
 
 ### Containers
 
 | Keyword | Usage | Bytecode |
 |---|---|---|
-| `read` | `(read root ...keys)` | `["$read", root, keys...]` |
-| `write` | `(write root ...keys value)` | `["$write", root, keys..., value]` |
-| `delete` | `(delete root ...keys)` | `["$delete", root, keys...]` |
+| `delete` | `(delete lvalue)` | `["$delete", place]` |
 
 ```rex
 obj = {a: 1, b: {c: 2}}
 
-(read obj 'a')            // 1
-(read obj 'b' 'c')        // 2
-(write obj 'd' 4)         // {a: 1, b: {c: 2}, d: 4}
-(delete obj 'a')          // {b: {c: 2}}
+obj.a                     // 1 — read from place
+obj.b.c                   // 2 — nested read
+
+obj.d = 4                 // write to place
+(delete obj.a)            // delete at place
 ```
 
 ### Arithmetic
@@ -379,9 +440,9 @@ All reserved keywords, grouped by category:
 
 **Control flow:** `when`, `if`, `else`, `else-when`, `else-if`, `match`, `do`, `coalesce`
 
-**Variables:** `self`, `get`, `set`
+**Variables:** `self`, `set`
 
-**Containers:** `read`, `write`, `delete`
+**Containers:** `delete`
 
 **Arithmetic:** `add`, `sub`, `mul`, `div`, `mod`, `neg`
 
@@ -402,15 +463,15 @@ Rex is designed to be:
 3. **Composable** — Build complex logic from simple parts
 4. **Portable** — Compiles to JSON, runs anywhere
 5. **Domain-agnostic** — Core language is reusable across problem domains
-6. **Type-aware** — Built-in type predicates and matching
+6. **Uniform** — Places are the single model for reading, writing, and navigating data
 
 ## Extension Points
 
-The core language can be extended with domain-specific keywords. Extensions add new bare words that resolve as domain built-ins (after local variables, before reserved keywords). For example, an HTTP routing domain might add:
+The core language can be extended with domain-specific keywords. Extensions register new bare words as domain built-ins that resolve as navigable places with a single `$` prefix. For example, an HTTP routing domain might add:
 
 - Request fields: `headers`, `query`, `cookies`, `method`, `path`, `host`, `status`
-- Mutations: `rewrite`, `redirect`, `respond`
+- Mutations: `(set method 'POST')`, `(set path '/new')`
 - Pattern matching: `path-match`, `domain-match`
 - Configuration: `config`, `env`
 
-Domain extensions do not modify the core grammar or bytecode format — they simply register additional bare words that the compiler recognizes.
+Domain extensions do not modify the core grammar or bytecode format — they register navigable places and opcodes that the compiler recognizes.
