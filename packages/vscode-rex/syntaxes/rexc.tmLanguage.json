@@ -1,0 +1,222 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "Rex Compact Encoding",
+	"scopeName": "source.rexc",
+	"patterns": [{ "include": "#value" }],
+	"repository": {
+		"value": {
+			"patterns": [
+				{ "include": "#comment-line" },
+				{ "include": "#comment-block" },
+				{ "include": "#annotation-line" },
+				{ "include": "#call" },
+				{ "include": "#array" },
+				{ "include": "#object" },
+				{ "include": "#binary" },
+				{ "include": "#do-container" },
+				{ "include": "#set-container" },
+				{ "include": "#string-container" },
+				{ "include": "#count-modifier" },
+				{ "include": "#index-modifier" },
+				{ "include": "#query-opcode" },
+				{ "include": "#action-opcode" },
+				{ "include": "#navigated-variable" },
+				{ "include": "#variable" },
+				{ "include": "#navigated-reference" },
+				{ "include": "#reference" },
+				{ "include": "#positive-integer" },
+				{ "include": "#negative-integer" },
+				{ "include": "#decimal" },
+				{ "include": "#bare-string" },
+				{ "include": "#pointer" },
+				{ "include": "#annotation-trailing" }
+			]
+		},
+
+		"comment-line": {
+			"match": "//.*$",
+			"name": "comment.line.double-slash.rexc"
+		},
+		"comment-block": {
+			"begin": "/\\*",
+			"end": "\\*/",
+			"name": "comment.block.rexc"
+		},
+		"annotation-line": {
+			"match": "^[ \\t]*[─│┌┐└┘├┤┬┴┼╭╮╰╯║═╔╗╚╝╠╣╦╩╬░▒▓█▄▀].*$",
+			"name": "comment.line.annotation.rexc"
+		},
+		"annotation-trailing": {
+			"match": "[─│┌┐└┘├┤┬┴┼╭╮╰╯║═╔╗╚╝╠╣╦╩╬░▒▓█▄▀].*$",
+			"name": "comment.line.annotation.rexc"
+		},
+
+		"call": {
+			"begin": "([-\\w]*)(\\()",
+			"end": "(\\))",
+			"beginCaptures": {
+				"1": { "name": "comment.block.length.rexc" },
+				"2": { "name": "punctuation.section.parens.begin.rexc" }
+			},
+			"endCaptures": {
+				"1": { "name": "punctuation.section.parens.end.rexc" }
+			},
+			"patterns": [{ "include": "#value" }]
+		},
+		"array": {
+			"begin": "([-\\w]*)(\\[)",
+			"end": "(\\])",
+			"beginCaptures": {
+				"1": { "name": "comment.block.length.rexc" },
+				"2": { "name": "punctuation.section.brackets.begin.rexc" }
+			},
+			"endCaptures": {
+				"1": { "name": "punctuation.section.brackets.end.rexc" }
+			},
+			"patterns": [{ "include": "#value" }]
+		},
+		"object": {
+			"begin": "([-\\w]*)(\\{)",
+			"end": "(\\})",
+			"beginCaptures": {
+				"1": { "name": "comment.block.length.rexc" },
+				"2": { "name": "punctuation.section.braces.begin.rexc" }
+			},
+			"endCaptures": {
+				"1": { "name": "punctuation.section.braces.end.rexc" }
+			},
+			"patterns": [{ "include": "#value" }]
+		},
+		"binary": {
+			"begin": "([-\\w]*)(<)",
+			"end": "(>)",
+			"beginCaptures": {
+				"1": { "name": "comment.block.length.rexc" },
+				"2": { "name": "punctuation.section.angle.begin.rexc" }
+			},
+			"endCaptures": {
+				"1": { "name": "punctuation.section.angle.end.rexc" }
+			},
+			"contentName": "string.other.binary.rexc"
+		},
+
+		"do-container": {
+			"match": "([-\\w]*)(;)",
+			"captures": {
+				"1": { "name": "comment.block.length.rexc" },
+				"2": { "name": "keyword.control.do.rexc" }
+			}
+		},
+		"set-container": {
+			"match": "([-\\w]*)(=)",
+			"captures": {
+				"1": { "name": "comment.block.length.rexc" },
+				"2": { "name": "keyword.operator.assignment.rexc" }
+			}
+		},
+		"string-container": {
+			"match": "([-\\w]*)(,)",
+			"captures": {
+				"1": { "name": "comment.block.length.rexc" },
+				"2": { "name": "string.quoted.other.delimiter.rexc" }
+			}
+		},
+
+		"count-modifier": {
+			"match": "([-\\w]*)(#)",
+			"captures": {
+				"1": { "name": "keyword.operator.count.prefix.rexc" },
+				"2": { "name": "keyword.operator.count.tag.rexc" }
+			}
+		},
+		"index-modifier": {
+			"match": "([-\\w]*)(\\|)",
+			"captures": {
+				"1": { "name": "keyword.operator.index.prefix.rexc" },
+				"2": { "name": "keyword.operator.index.tag.rexc" }
+			}
+		},
+
+		"query-opcode": {
+			"match": "([-\\w]*)(\\?)",
+			"captures": {
+				"1": { "name": "keyword.control.query.rexc" },
+				"2": { "name": "keyword.control.query.rexc" }
+			}
+		},
+		"action-opcode": {
+			"match": "([-\\w]*)(!)",
+			"captures": {
+				"1": { "name": "entity.name.function.action.rexc" },
+				"2": { "name": "entity.name.function.action.rexc" }
+			}
+		},
+
+		"navigated-variable": {
+			"match": "([-\\w]*)(\\.)",
+			"captures": {
+				"1": { "name": "variable.other.rexc" },
+				"2": { "name": "variable.other.rexc" }
+			}
+		},
+		"variable": {
+			"match": "([-\\w]*)(\\$)",
+			"captures": {
+				"1": { "name": "variable.other.rexc" },
+				"2": { "name": "variable.other.rexc" }
+			}
+		},
+		"navigated-reference": {
+			"match": "([-\\w]*)(/)",
+			"captures": {
+				"1": { "name": "constant.language.rexc" },
+				"2": { "name": "constant.language.rexc" }
+			}
+		},
+		"reference": {
+			"match": "([-\\w]*)(@)",
+			"captures": {
+				"1": { "name": "constant.language.rexc" },
+				"2": { "name": "constant.language.rexc" }
+			}
+		},
+
+		"positive-integer": {
+			"match": "([-\\w]*)(\\+)",
+			"captures": {
+				"1": { "name": "constant.numeric.rexc" },
+				"2": { "name": "constant.numeric.rexc" }
+			}
+		},
+		"negative-integer": {
+			"match": "([-\\w]*)(~)",
+			"captures": {
+				"1": { "name": "constant.numeric.rexc" },
+				"2": { "name": "constant.numeric.rexc" }
+			}
+		},
+		"decimal": {
+			"match": "([-\\w]*)(\\*)",
+			"captures": {
+				"1": { "name": "constant.numeric.rexc" },
+				"2": { "name": "constant.numeric.rexc" }
+			}
+		},
+
+		"bare-string": {
+			"match": "([-\\w]*)(:)",
+			"captures": {
+				"1": { "name": "string.unquoted.bare.rexc" },
+				"2": { "name": "string.unquoted.bare.rexc" }
+			}
+		},
+
+		"pointer": {
+			"match": "([-\\w]*)(\\^)",
+			"captures": {
+				"1": { "name": "keyword.operator.pointer.rexc" },
+				"2": { "name": "keyword.operator.pointer.rexc" }
+			}
+		}
+	}
+}
