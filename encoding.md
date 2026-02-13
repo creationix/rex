@@ -34,39 +34,39 @@ Digits form a **big-endian base-64 integer**. Zero is **no digits** (zero-length
 
 ### Scalars
 
-| Tag | Type | Digits encode |
-|-----|------|---------------|
-| `+` | Positive integer | Value |
-| `~` | Negative integer | -1 - Value |
-| `*` | Decimal | Zigzag-encoded power of 10 (consumes next integer value) |
-| `:` | Bare string | The string content itself |
-| `?` | Query opcode | Opcode ID |
-| `!` | Action opcode | Opcode ID |
-| `@` | Reference | Reference ID |
-| `$` | Variable | The variable name itself |
-| `.` | Navigated variable | The variable name (consumes next value as key) |
-| `/` | Navigated reference | Reference ID (consumes next value as key) |
-| `^` | Pointer | Byte offset to another value |
+| Tag | Type                | Digits encode                                            |
+|-----|---------------------|----------------------------------------------------------|
+| `+` | Positive integer    | Value                                                    |
+| `~` | Negative integer    | -1 - Value                                               |
+| `*` | Decimal             | Zigzag-encoded power of 10 (consumes next integer value) |
+| `:` | Bare string         | The string content itself                                |
+| `?` | Query opcode        | Opcode ID                                                |
+| `!` | Action opcode       | Opcode ID                                                |
+| `@` | Reference           | Reference ID                                             |
+| `$` | Variable            | The variable name itself                                 |
+| `.` | Navigated variable  | The variable name (consumes next value as key)           |
+| `/` | Navigated reference | Reference ID (consumes next value as key)                |
+| `^` | Pointer             | Byte offset to another value                             |
 
 ### Containers
 
-| Delimiters | Type | Body contains |
-|------------|------|---------------|
-| `[` `]` | Array | Concatenated values |
-| `{` `}` | Object | Alternating key, value pairs |
-| `(` `)` | Call | First value determines call type |
-| `<` `>` | Binary | Base64url-encoded bytes |
-| `,` (no close) | String | Raw UTF-8 bytes |
-| `;` (no close) | Do | Sequenced expressions |
-| `=` (no close) | Set | Place, then value |
+| Delimiters     | Type   | Body contains                    |
+|----------------|--------|----------------------------------|
+| `[` `]`        | Array  | Concatenated values              |
+| `{` `}`        | Object | Alternating key, value pairs     |
+| `(` `)`        | Call   | First value determines call type |
+| `<` `>`        | Binary | Base64url-encoded bytes          |
+| `,` (no close) | String | Raw UTF-8 bytes                  |
+| `;` (no close) | Do     | Sequenced expressions            |
+| `=` (no close) | Set    | Place, then value                |
 
 Paired containers use closing delimiters for visual coherence and error checking. Unpaired containers (`,`, `;`, `=`) rely on the length prefix — no closing delimiter needed.
 
 ### Modifiers
 
-| Tag | Type | Digits encode |
-|-----|------|---------------|
-| `#` | Count | Item count (wraps next value) |
+| Tag  | Type  | Digits encode                                           |
+|------|-------|---------------------------------------------------------|
+| `#`  | Count | Item count (wraps next value)                           |
 | `\|` | Index | Pointer width − 1 (wraps next value with pointer array) |
 
 ## Integers
@@ -138,29 +138,29 @@ Two opcode families split by semantics. `do` and `set` have their own dedicated 
 
 Tests, conditions, and lookups — things that check and return value or `undefined`. Used inside `()` calls. Domain query opcodes extend from 16+.
 
-| ID | Opcode | Enc. | | ID | Opcode | Enc. |
-|----|--------|------|-|----|--------|------|
-| 0 | `when` | `?` | | 8 | `gt` | `8?` |
-| 1 | `unless` | `1?` | | 9 | `gte` | `9?` |
-| 2 | `alt` | `2?` | | 10 | `lt` | `a?` |
-| 3 | `all` | `3?` | | 11 | `lte` | `b?` |
-| 4 | `eq` | `4?` | | 12 | `string` | `c?` |
-| 5 | `neq` | `5?` | | 13 | `number` | `d?` |
-| 6 | `boolean` | `6?` | | 14 | `object` | `e?` |
-| 7 | `array` | `7?` | | 15 | `bytes` | `f?` |
+| ID | Opcode      | Enc. |  | ID | Opcode   | Enc. |
+|----|-------------|------|--|----|----------|------|
+| 0  | `when`      | `?`  |  | 8  | `gt`     | `8?` |
+| 1  | `unless`    | `1?` |  | 9  | `gte`    | `9?` |
+| 2  | `alt`       | `2?` |  | 10 | `lt`     | `a?` |
+| 3  | `all`       | `3?` |  | 11 | `lte`    | `b?` |
+| 4  | `eq`        | `4?` |  | 12 | `string` | `c?` |
+| 5  | `neq`     m | `5?` |  | 13 | `number` | `d?` |
+| 6  | `boolean`   | `6?` |  | 14 | `object` | `e?` |
+| 7  | `array`     | `7?` |  | 15 | `bytes`  | `f?` |
 
 ### Action opcodes (`!`)
 
 Computation and mutation — things that do work. Used inside `()` calls. Domain action opcodes extend from 12+.
 
-| ID | Opcode | Enc. | | ID | Opcode | Enc. |
-|----|--------|------|-|----|--------|------|
-| 0 | `add` | `!` | | 6 | `and` | `6!` |
-| 1 | `sub` | `1!` | | 7 | `or` | `7!` |
-| 2 | `mul` | `2!` | | 8 | `xor` | `8!` |
-| 3 | `div` | `3!` | | 9 | `not` | `9!` |
-| 4 | `mod` | `4!` | | 10 | `delete` | `a!` |
-| 5 | `neg` | `5!` | | 11 | `literal` | `b!` |
+| ID | Opcode | Enc. |  | ID | Opcode    | Enc. |
+|----|--------|------|--|----|-----------|------|
+| 0  | `add`  | `!`  |  | 6  | `and`     | `6!` |
+| 1  | `sub`  | `1!` |  | 7  | `or`      | `7!` |
+| 2  | `mul`  | `2!` |  | 8  | `xor`     | `8!` |
+| 3  | `div`  | `3!` |  | 9  | `not`     | `9!` |
+| 4  | `mod`  | `4!` |  | 10 | `delete`  | `a!` |
+| 5  | `neg`  | `5!` |  | 11 | `literal` | `b!` |
 
 The most common query (`when` = `?`) and action (`add` = `!`) each encode as a single byte.
 
@@ -168,13 +168,13 @@ The most common query (`when` = `?`) and action (`add` = `!`) each encode as a s
 
 Pre-assigned constants. IDs 5+ are domain-defined.
 
-| ID | Value | Encoding |
-|----|-------|----------|
-| 0 | `true` | `@` |
-| 1 | `false` | `1@` |
-| 2 | `null` | `2@` |
-| 3 | `undefined` | `3@` |
-| 4 | `self` | `4@` |
+| ID | Value       | Encoding |
+|----|-------------|----------|
+| 0  | `true`      | `@`      |
+| 1  | `false`     | `1@`     |
+| 2  | `null`      | `2@`     |
+| 3  | `undefined` | `3@`     |
+| 4  | `self`      | `4@`     |
 | 5+ | Domain-defined | `5@`, `6@`, ... |
 
 For single-key navigation into a domain reference, use `/` — it works like `@` but consumes the next value as a key:
@@ -215,8 +215,8 @@ my-obj.key:   │ ["$$my-obj", "key"]   │ my-obj.key
 This is a shortcut for the common case. For multi-key paths or dynamic keys, use a call:
 
 ```rexc
-e(user$address:street:) │ ["$$user", "address", "street"] │ user.address.street
-8(table$key$)           │ ["$$table", ["$$key"]]          │ table[key]
+e(user$address:street:) │ ["$$user","address","street"] │ user.address.street
+8(table$key$)           │ ["$$table",["$$key"]]         │ table[key]
 ```
 
 ## Do
@@ -276,6 +276,7 @@ h{color:red:size:G+} │ {color: "red", size: 42}
 Breakdown of `h{color:red:size:G+}`:
 
 ```rexc
+// A simple object
 h{color:red:size:G+}
 ├╯╰─┬──╯╰┬─╯╰─┬─╯├╯╰─ object closer
 │   │    │    │  ╰─── val 42
@@ -347,10 +348,11 @@ Avoid pointer chains — always point directly to the final value, not to anothe
 
 ```rexc
 6[1^^11+]
-  ├╯│╰┬╯
-  │ │ ╰── integer 65 (canonical value)
-  │ ╰──── pointer, offset 0 → 11+ (immediately after)
-  ╰────── pointer, offset 1 → 11+ (1 byte after, skipping the ^)
+├╯├╯│╰┬╯╰─ array closer
+│ │ │ ╰─── integer 65 (canonical value)
+│ │ ╰───── pointer, offset 0 → 11+ (immediately after)
+│ ╰─────── pointer, offset 1 → 11+ (1 byte after, skipping the ^)
+╰───────── array prefix(6) and opener
 ```
 
 ## Indexes
@@ -368,7 +370,7 @@ Count alone annotates a container without indexing. Count + index enables fast a
 ```rexc
 3#6[1+2+3+]               │ count only (3 items)
 3#|0246[1+2+3+]           │ indexed: O(1) array access
-2#|0ah{color:red:size:G+} │ indexed: O(log n) object lookup
+2#|0ah{color:red:size:G+} │ indexed: O(log2 n) object lookup
 ```
 
 ### Indexed Array
@@ -401,7 +403,7 @@ For objects, pointers point to keys, sorted by key value for binary search. The 
 ╰────────────────── 2 pairs
 ```
 
-To look up `"size"`: binary search the 2 sorted pointers, compare the key at each offset. One comparison finds `size:` at body offset 10.
+To look up `size`: binary search the 2 sorted pointers, compare the key at each offset. One comparison finds `size:` at body offset 10.
 
 ## Worked Examples
 

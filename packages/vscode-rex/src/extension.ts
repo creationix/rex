@@ -2,11 +2,14 @@ import * as vscode from "vscode";
 import { TOKEN_TYPES, tokenize, type Token } from "./rexc-tokenizer";
 
 const ANNOTATION_TYPE = TOKEN_TYPES.indexOf("annotation");
+const BYTE_LENGTH_TYPE = TOKEN_TYPES.indexOf("byteLength");
+const NUMBER_TYPE = TOKEN_TYPES.indexOf("number");
 
 const legend = new vscode.SemanticTokensLegend(TOKEN_TYPES as unknown as string[]);
 
 const annotationDecoration = vscode.window.createTextEditorDecorationType({
 	fontStyle: "normal",
+	color: new vscode.ThemeColor("editorLineNumber.foreground"),
 });
 
 const REXC_FENCE = /^```rexc\s*$/gm;
@@ -52,14 +55,15 @@ class RexcSemanticTokenProvider
 
 		for (const block of blocks) {
 			for (const token of block.tokens) {
-				// Skip annotations — let TextMate handle color,
-				// decoration handles fontStyle override
+				// Skip annotations — decoration handles both color and fontStyle
 				if (token.type === ANNOTATION_TYPE) continue;
+				const type =
+					token.type === BYTE_LENGTH_TYPE ? NUMBER_TYPE : token.type;
 				builder.push(
 					token.line + block.lineOffset,
 					token.char,
 					token.length,
-					token.type,
+					type,
 					0,
 				);
 			}
@@ -103,17 +107,24 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// Apply non-italic decoration to annotation ranges
-	if (vscode.window.activeTextEditor) {
-		updateAnnotationDecorations(vscode.window.activeTextEditor);
+	function updateAllVisible() {
+		for (const editor of vscode.window.visibleTextEditors) {
+			updateAnnotationDecorations(editor);
+		}
 	}
+	updateAllVisible();
+	// Re-apply after a short delay so decorations survive initial token processing
+	setTimeout(updateAllVisible, 500);
 	context.subscriptions.push(
 		vscode.window.onDidChangeActiveTextEditor((editor) => {
 			if (editor) updateAnnotationDecorations(editor);
 		}),
+		vscode.window.onDidChangeVisibleTextEditors(updateAllVisible),
 		vscode.workspace.onDidChangeTextDocument((e) => {
-			const editor = vscode.window.activeTextEditor;
-			if (editor && editor.document === e.document) {
-				updateAnnotationDecorations(editor);
+			for (const editor of vscode.window.visibleTextEditors) {
+				if (editor.document === e.document) {
+					updateAnnotationDecorations(editor);
+				}
 			}
 		}),
 	);

@@ -7,7 +7,7 @@ const DIGIT_SET = new Set(
 const VALUE_TAGS = new Set("+~*:?!@$./^#|([{<,;=");
 
 export const TOKEN_TYPES = [
-	"comment", // 0 - length prefixes
+	"byteLength", // 0 - length prefixes
 	"keyword", // 1 - query opcodes (?), do (;)
 	"function", // 2 - action opcodes (!)
 	"variable", // 3 - variables ($, .)
@@ -18,10 +18,11 @@ export const TOKEN_TYPES = [
 	"modifier", // 8 - count (#), index (|)
 	"annotation", // 9 - line-drawing annotations
 	"objectKey", // 10 - object keys
+	"indexData", // 11 - pointer array index data
 ] as const;
 
 const T = {
-	comment: 0,
+	byteLength: 0,
 	keyword: 1,
 	function: 2,
 	variable: 3,
@@ -32,6 +33,7 @@ const T = {
 	modifier: 8,
 	annotation: 9,
 	objectKey: 10,
+	indexData: 11,
 } as const;
 
 export interface Token {
@@ -86,13 +88,21 @@ export function tokenize(text: string): Token[] {
 				advance();
 				continue;
 			}
-			// Annotation line — line-drawing character (Box Drawing U+2500–U+257F, Block Elements U+2580–U+259F)
+			// Annotation — line-drawing character (Box Drawing U+2500–U+257F, Block Elements U+2580–U+259F)
+			// Emit each contiguous run of box chars as annotation; text between stays as TextMate comment (italic).
 			if (c >= 0x2500 && c <= 0x259f) {
-				const startLine = line;
-				const startCol = col;
-				const startPos = pos;
-				while (pos < text.length && text.charCodeAt(pos) !== 10) advance();
-				emit(startLine, startCol, pos - startPos, T.annotation);
+				const artLine = line;
+				while (pos < text.length && text.charCodeAt(pos) !== 10) {
+					if (text.charCodeAt(pos) >= 0x2500 && text.charCodeAt(pos) <= 0x259f) {
+						const runCol = col;
+						const runStart = pos;
+						while (pos < text.length && text.charCodeAt(pos) >= 0x2500 && text.charCodeAt(pos) <= 0x259f)
+							advance();
+						emit(artLine, runCol, pos - runStart, T.annotation);
+					} else {
+						advance();
+					}
+				}
 				continue;
 			}
 			// Line comment //
@@ -162,7 +172,7 @@ export function tokenize(text: string): Token[] {
 			case "<": {
 				const close = tag === "(" ? ")" : tag === "[" ? "]" : ">";
 				if (pos > prefixStart)
-					emit(prefixLine, prefixCol, pos - prefixStart, T.comment);
+					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
 				advance(); // open delimiter
 				while (pos < text.length) {
 					skipNonCode();
@@ -178,7 +188,7 @@ export function tokenize(text: string): Token[] {
 			// Object container — alternates key/value
 			case "{": {
 				if (pos > prefixStart)
-					emit(prefixLine, prefixCol, pos - prefixStart, T.comment);
+					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
 				advance(); // open delimiter
 				let isKey = true;
 				while (pos < text.length) {
@@ -201,7 +211,7 @@ export function tokenize(text: string): Token[] {
 			case ",": {
 				const byteLen = decodePrefix(text, prefixStart, pos);
 				if (pos > prefixStart)
-					emit(prefixLine, prefixCol, pos - prefixStart, T.comment);
+					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
 				advance(); // skip ,
 				emit(tagLine, tagCol, 1, T.string);
 				// Skip byteLen bytes as string content, emitting per-line tokens
@@ -229,7 +239,7 @@ export function tokenize(text: string): Token[] {
 			// Do container (body is values, parsed normally)
 			case ";":
 				if (pos > prefixStart)
-					emit(prefixLine, prefixCol, pos - prefixStart, T.comment);
+					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
 				advance();
 				emit(tagLine, tagCol, 1, T.keyword);
 				break;
@@ -237,7 +247,7 @@ export function tokenize(text: string): Token[] {
 			// Set container (body is values, parsed normally)
 			case "=":
 				if (pos > prefixStart)
-					emit(prefixLine, prefixCol, pos - prefixStart, T.comment);
+					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
 				advance();
 				emit(tagLine, tagCol, 1, T.operator);
 				break;
@@ -282,7 +292,7 @@ export function tokenize(text: string): Token[] {
 					const arrStart = pos;
 					for (let i = 0; i < arrLen && pos < text.length; i++) advance();
 					if (pos > arrStart)
-						emit(arrLine, arrCol, pos - arrStart, T.number);
+						emit(arrLine, arrCol, pos - arrStart, T.indexData);
 				}
 				parseOneValue();
 				break;
