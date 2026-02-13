@@ -46,12 +46,23 @@
 			{
 				"id": "objectKey",
 				"description": "Object key in rexc encoding"
+			},
+			{
+				"id": "indexData",
+				"description": "Pointer array index data in rexc encoding"
+			},
+			{
+				"id": "annotation",
+				"superType": "decorator",
+				"description": "Line-drawing annotations in rexc"
 			}
 		],
 		"semanticTokenScopes": [
 			{
 				"scopes": {
-					"objectKey": ["support.type.property-name"]
+					"objectKey": ["support.type.property-name"],
+					"indexData": ["entity.other.attribute-name"],
+					"annotation": ["entity.name.function.decorator"]
 				}
 			}
 		],
