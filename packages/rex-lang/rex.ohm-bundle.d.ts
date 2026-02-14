@@ -20,7 +20,6 @@ export interface RexActionDict<T> extends BaseActionDict<T> {
   Expr?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   Atom_string?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   Atom_number?: (this: NonterminalNode, arg0: NonterminalNode) => T;
-  Atom_bytes?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   Atom_boolean?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   Atom_null?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   Atom_undefined?: (this: NonterminalNode, arg0: NonterminalNode) => T;
@@ -30,8 +29,6 @@ export interface RexActionDict<T> extends BaseActionDict<T> {
   Atom?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   Array?: (this: NonterminalNode, arg0: TerminalNode, arg1: NonterminalNode, arg2: TerminalNode) => T;
   Object?: (this: NonterminalNode, arg0: TerminalNode, arg1: NonterminalNode, arg2: TerminalNode) => T;
-  Bytes?: (this: NonterminalNode, arg0: TerminalNode, arg1: NonterminalNode, arg2: TerminalNode) => T;
-  HexByte?: (this: NonterminalNode, arg0: NonterminalNode, arg1: NonterminalNode) => T;
   Pair?: (this: NonterminalNode, arg0: NonterminalNode, arg1: TerminalNode, arg2: NonterminalNode) => T;
   Any?: (this: NonterminalNode, arg0: IterationNode, arg1: IterationNode) => T;
   String?: (this: NonterminalNode, arg0: NonterminalNode) => T;

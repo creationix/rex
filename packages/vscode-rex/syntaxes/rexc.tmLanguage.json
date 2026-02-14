@@ -9,23 +9,18 @@
 				{ "include": "#comment-line" },
 				{ "include": "#comment-block" },
 				{ "include": "#annotation-line" },
+				{ "include": "#control-flow" },
 				{ "include": "#call" },
 				{ "include": "#array" },
 				{ "include": "#object" },
-				{ "include": "#binary" },
-				{ "include": "#do-container" },
-				{ "include": "#set-container" },
+					{ "include": "#set-operator" },
+				{ "include": "#delete-operator" },
 				{ "include": "#string-container" },
-				{ "include": "#count-modifier" },
-				{ "include": "#index-modifier" },
-				{ "include": "#query-opcode" },
-				{ "include": "#action-opcode" },
-				{ "include": "#navigated-variable" },
+				{ "include": "#index-marker" },
+				{ "include": "#opcode" },
 				{ "include": "#variable" },
-				{ "include": "#navigated-reference" },
 				{ "include": "#reference" },
-				{ "include": "#positive-integer" },
-				{ "include": "#negative-integer" },
+				{ "include": "#integer" },
 				{ "include": "#decimal" },
 				{ "include": "#bare-string" },
 				{ "include": "#pointer" },
@@ -51,11 +46,24 @@
 			"name": "comment.line.annotation.rexc"
 		},
 
+		"control-flow": {
+			"begin": "([-\\w]*)([?!|&]\\()",
+			"end": "(\\))",
+			"beginCaptures": {
+				"1": { "name": "constant.numeric.length.rexc" },
+				"2": { "name": "keyword.control.rexc" }
+			},
+			"endCaptures": {
+				"1": { "name": "keyword.control.rexc" }
+			},
+			"patterns": [{ "include": "#value" }]
+		},
+
 		"call": {
 			"begin": "([-\\w]*)(\\()",
 			"end": "(\\))",
 			"beginCaptures": {
-				"1": { "name": "comment.block.length.rexc" },
+				"1": { "name": "constant.numeric.length.rexc" },
 				"2": { "name": "punctuation.section.parens.begin.rexc" }
 			},
 			"endCaptures": {
@@ -67,7 +75,7 @@
 			"begin": "([-\\w]*)(\\[)",
 			"end": "(\\])",
 			"beginCaptures": {
-				"1": { "name": "comment.block.length.rexc" },
+				"1": { "name": "constant.numeric.length.rexc" },
 				"2": { "name": "punctuation.section.brackets.begin.rexc" }
 			},
 			"endCaptures": {
@@ -79,7 +87,7 @@
 			"begin": "([-\\w]*)(\\{)",
 			"end": "(\\})",
 			"beginCaptures": {
-				"1": { "name": "comment.block.length.rexc" },
+				"1": { "name": "constant.numeric.length.rexc" },
 				"2": { "name": "punctuation.section.braces.begin.rexc" }
 			},
 			"endCaptures": {
@@ -87,90 +95,50 @@
 			},
 			"patterns": [{ "include": "#value" }]
 		},
-		"binary": {
-			"begin": "([-\\w]*)(<)",
-			"end": "(>)",
-			"beginCaptures": {
-				"1": { "name": "comment.block.length.rexc" },
-				"2": { "name": "punctuation.section.angle.begin.rexc" }
-			},
-			"endCaptures": {
-				"1": { "name": "punctuation.section.angle.end.rexc" }
-			},
-			"contentName": "string.other.binary.rexc"
-		},
 
-		"do-container": {
-			"match": "([-\\w]*)(;)",
-			"captures": {
-				"1": { "name": "comment.block.length.rexc" },
-				"2": { "name": "keyword.control.do.rexc" }
-			}
-		},
-		"set-container": {
+		"set-operator": {
 			"match": "([-\\w]*)(=)",
 			"captures": {
-				"1": { "name": "comment.block.length.rexc" },
+				"1": { "name": "constant.numeric.length.rexc" },
 				"2": { "name": "keyword.operator.assignment.rexc" }
+			}
+		},
+		"delete-operator": {
+			"match": "([-\\w]*)(~)",
+			"captures": {
+				"1": { "name": "constant.numeric.length.rexc" },
+				"2": { "name": "keyword.operator.delete.rexc" }
 			}
 		},
 		"string-container": {
 			"match": "([-\\w]*)(,)",
 			"captures": {
-				"1": { "name": "comment.block.length.rexc" },
+				"1": { "name": "constant.numeric.length.rexc" },
 				"2": { "name": "string.quoted.other.delimiter.rexc" }
 			}
 		},
 
-		"count-modifier": {
+		"index-marker": {
 			"match": "([-\\w]*)(#)",
-			"captures": {
-				"1": { "name": "keyword.operator.count.prefix.rexc" },
-				"2": { "name": "keyword.operator.count.tag.rexc" }
-			}
-		},
-		"index-modifier": {
-			"match": "([-\\w]*)(\\|)",
 			"captures": {
 				"1": { "name": "keyword.operator.index.prefix.rexc" },
 				"2": { "name": "keyword.operator.index.tag.rexc" }
 			}
 		},
 
-		"query-opcode": {
-			"match": "([-\\w]*)(\\?)",
+		"opcode": {
+			"match": "([-\\w]*)(%)",
 			"captures": {
-				"1": { "name": "keyword.control.query.rexc" },
-				"2": { "name": "keyword.control.query.rexc" }
-			}
-		},
-		"action-opcode": {
-			"match": "([-\\w]*)(!)",
-			"captures": {
-				"1": { "name": "entity.name.function.action.rexc" },
-				"2": { "name": "entity.name.function.action.rexc" }
+				"1": { "name": "keyword.other.opcode.rexc" },
+				"2": { "name": "keyword.other.opcode.rexc" }
 			}
 		},
 
-		"navigated-variable": {
-			"match": "([-\\w]*)(\\.)",
-			"captures": {
-				"1": { "name": "variable.other.rexc" },
-				"2": { "name": "variable.other.rexc" }
-			}
-		},
 		"variable": {
 			"match": "([-\\w]*)(\\$)",
 			"captures": {
 				"1": { "name": "variable.other.rexc" },
 				"2": { "name": "variable.other.rexc" }
-			}
-		},
-		"navigated-reference": {
-			"match": "([-\\w]*)(/)",
-			"captures": {
-				"1": { "name": "constant.language.rexc" },
-				"2": { "name": "constant.language.rexc" }
 			}
 		},
 		"reference": {
@@ -181,15 +149,8 @@
 			}
 		},
 
-		"positive-integer": {
+		"integer": {
 			"match": "([-\\w]*)(\\+)",
-			"captures": {
-				"1": { "name": "constant.numeric.rexc" },
-				"2": { "name": "constant.numeric.rexc" }
-			}
-		},
-		"negative-integer": {
-			"match": "([-\\w]*)(~)",
 			"captures": {
 				"1": { "name": "constant.numeric.rexc" },
 				"2": { "name": "constant.numeric.rexc" }

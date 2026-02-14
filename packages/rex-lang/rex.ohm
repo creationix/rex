@@ -12,7 +12,6 @@ Rex {
   Atom
     = String -- string
     | Number -- number
-    | Bytes  -- bytes
     | Boolean -- boolean
     | Null -- null
     | Undefined -- undefined
@@ -25,12 +24,6 @@ Rex {
 
   Object
     = "{" Any<Pair> "}"
-
-  Bytes
-    = "<" Any<HexByte> ">"
-
-  HexByte
-    = hex hex
 
   Pair
     = (bareWord | String | Number) ":" Expr

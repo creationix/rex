@@ -48,9 +48,6 @@ semantics.addOperation("toJSON", {
 	decimalNumber(_neg, _intPart, _fracPart, _expPart, _signPart) {
 		return parseFloat(this.sourceString);
 	},
-	Atom_bytes(bytes) {
-		throw new Error("TODO: Atom_bytes");
-	},
 	Atom_boolean(bool) {
 		throw new Error("TODO: Atom_boolean");
 	},
@@ -74,12 +71,6 @@ semantics.addOperation("toJSON", {
 	},
 	Object(arg0, arg1, arg2) {
 		throw new Error("TODO: Object");
-	},
-	Bytes(arg0, arg1, arg2) {
-		throw new Error("TODO: Bytes");
-	},
-	HexByte(arg0, arg1) {
-		throw new Error("TODO: HexByte");
 	},
 	Pair(arg0, arg1, arg2) {
 		throw new Error("TODO: Pair");
