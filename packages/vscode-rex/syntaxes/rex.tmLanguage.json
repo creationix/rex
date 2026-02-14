@@ -47,7 +47,25 @@
 			},
 			"endCaptures": {
 				"0": { "name": "punctuation.definition.string.end.rex" }
-			}
+			},
+			"patterns": [
+				{
+					"match": "\\\\u[0-9a-fA-F]{4}",
+					"name": "constant.character.escape.unicode.rex"
+				},
+				{
+					"match": "\\\\x[0-9a-fA-F]{2}",
+					"name": "constant.character.escape.hex.rex"
+				},
+				{
+					"match": "\\\\['\"\\\\\\/bfnrt0]",
+					"name": "constant.character.escape.rex"
+				},
+				{
+					"match": "\\\\.",
+					"name": "invalid.illegal.escape.rex"
+				}
+			]
 		},
 		"string-double": {
 			"begin": "\"",
@@ -61,14 +79,41 @@
 			},
 			"patterns": [
 				{
-					"match": "\\\\.",
+					"match": "\\\\u[0-9a-fA-F]{4}",
+					"name": "constant.character.escape.unicode.rex"
+				},
+				{
+					"match": "\\\\x[0-9a-fA-F]{2}",
+					"name": "constant.character.escape.hex.rex"
+				},
+				{
+					"match": "\\\\['\"\\\\\/bfnrt0]",
 					"name": "constant.character.escape.rex"
+				},
+				{
+					"match": "\\\\.",
+					"name": "invalid.illegal.escape.rex"
 				}
 			]
 		},
 		"number": {
-			"match": "(?<![a-zA-Z_])-?\\b[0-9]+(\\.[0-9]+)?\\b",
-			"name": "constant.numeric.rex"
+			"patterns": [
+				{
+					"comment": "Hex: 0xFF, -0x20",
+					"match": "(?<![a-zA-Z_])-?\\b0[xX][0-9a-fA-F]+\\b",
+					"name": "constant.numeric.hex.rex"
+				},
+				{
+					"comment": "Binary: 0b1010",
+					"match": "(?<![a-zA-Z_])-?\\b0[bB][01]+\\b",
+					"name": "constant.numeric.binary.rex"
+				},
+				{
+					"comment": "Decimal with optional fraction and/or exponent: 42, 3.14, 1e10, 2.5e-3",
+					"match": "(?<![a-zA-Z_])-?\\b[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?\\b",
+					"name": "constant.numeric.rex"
+				}
+			]
 		},
 		"boolean": {
 			"match": "\\b(true|false)\\b",

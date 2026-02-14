@@ -88,8 +88,8 @@ This compiles to JSON bytecode. Notice the data object embeds directly — no es
     ["$set", ["$headers", "x-handler"], ["$$handler"]]]]
 ```
 
-Or in Rex's compact encoding — a single UTF-8 string, 265 bytes vs 358 for the minified JSON:
+Or in Rex's compact encoding — a single UTF-8 string, 244 bytes vs 357 for the minified JSON:
 
 ```rexc
-46;39=actions$2Z{create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profilecreate-order:d,orders/createprocess-payment:g,payments/processsend-notification:i,notifications/send}T(?u=handler$j(actions$5/x-action:)k=5/x-handler:handler$)
+(%=[0$]{create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profilecreate-order:d,orders/createprocess-payment:g,payments/processsend-notification:i,notifications/send}?(=[1$](0$(0@x-action:))i=[0@x-handler:](1$)))
 ```

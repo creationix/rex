@@ -4,18 +4,18 @@ const DIGIT_SET = new Set(
 );
 
 // Tags that can start a value (excludes closing delimiters)
-const VALUE_TAGS = new Set("+~*:?!@$./^#|([{<,;=");
+const VALUE_TAGS = new Set("+*:%@$^~=([{,?!|&");
 
 export const TOKEN_TYPES = [
 	"byteLength", // 0 - length prefixes
-	"keyword", // 1 - query opcodes (?), do (;)
-	"function", // 2 - action opcodes (!)
-	"variable", // 3 - variables ($, .)
-	"number", // 4 - integers (+, ~), decimals (*)
+	"keyword", // 1 - opcodes (%), control flow (?( !( |( &()
+	"function", // 2 - (unused, kept for token index stability)
+	"variable", // 3 - variables ($)
+	"number", // 4 - integers (+), decimals (*)
 	"string", // 5 - bare strings (:), string containers (,)
-	"operator", // 6 - set (=), pointer (^)
-	"property", // 7 - references (@, /)
-	"modifier", // 8 - count (#), index (|)
+	"operator", // 6 - set (=), delete (~), pointer (^)
+	"property", // 7 - references (@)
+	"decorator", // 8 - index marker (#)
 	"annotation", // 9 - line-drawing annotations
 	"objectKey", // 10 - object keys
 	"indexData", // 11 - pointer array index data
@@ -30,7 +30,7 @@ const T = {
 	string: 5,
 	operator: 6,
 	property: 7,
-	modifier: 8,
+	decorator: 8,
 	annotation: 9,
 	objectKey: 10,
 	indexData: 11,
@@ -89,7 +89,6 @@ export function tokenize(text: string): Token[] {
 				continue;
 			}
 			// Annotation — line-drawing character (Box Drawing U+2500–U+257F, Block Elements U+2580–U+259F)
-			// Emit each contiguous run of box chars as annotation; text between stays as TextMate comment (italic).
 			if (c >= 0x2500 && c <= 0x259f) {
 				const artLine = line;
 				while (pos < text.length && text.charCodeAt(pos) !== 10) {
@@ -142,13 +141,50 @@ export function tokenize(text: string): Token[] {
 
 	let objectKeyMode = false;
 
-	function parseOneValue(parentCount?: number) {
+	// Try to parse index header (count#width+data) at current position inside [ or {
+	function tryParseIndex() {
+		const indexStart = pos;
+		const indexLine = line;
+		const indexCol = col;
+		// Read count digits
+		while (pos < text.length && DIGIT_SET.has(text[pos])) advance();
+		// Must see #
+		if (pos < text.length && text[pos] === "#") {
+			const count = decodePrefix(text, indexStart, pos);
+			advance(); // skip #
+			// Read pointer width digit (part of metadata group)
+			let width = 0;
+			if (pos < text.length && DIGIT_SET.has(text[pos])) {
+				width = digitValue(text.charCodeAt(pos));
+				advance();
+			}
+			// Emit count#width as single modifier token
+			emit(indexLine, indexCol, pos - indexStart, T.decorator);
+			if (width > 0) {
+				// Read count × width digits of index data
+				const arrLen = count * width;
+				const arrLine = line;
+				const arrCol = col;
+				const arrStart = pos;
+				for (let i = 0; i < arrLen && pos < text.length; i++) advance();
+				if (pos > arrStart)
+					emit(arrLine, arrCol, pos - arrStart, T.indexData);
+			}
+		} else {
+			// Not an index — rewind
+			pos = indexStart;
+			line = indexLine;
+			col = indexCol;
+		}
+	}
+
+	function parseOneValue() {
 		skipNonCode();
 		if (pos >= text.length) return;
 
 		// Bail on closing delimiters
 		const first = text[pos];
-		if (first === ")" || first === "]" || first === "}" || first === ">")
+		if (first === ")" || first === "]" || first === "}")
 			return;
 
 		// Read digit prefix
@@ -166,30 +202,72 @@ export function tokenize(text: string): Token[] {
 		const tagCol = col;
 
 		switch (tag) {
-			// Paired containers (non-object)
-			case "(":
-			case "[":
-			case "<": {
-				const close = tag === "(" ? ")" : tag === "[" ? "]" : ">";
+			// Control-flow containers: ?( !( |( &(
+			case "?":
+			case "!":
+			case "|":
+			case "&": {
+				// Peek for ( after the tag
+				if (pos + 1 < text.length && text[pos + 1] === "(") {
+					if (pos > prefixStart)
+						emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
+					advance(); // skip tag char (? ! | &)
+					advance(); // skip (
+					emit(tagLine, tagCol, 2, T.keyword);
+					while (pos < text.length) {
+						skipNonCode();
+						if (pos >= text.length || text[pos] === ")") break;
+						const prev = pos;
+						parseOneValue();
+						if (pos === prev) advance();
+					}
+					if (pos < text.length && text[pos] === ")") advance();
+				}
+				// Bare ? ! | & without ( — not valid in new format, skip
+				break;
+			}
+
+			// Call container
+			case "(": {
 				if (pos > prefixStart)
 					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
 				advance(); // open delimiter
 				while (pos < text.length) {
 					skipNonCode();
-					if (pos >= text.length || text[pos] === close) break;
+					if (pos >= text.length || text[pos] === ")") break;
 					const prev = pos;
 					parseOneValue();
 					if (pos === prev) advance();
 				}
-				if (pos < text.length && text[pos] === close) advance();
+				if (pos < text.length && text[pos] === ")") advance();
 				break;
 			}
 
-			// Object container — alternates key/value
+			// Array container — check for index inside
+			case "[": {
+				if (pos > prefixStart)
+					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
+				advance(); // open delimiter
+				skipNonCode();
+				tryParseIndex();
+				while (pos < text.length) {
+					skipNonCode();
+					if (pos >= text.length || text[pos] === "]") break;
+					const prev = pos;
+					parseOneValue();
+					if (pos === prev) advance();
+				}
+				if (pos < text.length && text[pos] === "]") advance();
+				break;
+			}
+
+			// Object container — alternates key/value, check for index inside
 			case "{": {
 				if (pos > prefixStart)
 					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
 				advance(); // open delimiter
+				skipNonCode();
+				tryParseIndex();
 				let isKey = true;
 				while (pos < text.length) {
 					skipNonCode();
@@ -206,15 +284,13 @@ export function tokenize(text: string): Token[] {
 				break;
 			}
 
-			// String container — the key fix!
-			// Decode byte length and skip that many bytes as string content.
+			// String container — decode byte length and skip that many bytes
 			case ",": {
 				const byteLen = decodePrefix(text, prefixStart, pos);
 				if (pos > prefixStart)
 					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
 				advance(); // skip ,
 				emit(tagLine, tagCol, 1, T.string);
-				// Skip byteLen bytes as string content, emitting per-line tokens
 				if (byteLen > 0) {
 					let cLine = line;
 					let cCol = col;
@@ -236,100 +312,63 @@ export function tokenize(text: string): Token[] {
 				break;
 			}
 
-			// Do container (body is values, parsed normally)
-			case ";":
-				if (pos > prefixStart)
-					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
-				advance();
-				emit(tagLine, tagCol, 1, T.keyword);
-				break;
-
-			// Set container (body is values, parsed normally)
+			// Set operator — fixed arity 2 (place, value)
 			case "=":
 				if (pos > prefixStart)
 					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
 				advance();
 				emit(tagLine, tagCol, 1, T.operator);
+				parseOneValue(); // place
+				parseOneValue(); // value
 				break;
 
-			// Consuming tags — emit then parse next value
+			// Delete operator — fixed arity 1 (place)
+			case "~":
+				if (pos > prefixStart)
+					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
+				advance();
+				emit(tagLine, tagCol, 1, T.operator);
+				parseOneValue(); // place
+				break;
+
+			// Decimal — consuming tag, emit then parse next value (significand)
 			case "*":
 				advance();
 				emit(prefixLine, prefixCol, pos - prefixStart, T.number);
 				parseOneValue();
 				break;
 
-			case ".":
-				advance();
-				emit(prefixLine, prefixCol, pos - prefixStart, T.variable);
-				parseOneValue();
-				break;
-
-			case "/":
-				advance();
-				emit(prefixLine, prefixCol, pos - prefixStart, T.property);
-				parseOneValue();
-				break;
-
-			case "#": {
-				const count = decodePrefix(text, prefixStart, pos);
-				advance();
-				emit(prefixLine, prefixCol, pos - prefixStart, T.modifier);
-				parseOneValue(count);
-				break;
-			}
-
-			// Index — consume pointer array (count × width digits), then the container
-			case "|": {
-				const width = decodePrefix(text, prefixStart, pos) + 1;
-				advance();
-				emit(prefixLine, prefixCol, pos - prefixStart, T.modifier);
-				if (parentCount !== undefined) {
-					skipNonCode();
-					const arrLen = parentCount * width;
-					const arrLine = line;
-					const arrCol = col;
-					const arrStart = pos;
-					for (let i = 0; i < arrLen && pos < text.length; i++) advance();
-					if (pos > arrStart)
-						emit(arrLine, arrCol, pos - arrStart, T.indexData);
-				}
-				parseOneValue();
-				break;
-			}
-
-			// Simple scalars
+			// Integer (zigzag encoded)
 			case "+":
-			case "~":
 				advance();
 				emit(prefixLine, prefixCol, pos - prefixStart, T.number);
 				break;
 
+			// Bare string
 			case ":":
 				advance();
 				emit(prefixLine, prefixCol, pos - prefixStart, objectKeyMode ? T.objectKey : T.string);
 				break;
 
-			case "?":
+			// Opcode
+			case "%":
 				advance();
 				emit(prefixLine, prefixCol, pos - prefixStart, T.keyword);
 				break;
 
-			case "!":
-				advance();
-				emit(prefixLine, prefixCol, pos - prefixStart, T.function);
-				break;
-
+			// Reference
 			case "@":
 				advance();
 				emit(prefixLine, prefixCol, pos - prefixStart, T.property);
 				break;
 
+			// Variable
 			case "$":
 				advance();
 				emit(prefixLine, prefixCol, pos - prefixStart, T.variable);
 				break;
 
+			// Pointer
 			case "^":
 				advance();
 				emit(prefixLine, prefixCol, pos - prefixStart, T.operator);

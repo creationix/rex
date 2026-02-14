@@ -17,6 +17,9 @@
 	"categories": [
 		"Programming Languages"
 	],
+	"activationEvents": [
+		"onLanguage:markdown"
+	],
 	"contributes": {
 		"languages": [
 			{
