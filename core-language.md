@@ -8,19 +8,18 @@ See [rex.ohm](packages/rex-lang/rex.ohm) for the complete Ohm grammar.
 
 ### Expressions
 
-```
+```ebnf
 Program   = Expr*
 Expr      = LValue "=" Expr | Call | Atom
 LValue    = bareWord ("." bareWord)*
 Call      = "(" Expr+ ")"
-Atom      = String | Number | Bytes | Boolean | Null | Undefined | Array | Object | LValue
+Atom      = String | Number | Boolean | Null | Undefined | Array | Object | LValue
 ```
 
 ### Data Types
 
 - **Strings**: Single or double quoted with escape sequences: `"hello"`, `'world'`
 - **Numbers**: Decimal, hex, or binary: `42`, `-3.14`, `1e10`, `0xFF`, `-0x20`, `0b1010`
-- **Bytes**: Hex byte sequences: `<48 65 6c 6c 6f>`, `<FF, FE, FD>`
 - **Booleans**: `true`, `false`
 - **Null**: `null`
 - **Undefined**: `undefined` (represents missing/absent values)
@@ -383,7 +382,6 @@ Type predicates return the value if it matches the type, `undefined` otherwise:
 | `object` | `(object expr)` | `expr` if object, else `undefined` |
 | `array` | `(array expr)` | `expr` if array, else `undefined` |
 | `boolean` | `(boolean expr)` | `expr` if boolean, else `undefined` |
-| `bytes` | `(bytes expr)` | `expr` if bytes, else `undefined` |
 
 ```rex
 // Type check with when
@@ -428,7 +426,7 @@ All reserved keywords, grouped by category:
 
 **Arithmetic:** `add`, `sub`, `mul`, `div`, `mod`, `neg`
 
-**Type predicates:** `string`, `number`, `object`, `array`, `boolean`, `bytes`
+**Type predicates:** `string`, `number`, `object`, `array`, `boolean`
 
 **Escaping:** `literal`
 
