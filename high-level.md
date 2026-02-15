@@ -100,6 +100,19 @@ obj.key = "value"
 headers.x-handler = self
 ```
 
+Compound assignment operators modify a place using an operator and return the new value:
+
+```rex
+x += 1           // x = x + 1
+x -= 5           // x = x - 5
+x *= 2           // x = x * 2
+x /= 10          // x = x / 10
+x %= 3           // x = x % 3
+x &= 0xFF        // x = x & 0xFF
+x |= 0x80        // x = x | 0x80
+x ^= mask        // x = x ^ mask
+```
+
 ## Operators
 
 ### Arithmetic
@@ -200,7 +213,7 @@ Highest to lowest:
 | 5     | `&` `^` `\|`                | bitwise / boolean value |
 | 6     | `==` `!=` `>` `>=` `<` `<=` | comparison              |
 | 7     | `and` `or`                  | existence               |
-| 8     | `=`                         | assignment              |
+| 8     | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` | assignment |
 
 Use `()` to override:
 
@@ -270,20 +283,6 @@ else
 end
 ```
 
-### `do` Blocks
-
-Sequence multiple expressions. Returns the last:
-
-```rex
-do
-  x = 10
-  y = 20
-  x + y
-end
-```
-
-The bodies of `when`/`unless` are implicit `do` blocks — no need to write `do` inside them.
-
 ## Iteration
 
 ### `for` Loops
@@ -345,34 +344,45 @@ end
 
 ### Comprehensions
 
-Comprehensions build new collections using `|` (pipe) notation. The iteration clause before `|` uses the same `in`/`of` forms as `for`. The expression after `|` produces each element.
+Comprehensions build new collections using `;` to separate the iteration clause from the body expression. The iteration clause uses the same `in`/`of` forms as `for`, or just an expression for implicit `self`.
 
 #### Array Comprehensions
 
 ```rex
-[v in [1, 2, 3] | v * 2]
+// Implicit self
+[100 ; self % 2 > 0 and self % 3 > 0 and self % 5 > 0]
+// → [1, 7, 11, 13, 17, 19, 23, 29, 31, ...]
+
+// Named value
+[v in [1, 2, 3] ; v * 2]
 // → [2, 4, 6]
 
-[k, v in [10, 20, 30] | v + k]
+// Key and value
+[k, v in [10, 20, 30] ; v + k]
 // → [10, 21, 32]
 
-[k of {name: "Rex", age: 65} | k]
+// Keys only
+[k of {name: "Rex", age: 65} ; k]
 // → ["name", "age"]
 ```
 
 #### Object Comprehensions
 
-Object comprehensions use `key-expr: value-expr` after `|`. Both sides are expressions — bare words reference variables, not literal strings (use quotes for literal keys):
+Object comprehensions use `key-expr: value-expr` after `;`. Both sides are expressions — bare words reference variables, not literal strings (use quotes for literal keys):
 
 ```rex
-{k, v in {a: 1, b: 2} | k: v * 10}
+{k, v in {a: 1, b: 2} ; k: v * 10}
 // → {a: 10, b: 20}
 
-{v in ["x", "y", "z"] | v: true}
+{v in ["x", "y", "z"] ; v: true}
 // → {x: true, y: true, z: true}
 
-{k, v in scores | "player-" + k: v * 100}
+{k, v in scores ; "player-" + k: v * 100}
 // → {"player-alice": 9500, "player-bob": 8700}
+
+// Implicit self
+{users ; self.name: self.score}
+// → {Alice: 95, Bob: 87}
 ```
 
 #### Filtering
@@ -381,11 +391,11 @@ Return `undefined` to exclude an element from the result:
 
 ```rex
 // Even numbers only
-[v in [1, 2, 3, 4, 5] | v % 2 == 0 and v]
+[v in [1, 2, 3, 4, 5] ; v % 2 == 0 and v]
 // → [2, 4]
 
 // Remove null values from an object
-{k, v in data | k: v != null and v}
+{k, v in data ; k: v != null and v}
 // → new object without null values
 ```
 
@@ -528,8 +538,8 @@ end
 
 ```rex
 total = 0
-for v in [10, 20, 30] do
-  total = total + v
+for [10, 20, 30] do
+  total += self
 end
 // total is 60
 ```
@@ -538,7 +548,7 @@ end
 
 ```rex
 users = [{name: "Alice", id: 1}, {name: "Bob", id: 2}]
-lookup = {v in users | v.name: v}
+lookup = {v in users ; v.name: v}
 // → {Alice: {name: "Alice", id: 1}, Bob: {name: "Bob", id: 2}}
 ```
 
@@ -548,12 +558,147 @@ lookup = {v in users | v.name: v}
 scores = {alice: 95, bob: 42, carol: 78}
 
 // Students who passed (score >= 50)
-passed = {k, v in scores | k: v >= 50 and v}
+passed = {k, v in scores ; k: v >= 50 and v}
 // → {alice: 95, carol: 78}
 
 // Just the names
-passed-names = [k, v in scores | v >= 50 and k]
+passed-names = [k, v in scores ; v >= 50 and k]
 // → ["alice", "carol"]
+```
+
+### Side-by-Side: HTTP API Router
+
+A realistic example using the HTTP routing domain extension. S-expression first, then infix:
+
+**S-expression:**
+
+```rex
+(when (path-match "/api/users/*")
+  (when (eq method "GET")
+    (do
+      status = 200
+      headers.content-type = "application/json")
+    (when (eq method "POST")
+      (when (all
+              (string headers.content-type)
+              (eq headers.content-type "application/json"))
+        (do
+          status = 201
+          headers.x-created = self.id)
+        (do
+          status = 415
+          headers.x-error = "Expected application/json"))
+      (do
+        status = 405
+        headers.x-error = "Method not allowed"))))
+```
+
+**Infix:**
+
+```rex
+when path-match("/api/users/*") do
+  when method == "GET" do
+    status = 200
+    headers.content-type = "application/json"
+  else when method == "POST" do
+    when string(headers.content-type) and headers.content-type == "application/json" do
+      status = 201
+      headers.x-created = self.id
+    else
+      status = 415
+      headers.x-error = "Expected application/json"
+    end
+  else
+    status = 405
+    headers.x-error = "Method not allowed"
+  end
+end
+```
+
+### Side-by-Side: Access Control
+
+**S-expression:**
+
+```rex
+(when (all
+        headers.x-api-key
+        (eq headers.x-api-key config.api-key))
+  (when (eq method "GET")
+    (set headers.x-allowed "true")
+    (when (all (eq method "POST") user.is-admin)
+      (set headers.x-allowed "true")
+      (do
+        status = 403
+        headers.x-error = "Forbidden")))
+  (do
+    status = 401
+    headers.x-error = "Invalid API key"))
+```
+
+**Infix:**
+
+```rex
+when headers.x-api-key and headers.x-api-key == config.api-key do
+  when method == "GET" do
+    headers.x-allowed = "true"
+  else when method == "POST" and user.is-admin do
+    headers.x-allowed = "true"
+  else
+    status = 403
+    headers.x-error = "Forbidden"
+  end
+else
+  status = 401
+  headers.x-error = "Invalid API key"
+end
+```
+
+### Side-by-Side: Request Transformation
+
+**S-expression:**
+
+```rex
+(when (path-match "/api/search")
+  (do
+    query-term = (alt query.q query.query query.search)
+    (when query-term
+      (do
+        results = (search-index query-term)
+        headers.x-result-count = results.count
+        (when (gt results.count 0)
+          (do
+            status = 200
+            headers.content-type = "application/json")
+          (do
+            status = 404
+            headers.x-error = "No results")))
+      (do
+        status = 400
+        headers.x-error = "Missing search query"))))
+```
+
+**Infix:**
+
+```rex
+when path-match("/api/search") do
+  query-term = query.q or query.query or query.search
+
+  when query-term do
+    results = search-index(query-term)
+    headers.x-result-count = results.count
+
+    when results.count > 0 do
+      status = 200
+      headers.content-type = "application/json"
+    else
+      status = 404
+      headers.x-error = "No results"
+    end
+  else
+    status = 400
+    headers.x-error = "Missing search query"
+  end
+end
 ```
 
 ## Keyword Reference
@@ -584,30 +729,22 @@ The high-level infix syntax maps to the same bytecode as the s-expression core:
 | `(alt a b ...)`     | `a or b or ...`            |
 | `(when c t e)`      | `when c do t else e end`   |
 | `(unless c t e)`    | `unless c do t else e end` |
-| `(do a b ...)`      | `do a b ... end`           |
 | `(set x v)`         | `x = v`                    |
 | `(delete x)`        | `delete x`                 |
 | `(actions key)`     | `actions.(key)`            |
 | `actions.name`      | `actions.name`             |
-| `string(v)`         | `string(v)`                |
+| `(string v)`        | `string(v)`                |
 | `self`              | `self`                     |
-| `(literal expr)`    | `literal(expr)`            |
 
 ## Reserved Words
 
 **Literals:** `true`, `false`, `null`, `undefined`, `self`
 
-**Control flow:** `when`, `unless`, `for`, `do`, `else`, `end`, `break`, `continue`
-
-**Existence:** `and`, `or`
-
-**Iteration:** `in`, `of`
+**Control flow:** `when`, `unless`, `for`, `in`, `of`, `do`, `else`, `end`, `break`, `continue`, `and`, `or`
 
 **Place operations:** `delete`
 
 **Type predicates:** `string`, `number`, `object`, `array`, `boolean`
-
-**Escaping:** `literal`
 
 ## Extension Points
 
