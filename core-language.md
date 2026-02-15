@@ -79,12 +79,6 @@ self             → ["$self"]
 undefined        → ["$undefined"]
 ```
 
-To embed a data array that happens to start with a `$`-prefixed string, use `literal`:
-
-```rex
-(literal ["$not-code" 1 2])  → ["$literal", ["$not-code", 1, 2]]
-```
-
 ### Places
 
 Places are the central concept in Rex. A `$$`-prefixed array represents a **place** — a reference to a location in data. The same place can be read from or written to depending on context:
@@ -396,18 +390,6 @@ Type predicates return the value if it matches the type, `undefined` otherwise:
     (handle-other)))
 ```
 
-### Escaping
-
-| Keyword | Usage | Bytecode |
-|---|---|---|
-| `literal` | `(literal expr)` | `["$literal", expr]` |
-
-Prevents code interpretation. Use when embedding data that would otherwise be treated as bytecode:
-
-```rex
-(literal ["$not-code" 1 2])  // produces the data array ["$not-code", 1, 2]
-```
-
 ## Reserved Words
 
 All reserved keywords, grouped by category:
@@ -427,8 +409,6 @@ All reserved keywords, grouped by category:
 **Arithmetic:** `add`, `sub`, `mul`, `div`, `mod`, `neg`
 
 **Type predicates:** `string`, `number`, `object`, `array`, `boolean`
-
-**Escaping:** `literal`
 
 ## Design Philosophy
 
