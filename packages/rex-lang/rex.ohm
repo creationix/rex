@@ -38,7 +38,7 @@ Rex {
     | UnaryExpr                      -- value
 
   UnaryExpr
-    = "-" UnaryExpr                  -- neg
+    = "-" ~digit UnaryExpr           -- neg
     | "~" UnaryExpr                  -- not
     | DeleteKw Place                 -- delete
     | PostfixExpr                    -- value
@@ -54,6 +54,7 @@ Rex {
 
   PrimaryExpr
     = ConditionalExpr
+    | DoExpr
     | ForExpr
     | BreakKw                        -- break
     | ContinueKw                     -- continue
@@ -98,6 +99,9 @@ Rex {
 
   ForExpr
     = ForKw BindingExpr DoKw Block EndKw
+
+  DoExpr
+    = DoKw Block EndKw
 
   BindingExpr
     = IterBinding

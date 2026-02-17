@@ -86,6 +86,370 @@ export type IRConditionalElse =
 			elseBranch?: IRConditionalElse;
 	  };
 
+const DIGITS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
+
+function byteLength(value: string): number {
+	return Buffer.byteLength(value, "utf8");
+}
+
+const OPCODE_IDS = {
+	do: 0,
+	add: 1,
+	sub: 2,
+	mul: 3,
+	div: 4,
+	eq: 5,
+	neq: 6,
+	lt: 7,
+	lte: 8,
+	gt: 9,
+	gte: 10,
+	and: 11,
+	or: 12,
+	xor: 13,
+	not: 14,
+	boolean: 15,
+	number: 16,
+	string: 17,
+	array: 18,
+	object: 19,
+	mod: 20,
+	neg: 21,
+} as const;
+
+type OpcodeName = keyof typeof OPCODE_IDS;
+
+const BINARY_TO_OPCODE: Record<Extract<IRNode, { type: "binary" }> ["op"], OpcodeName> = {
+	add: "add",
+	sub: "sub",
+	mul: "mul",
+	div: "div",
+	mod: "mod",
+	bitAnd: "and",
+	bitOr: "or",
+	bitXor: "xor",
+	and: "and",
+	or: "or",
+	eq: "eq",
+	neq: "neq",
+	gt: "gt",
+	gte: "gte",
+	lt: "lt",
+	lte: "lte",
+};
+
+const ASSIGN_COMPOUND_TO_OPCODE: Partial<Record<Extract<IRNode, { type: "assign" }> ["op"], OpcodeName>> = {
+	"+=": "add",
+	"-=": "sub",
+	"*=": "mul",
+	"/=": "div",
+	"%=": "mod",
+	"&=": "and",
+	"|=": "or",
+	"^=": "xor",
+};
+
+function encodeUint(value: number): string {
+	if (!Number.isInteger(value) || value < 0) throw new Error(`Cannot encode non-uint value: ${value}`);
+	if (value === 0) return "";
+	let current = value;
+	let out = "";
+	while (current > 0) {
+		const digit = current % 64;
+		out = `${DIGITS[digit]}${out}`;
+		current = Math.floor(current / 64);
+	}
+	return out;
+}
+
+function encodeZigzag(value: number): string {
+	if (!Number.isInteger(value)) throw new Error(`Cannot zigzag non-integer: ${value}`);
+	const encoded = value >= 0 ? value * 2 : -value * 2 - 1;
+	return encodeUint(encoded);
+}
+
+function encodeInt(value: number): string {
+	return `${encodeZigzag(value)}+`;
+}
+
+function canUseBareString(value: string): boolean {
+	for (const char of value) {
+		if (!DIGITS.includes(char)) return false;
+	}
+	return true;
+}
+
+function decodeStringLiteral(raw: string): string {
+	const quote = raw[0];
+	if ((quote !== '"' && quote !== "'") || raw[raw.length - 1] !== quote) {
+		throw new Error(`Invalid string literal: ${raw}`);
+	}
+	let out = "";
+	for (let index = 1; index < raw.length - 1; index += 1) {
+		const char = raw[index];
+		if (char !== "\\") {
+			out += char;
+			continue;
+		}
+		index += 1;
+		const esc = raw[index];
+		if (esc === undefined) throw new Error(`Invalid escape sequence in ${raw}`);
+		if (esc === "n") out += "\n";
+		else if (esc === "r") out += "\r";
+		else if (esc === "t") out += "\t";
+		else if (esc === "b") out += "\b";
+		else if (esc === "f") out += "\f";
+		else if (esc === "v") out += "\v";
+		else if (esc === "0") out += "\0";
+		else if (esc === "x") {
+			const hex = raw.slice(index + 1, index + 3);
+			if (!/^[0-9a-fA-F]{2}$/.test(hex)) throw new Error(`Invalid hex escape in ${raw}`);
+			out += String.fromCodePoint(parseInt(hex, 16));
+			index += 2;
+		}
+		else if (esc === "u") {
+			const hex = raw.slice(index + 1, index + 5);
+			if (!/^[0-9a-fA-F]{4}$/.test(hex)) throw new Error(`Invalid unicode escape in ${raw}`);
+			out += String.fromCodePoint(parseInt(hex, 16));
+			index += 4;
+		}
+		else {
+			out += esc;
+		}
+	}
+	return out;
+}
+
+function encodeBareOrLengthString(value: string): string {
+	if (canUseBareString(value)) return `${value}:`;
+	return `${encodeUint(byteLength(value))},${value}`;
+}
+
+function encodeNumberNode(node: Extract<IRNode, { type: "number" }>): string {
+	const numberValue = node.value;
+	if (!Number.isFinite(numberValue)) throw new Error(`Cannot encode non-finite number: ${node.raw}`);
+	if (Number.isInteger(numberValue)) return encodeInt(numberValue);
+
+	const raw = node.raw.toLowerCase();
+	const sign = raw.startsWith("-") ? -1 : 1;
+	const unsigned = sign < 0 ? raw.slice(1) : raw;
+	const splitExp = unsigned.split("e");
+	const mantissaText = splitExp[0];
+	const exponentText = splitExp[1] ?? "0";
+	if (!mantissaText) throw new Error(`Invalid decimal literal: ${node.raw}`);
+	const exponent = Number(exponentText);
+	if (!Number.isInteger(exponent)) throw new Error(`Invalid decimal exponent: ${node.raw}`);
+
+	const dotIndex = mantissaText.indexOf(".");
+	const decimals = dotIndex === -1 ? 0 : mantissaText.length - dotIndex - 1;
+	const digits = mantissaText.replace(".", "");
+	if (!/^\d+$/.test(digits)) throw new Error(`Invalid decimal digits: ${node.raw}`);
+
+	let significand = Number(digits) * sign;
+	let power = exponent - decimals;
+	while (significand !== 0 && significand % 10 === 0) {
+		significand /= 10;
+		power += 1;
+	}
+	return `${encodeZigzag(power)}*${encodeInt(significand)}`;
+}
+
+function encodeOpcode(opcode: OpcodeName): string {
+	return `${encodeUint(OPCODE_IDS[opcode])}%`;
+}
+
+function encodeCallParts(parts: string[]): string {
+	return `(${parts.join("")})`;
+}
+
+function needsOptionalPrefix(encoded: string): boolean {
+	const first = encoded[0];
+	if (!first) return false;
+	return first === "[" || first === "{" || first === "(" || first === "=" || first === "~" || first === "?" || first === "!" || first === "|" || first === "&" || first === ">" || first === "<";
+}
+
+function addOptionalPrefix(encoded: string): string {
+	if (!needsOptionalPrefix(encoded)) return encoded;
+	let payload = encoded;
+	if (encoded.startsWith("?(") || encoded.startsWith("!(") || encoded.startsWith("|(") || encoded.startsWith("&(") || encoded.startsWith(">(") || encoded.startsWith("<(")) {
+		payload = encoded.slice(2, -1);
+	}
+	else if (encoded.startsWith(">[") || encoded.startsWith(">{")) {
+		payload = encoded.slice(2, -1);
+	}
+	else if (encoded.startsWith("[") || encoded.startsWith("{") || encoded.startsWith("(")) {
+		payload = encoded.slice(1, -1);
+	}
+	else if (encoded.startsWith("=") || encoded.startsWith("~")) {
+		payload = encoded.slice(1);
+	}
+	return `${encodeUint(byteLength(payload))}${encoded}`;
+}
+
+function encodeBlockExpression(block: IRNode[]): string {
+	if (block.length === 0) return "4@";
+	if (block.length === 1) return encodeNode(block[0] as IRNode);
+	return encodeCallParts([encodeOpcode("do"), ...block.map((node) => encodeNode(node))]);
+}
+
+function encodeConditionalElse(elseBranch: IRConditionalElse): string {
+	if (elseBranch.type === "else") return encodeBlockExpression(elseBranch.block);
+	const nested = {
+		type: "conditional",
+		head: elseBranch.head,
+		condition: elseBranch.condition,
+		thenBlock: elseBranch.thenBlock,
+		elseBranch: elseBranch.elseBranch,
+	} satisfies IRNode;
+	return encodeNode(nested);
+}
+
+function encodeNavigation(node: Extract<IRNode, { type: "navigation" }>): string {
+	const parts = [encodeNode(node.target)];
+	for (const segment of node.segments) {
+		if (segment.type === "static") parts.push(encodeBareOrLengthString(segment.key));
+		else parts.push(encodeNode(segment.key));
+	}
+	return encodeCallParts(parts);
+}
+
+function encodeFor(node: Extract<IRNode, { type: "for" }>): string {
+	const body = addOptionalPrefix(encodeBlockExpression(node.body));
+	if (node.binding.type === "binding:expr") {
+		return `>(${encodeNode(node.binding.source)}${body})`;
+	}
+	if (node.binding.type === "binding:valueIn") {
+		return `>(${encodeNode(node.binding.source)}${node.binding.value}$${body})`;
+	}
+	if (node.binding.type === "binding:keyValueIn") {
+		return `>(${encodeNode(node.binding.source)}${node.binding.key}$${node.binding.value}$${body})`;
+	}
+	return `<(${encodeNode(node.binding.source)}${node.binding.key}$${body})`;
+}
+
+function encodeArrayComprehension(node: Extract<IRNode, { type: "arrayComprehension" }>): string {
+	const body = addOptionalPrefix(encodeNode(node.body));
+	if (node.binding.type === "binding:expr") {
+		return `>[${encodeNode(node.binding.source)}${body}]`;
+	}
+	if (node.binding.type === "binding:valueIn") {
+		return `>[${encodeNode(node.binding.source)}${node.binding.value}$${body}]`;
+	}
+	if (node.binding.type === "binding:keyValueIn") {
+		return `>[${encodeNode(node.binding.source)}${node.binding.key}$${node.binding.value}$${body}]`;
+	}
+	return `>[${encodeNode(node.binding.source)}${node.binding.key}$${body}]`;
+}
+
+function encodeObjectComprehension(node: Extract<IRNode, { type: "objectComprehension" }>): string {
+	const key = addOptionalPrefix(encodeNode(node.key));
+	const value = addOptionalPrefix(encodeNode(node.value));
+	if (node.binding.type === "binding:expr") {
+		return `>{${encodeNode(node.binding.source)}${key}${value}}`;
+	}
+	if (node.binding.type === "binding:valueIn") {
+		return `>{${encodeNode(node.binding.source)}${node.binding.value}$${key}${value}}`;
+	}
+	if (node.binding.type === "binding:keyValueIn") {
+		return `>{${encodeNode(node.binding.source)}${node.binding.key}$${node.binding.value}$${key}${value}}`;
+	}
+	return `>{${encodeNode(node.binding.source)}${node.binding.key}$${key}${value}}`;
+}
+
+function encodeNode(node: IRNode): string {
+	switch (node.type) {
+		case "program":
+			return encodeBlockExpression(node.body);
+		case "identifier":
+			return `${node.name}$`;
+		case "self":
+			return "@";
+		case "boolean":
+			return node.value ? "1@" : "2@";
+		case "null":
+			return "3@";
+		case "undefined":
+			return "4@";
+		case "number":
+			return encodeNumberNode(node);
+		case "string":
+			return encodeBareOrLengthString(decodeStringLiteral(node.raw));
+		case "array": {
+			const body = node.items.map((item) => addOptionalPrefix(encodeNode(item))).join("");
+			return `[${body}]`;
+		}
+		case "arrayComprehension":
+			return encodeArrayComprehension(node);
+		case "object": {
+			const body = node.entries
+				.map(({ key, value }) => `${encodeNode(key)}${addOptionalPrefix(encodeNode(value))}`)
+				.join("");
+			return `{${body}}`;
+		}
+		case "objectComprehension":
+			return encodeObjectComprehension(node);
+		case "key":
+			return encodeBareOrLengthString(node.name);
+		case "group":
+			return encodeNode(node.expression);
+		case "unary":
+			if (node.op === "delete") return `~${encodeNode(node.value)}`;
+			if (node.op === "neg") return encodeCallParts([encodeOpcode("neg"), encodeNode(node.value)]);
+			return encodeCallParts([encodeOpcode("not"), encodeNode(node.value)]);
+		case "binary":
+			return encodeCallParts([
+				encodeOpcode(BINARY_TO_OPCODE[node.op]),
+				encodeNode(node.left),
+				encodeNode(node.right),
+			]);
+		case "assign": {
+			if (node.op === "=") return `=${encodeNode(node.place)}${encodeNode(node.value)}`;
+			const opcode = ASSIGN_COMPOUND_TO_OPCODE[node.op];
+			if (!opcode) throw new Error(`Unsupported assignment op: ${node.op}`);
+			const computedValue = encodeCallParts([encodeOpcode(opcode), encodeNode(node.place), encodeNode(node.value)]);
+			return `=${encodeNode(node.place)}${computedValue}`;
+		}
+		case "navigation":
+			return encodeNavigation(node);
+		case "call":
+			return encodeCallParts([encodeNode(node.callee), ...node.args.map((arg) => encodeNode(arg))]);
+		case "conditional": {
+			const opener = node.head === "when" ? "?(" : "!(";
+			const cond = encodeNode(node.condition);
+			const thenExpr = addOptionalPrefix(encodeBlockExpression(node.thenBlock));
+			const elseExpr = node.elseBranch ? addOptionalPrefix(encodeConditionalElse(node.elseBranch)) : "";
+			return `${opener}${cond}${thenExpr}${elseExpr})`;
+		}
+		case "for":
+			return encodeFor(node);
+		case "break":
+			return ";";
+		case "continue":
+			return "1;";
+		default: {
+			const exhaustive: never = node;
+			throw new Error(`Unsupported IR node ${(exhaustive as { type?: string }).type ?? "unknown"}`);
+		}
+	}
+}
+
+export function parseToIR(source: string): IRNode {
+	const match = grammar.match(source);
+	if (!match.succeeded()) {
+		const failure = match as unknown as { message?: string };
+		throw new Error(failure.message ?? "Parse failed");
+	}
+	return semantics(match).toIR() as IRNode;
+}
+
+export function encodeIR(node: IRNode): string {
+	return encodeNode(node);
+}
+
+export function compile(source: string): string {
+	return encodeIR(parseToIR(source));
+}
+
 type IRPostfixStep =
 	| { kind: "navStatic"; key: string }
 	| { kind: "navDynamic"; key: IRNode }
@@ -254,7 +618,12 @@ semantics.addOperation("toIR", {
 	},
 
 	UnaryExpr_neg(_op, value) {
-		return { type: "unary", op: "neg", value: value.toIR() } satisfies IRNode;
+		const lowered = value.toIR() as IRNode;
+		if (lowered.type === "number") {
+			const raw = lowered.raw.startsWith("-") ? lowered.raw.slice(1) : `-${lowered.raw}`;
+			return { type: "number", raw, value: -lowered.value } satisfies IRNode;
+		}
+		return { type: "unary", op: "neg", value: lowered } satisfies IRNode;
 	},
 	UnaryExpr_not(_op, value) {
 		return { type: "unary", op: "not", value: value.toIR() } satisfies IRNode;
@@ -313,6 +682,13 @@ semantics.addOperation("toIR", {
 	},
 	ConditionalElse_else(_else, block) {
 		return { type: "else", block: block.toIR() as IRNode[] } satisfies IRConditionalElse;
+	},
+
+	DoExpr(_do, block, _end) {
+		const body = block.toIR() as IRNode[];
+		if (body.length === 0) return { type: "undefined" } satisfies IRNode;
+		if (body.length === 1) return body[0] as IRNode;
+		return { type: "program", body } satisfies IRNode;
 	},
 
 	ForExpr(_for, binding, _do, block, _end) {
