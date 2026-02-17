@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 describe("rexc TextMate grammar", () => {
 	test("includes new control-flow patterns", async () => {
-		const raw = await Bun.file("./syntaxes/rexc.tmLanguage.json").text();
+		const grammarPath = new URL("./syntaxes/rexc.tmLanguage.json", import.meta.url);
+		const raw = await Bun.file(grammarPath).text();
 		const grammar = JSON.parse(raw) as {
-			repository: Record<string, { patterns?: Array<{ include?: string }>; begin?: string }>;
+			repository: Record<string, { patterns?: Array<{ include?: string }>; begin?: string; match?: string }>;
 		};
 
 		const includes = new Set(

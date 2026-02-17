@@ -135,4 +135,13 @@ total`);
 		expectFails("{users ; self.name: self.score}");
 		expectFails("{v in users ; v.name: v}");
 	});
+
+	test("rejects symbolic logical operators and compounds", () => {
+		expectFails("a && b");
+		expectFails("a || b");
+		expectFails("x &&= y");
+		expectFails("x ||= y");
+		expectFails("self.name &&= 2");
+		expectFails("self.name ||= 1");
+	});
 });

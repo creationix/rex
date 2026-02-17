@@ -35,4 +35,11 @@ describe("Rex encoded behavior", () => {
 		expect(compile("{v in [1, 2] ; (v): [v]}"))
 			.toBe(">{[2+4+]v$v$2[v$]}");
 	});
+
+	test("encodes and/or as control-flow containers with skippable rhs", () => {
+		expect(compile("a and b")).toBe("&(a$b$)");
+		expect(compile("a or b")).toBe("|(a$b$)");
+		expect(compile("a and [1, 2]")).toBe("&(a$4[2+4+])");
+		expect(compile("a or {x: 1}")).toBe("|(a$4{x:2+})");
+	});
 });
