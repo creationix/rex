@@ -2,7 +2,7 @@
 	"name": "rex-vscode",
 	"displayName": "Rex",
 	"description": "Rex language support for Visual Studio Code",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"publisher": "creationix",
 	"icon": "img/rex-icon-dark.png",
 	"repository": {
@@ -16,11 +16,6 @@
 	},
 	"categories": [
 		"Programming Languages"
-	],
-	"activationEvents": [
-		"onLanguage:rex",
-		"onLanguage:rexc",
-		"onLanguage:markdown"
 	],
 	"contributes": {
 		"languages": [
@@ -159,7 +154,7 @@
 		"build": "bun build src/extension.ts --outfile dist/extension.js --external vscode --format cjs --target node",
 		"test": "bun test",
 		"package": "bun run build && bunx @vscode/vsce package --no-dependencies",
-		"reinstall": "bun run package && code --install-extension ./rex-vscode-0.2.1.vsix --force",
+		"reinstall": "bun run package && code --install-extension ./rex-vscode-0.2.2.vsix --force",
 		"publish": "bun run build && bunx @vscode/vsce publish --no-dependencies"
 	},
 	"devDependencies": {
