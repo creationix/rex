@@ -429,11 +429,11 @@ function encodeNode(node: IRNode): string {
 				encodeNode(node.right),
 			]);
 		case "assign": {
-			if (node.op === "=") return `=${encodeNode(node.place)}${encodeNode(node.value)}`;
+			if (node.op === "=") return `=${encodeNode(node.place)}${addOptionalPrefix(encodeNode(node.value))}`;
 			const opcode = ASSIGN_COMPOUND_TO_OPCODE[node.op];
 			if (!opcode) throw new Error(`Unsupported assignment op: ${node.op}`);
 			const computedValue = encodeCallParts([encodeOpcode(opcode), encodeNode(node.place), encodeNode(node.value)]);
-			return `=${encodeNode(node.place)}${computedValue}`;
+			return `=${encodeNode(node.place)}${addOptionalPrefix(computedValue)}`;
 		}
 		case "navigation":
 			return encodeNavigation(node);
@@ -471,6 +471,132 @@ export function parseToIR(source: string): IRNode {
 		throw new Error(failure.message ?? "Parse failed");
 	}
 	return semantics(match).toIR() as IRNode;
+}
+
+function parseDataNode(node: IRNode): unknown {
+	switch (node.type) {
+		case "group":
+			return parseDataNode(node.expression);
+		case "program": {
+			if (node.body.length === 1) return parseDataNode(node.body[0]!);
+			if (node.body.length === 0) return undefined;
+			throw new Error("Rex parse() expects a single data expression");
+		}
+		case "undefined":
+			return undefined;
+		case "null":
+			return null;
+		case "boolean":
+			return node.value;
+		case "number":
+			return node.value;
+		case "string":
+			return decodeStringLiteral(node.raw);
+		case "array":
+			return node.items.map((item) => parseDataNode(item));
+		case "object": {
+			const out: Record<string, unknown> = {};
+			for (const entry of node.entries) {
+				const keyNode = entry.key;
+				let key: string;
+				if (keyNode.type === "key") key = keyNode.name;
+				else {
+					const keyValue = parseDataNode(keyNode);
+					key = String(keyValue);
+				}
+				out[key] = parseDataNode(entry.value);
+			}
+			return out;
+		}
+		default:
+			throw new Error(`Rex parse() only supports data expressions. Found: ${node.type}`);
+	}
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const proto = Object.getPrototypeOf(value);
+	return proto === Object.prototype || proto === null;
+}
+
+function isBareKeyName(key: string): boolean {
+	return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(key);
+}
+
+function stringifyString(value: string): string {
+	return JSON.stringify(value);
+}
+
+function stringifyInline(value: unknown): string {
+	if (value === undefined) return "undefined";
+	if (value === null) return "null";
+	if (typeof value === "boolean") return value ? "true" : "false";
+	if (typeof value === "number") {
+		if (!Number.isFinite(value)) throw new Error("Rex stringify() cannot encode non-finite numbers");
+		return String(value);
+	}
+	if (typeof value === "string") return stringifyString(value);
+	if (Array.isArray(value)) {
+		if (value.length === 0) return "[]";
+		return `[${value.map((item) => stringifyInline(item)).join(" ")}]`;
+	}
+	if (isPlainObject(value)) {
+		const entries = Object.entries(value);
+		if (entries.length === 0) return "{}";
+		const body = entries
+			.map(([key, item]) => `${isBareKeyName(key) ? key : stringifyString(key)}: ${stringifyInline(item)}`)
+			.join(" ");
+		return `{${body}}`;
+	}
+	throw new Error(`Rex stringify() cannot encode value of type ${typeof value}`);
+}
+
+function fitsInline(rendered: string, depth: number, indentSize: number, maxWidth: number): boolean {
+	if (rendered.includes("\n")) return false;
+	return depth * indentSize + rendered.length <= maxWidth;
+}
+
+function stringifyPretty(value: unknown, depth: number, indentSize: number, maxWidth: number): string {
+	const inline = stringifyInline(value);
+	if (fitsInline(inline, depth, indentSize, maxWidth)) return inline;
+
+	const indent = " ".repeat(depth * indentSize);
+	const childIndent = " ".repeat((depth + 1) * indentSize);
+
+	if (Array.isArray(value)) {
+		if (value.length === 0) return "[]";
+		const lines = value.map((item) => {
+			const rendered = stringifyPretty(item, depth + 1, indentSize, maxWidth);
+			if (!rendered.includes("\n")) return `${childIndent}${rendered}`;
+			return `${childIndent}${rendered}`;
+		});
+		return `[\n${lines.join("\n")}\n${indent}]`;
+	}
+
+	if (isPlainObject(value)) {
+		const entries = Object.entries(value);
+		if (entries.length === 0) return "{}";
+		const lines = entries.map(([key, item]) => {
+			const keyText = isBareKeyName(key) ? key : stringifyString(key);
+			const rendered = stringifyPretty(item, depth + 1, indentSize, maxWidth);
+			return `${childIndent}${keyText}: ${rendered}`;
+		});
+		return `{\n${lines.join("\n")}\n${indent}}`;
+	}
+
+	return inline;
+}
+
+export function parse(source: string): unknown {
+	return parseDataNode(parseToIR(source));
+}
+
+export function stringify(value: unknown, options?: { indent?: number; maxWidth?: number }): string {
+	const indent = options?.indent ?? 2;
+	const maxWidth = options?.maxWidth ?? 80;
+	if (!Number.isInteger(indent) || indent < 0) throw new Error("Rex stringify() indent must be a non-negative integer");
+	if (!Number.isInteger(maxWidth) || maxWidth < 20) throw new Error("Rex stringify() maxWidth must be an integer >= 20");
+	return stringifyPretty(value, 0, indent, maxWidth);
 }
 
 export function encodeIR(node: IRNode): string {
@@ -693,6 +819,140 @@ function eliminateDeadAssignments(block: IRNode[]): IRNode[] {
 	return out;
 }
 
+function hasIdentifierRead(node: IRNode, name: string, asPlace = false): boolean {
+	if (node.type === "identifier") return !asPlace && node.name === name;
+	switch (node.type) {
+		case "group":
+			return hasIdentifierRead(node.expression, name);
+		case "array":
+			return node.items.some((item) => hasIdentifierRead(item, name));
+		case "object":
+			return node.entries.some((entry) => hasIdentifierRead(entry.key, name) || hasIdentifierRead(entry.value, name));
+		case "navigation":
+			return hasIdentifierRead(node.target, name) || node.segments.some((segment) => segment.type === "dynamic" && hasIdentifierRead(segment.key, name));
+		case "unary":
+			return hasIdentifierRead(node.value, name, node.op === "delete");
+		case "binary":
+			return hasIdentifierRead(node.left, name) || hasIdentifierRead(node.right, name);
+		case "assign":
+			return hasIdentifierRead(node.place, name, true) || hasIdentifierRead(node.value, name);
+		default:
+			return false;
+	}
+}
+
+function countIdentifierReads(node: IRNode, name: string, asPlace = false): number {
+	if (node.type === "identifier") return !asPlace && node.name === name ? 1 : 0;
+	switch (node.type) {
+		case "group":
+			return countIdentifierReads(node.expression, name);
+		case "array":
+			return node.items.reduce((sum, item) => sum + countIdentifierReads(item, name), 0);
+		case "object":
+			return node.entries.reduce((sum, entry) => sum + countIdentifierReads(entry.key, name) + countIdentifierReads(entry.value, name), 0);
+		case "navigation":
+			return countIdentifierReads(node.target, name) + node.segments.reduce((sum, segment) => sum + (segment.type === "dynamic" ? countIdentifierReads(segment.key, name) : 0), 0);
+		case "unary":
+			return countIdentifierReads(node.value, name, node.op === "delete");
+		case "binary":
+			return countIdentifierReads(node.left, name) + countIdentifierReads(node.right, name);
+		case "assign":
+			return countIdentifierReads(node.place, name, true) + countIdentifierReads(node.value, name);
+		default:
+			return 0;
+	}
+}
+
+function replaceIdentifier(node: IRNode, name: string, replacement: IRNode, asPlace = false): IRNode {
+	if (node.type === "identifier") {
+		if (!asPlace && node.name === name) return cloneNode(replacement);
+		return node;
+	}
+
+	switch (node.type) {
+		case "group":
+			return {
+				type: "group",
+				expression: replaceIdentifier(node.expression, name, replacement),
+			} satisfies IRNode;
+		case "array":
+			return { type: "array", items: node.items.map((item) => replaceIdentifier(item, name, replacement)) } satisfies IRNode;
+		case "object":
+			return {
+				type: "object",
+				entries: node.entries.map((entry) => ({
+					key: replaceIdentifier(entry.key, name, replacement),
+					value: replaceIdentifier(entry.value, name, replacement),
+				})),
+			} satisfies IRNode;
+		case "navigation":
+			return {
+				type: "navigation",
+				target: replaceIdentifier(node.target, name, replacement),
+				segments: node.segments.map((segment) => segment.type === "static"
+					? segment
+					: { type: "dynamic", key: replaceIdentifier(segment.key, name, replacement) }),
+			} satisfies IRNode;
+		case "unary":
+			return {
+				type: "unary",
+				op: node.op,
+				value: replaceIdentifier(node.value, name, replacement, node.op === "delete"),
+			} satisfies IRNode;
+		case "binary":
+			return {
+				type: "binary",
+				op: node.op,
+				left: replaceIdentifier(node.left, name, replacement),
+				right: replaceIdentifier(node.right, name, replacement),
+			} satisfies IRNode;
+		case "assign":
+			return {
+				type: "assign",
+				op: node.op,
+				place: replaceIdentifier(node.place, name, replacement, true),
+				value: replaceIdentifier(node.value, name, replacement),
+			} satisfies IRNode;
+		default:
+			return node;
+	}
+}
+
+function isSafeInlineTargetNode(node: IRNode): boolean {
+	if (isPureNode(node)) return true;
+	if (node.type === "assign" && node.op === "=") {
+		return isPureNode(node.place) && isPureNode(node.value);
+	}
+	return false;
+}
+
+function inlineAdjacentPureAssignments(block: IRNode[]): IRNode[] {
+	const out = [...block];
+	let changed = true;
+
+	while (changed) {
+		changed = false;
+		for (let index = 0; index < out.length - 1; index += 1) {
+			const current = out[index] as IRNode;
+			if (current.type !== "assign" || current.op !== "=" || current.place.type !== "identifier") continue;
+			if (!isPureNode(current.value)) continue;
+			const name = current.place.name;
+			if (hasIdentifierRead(current.value, name)) continue;
+
+			const next = out[index + 1] as IRNode;
+			if (!isSafeInlineTargetNode(next)) continue;
+			if (countIdentifierReads(next, name) !== 1) continue;
+
+			out[index + 1] = replaceIdentifier(next, name, current.value);
+			out.splice(index, 1);
+			changed = true;
+			break;
+		}
+	}
+
+	return out;
+}
+
 function toNumberNode(value: number): IRNode {
 	return { type: "number", raw: String(value), value } satisfies IRNode;
 }
@@ -885,7 +1145,7 @@ function optimizeBlock(block: IRNode[], env: OptimizeEnv, currentDepth: number):
 			clearOptimizeEnv(env);
 		}
 	}
-	return eliminateDeadAssignments(out);
+	return inlineAdjacentPureAssignments(eliminateDeadAssignments(out));
 }
 
 function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number, asPlace = false): IRNode {
