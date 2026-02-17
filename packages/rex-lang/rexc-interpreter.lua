@@ -4,6 +4,7 @@
 -- - Evaluate directly from encoded string (no AST / no pre-parse).
 -- - Keep heap allocations low (cursor-based parser, no token objects).
 
+local bit = require 'bit'
 local ffi = require 'ffi'
 local byte = string.byte
 local sub = string.sub
