@@ -25,6 +25,7 @@ describe("Rex grammar", () => {
 		expectParses("false");
 		expectParses("null");
 		expectParses("undefined");
+		expectParses("self@2");
 	});
 
 	test("parses strings and escapes", () => {

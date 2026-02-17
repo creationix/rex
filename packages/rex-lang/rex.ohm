@@ -71,9 +71,13 @@ Rex {
     | FalseKw                        -- false
     | NullKw                         -- null
     | UndefinedKw                    -- undefined
-    | SelfKw                         -- self
+    | SelfExpr                       -- self
     | identifier                     -- identifier
     | "(" Expr ")"                  -- group
+
+  SelfExpr
+    = SelfKw "@" Number             -- depth
+    | SelfKw                         -- plain
 
   Place
     = PlaceBase PlaceTail*

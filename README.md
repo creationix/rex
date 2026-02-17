@@ -56,42 +56,32 @@ In Rex, the data is a lookup table and the logic is written once:
 
 ```rex
 actions = {
-  create-user:       'users/create'
-  delete-user:       'users/delete'
-  update-profile:    'users/update-profile'
-  create-order:      'orders/create'
-  process-payment:   'payments/process'
-  send-notification: 'notifications/send'
+  create-user:       "users/create"
+  delete-user:       "users/delete"
+  update-profile:    "users/update-profile"
+  create-order:      "orders/create"
+  process-payment:   "payments/process"
+  send-notification: "notifications/send"
   // ... 200+ more entries
 }
 
-// Look up the action header in the table. If found, set the handler header.
-(when handler=(actions (headers 'x-action'))
-  headers.x-handler = handler)
+when handler = actions.(headers.x-action) do
+  headers.x-handler = handler
+end
 ```
 
 Adding a new action is one line in the table. The logic doesn't change.
 
-This compiles to JSON bytecode. Notice the data object embeds directly — no escaping, no wrapping. Rex is JSON-native:
-
-```json
-["$do",
-  ["$set", ["$$actions"], {
-    "create-user": "users/create",
-    "delete-user": "users/delete",
-    "update-profile": "users/update-profile",
-    "create-order": "orders/create",
-    "process-payment": "payments/process",
-    "send-notification": "notifications/send"
-  }],
-  ["$when", ["$set", ["$$handler"], ["$$actions", ["$headers", "x-action"]]],
-    ["$set", ["$headers", "x-handler"], ["$$handler"]]]]
-```
-
-Or in Rex's compact encoding — a single UTF-8 string, 244 bytes vs 357 for the minified JSON:
+When compiled this uses Rex's compact encoding. In normal debug mode, variable names are preserved (`actions`, `handler`):
 
 ```rexc
-(%=[0$]{create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profilecreate-order:d,orders/createprocess-payment:g,payments/processsend-notification:i,notifications/send}?(=[1$](0$(0@x-action:))i=[0@x-handler:](1$)))
+(%=actions${create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profilecreate-order:d,orders/createprocess-payment:g,payments/processsend-notification:i,notifications/send}?(=handler$(actions$(headers$x-action:))s=(headers$x-handler:)handler$))
+```
+
+Optimized mode inlines the lookup table and removes the extra named table assignment, then uses `self` for the matched value in the branch body:
+
+```rexc
+?(({create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profilecreate-order:d,orders/createprocess-payment:g,payments/processsend-notification:i,notifications/send}(headers$x-action:))l=(headers$x-handler:)@)
 ```
 
 ## Compiler Helper
@@ -105,3 +95,55 @@ cat input.rex | bun run rex:compile
 ```
 
 Use `--ir` to emit lowered IR JSON.
+
+## IR Optimizer
+
+Rex now includes an IR-to-IR optimizer pass.
+
+### API
+
+```ts
+import { parseToIR, optimizeIR, compile } from "./packages/rex-lang/rex.ts";
+
+const ir = parseToIR("1 + 2");
+const optimized = optimizeIR(ir);
+
+const encoded = compile("1 + 2", { optimize: true });
+```
+
+### Example: constant fold
+
+Input IR:
+
+```json
+{ "type": "binary", "op": "add", "left": { "type": "number", "raw": "1", "value": 1 }, "right": { "type": "number", "raw": "2", "value": 2 } }
+```
+
+Optimized IR:
+
+```json
+{ "type": "number", "raw": "3", "value": 3 }
+```
+
+### Example: constant propagation + navigation fold
+
+Source:
+
+```rex
+t = {a: 1, b: 2}
+t.b
+```
+
+Optimized IR (shape):
+
+```json
+{
+  "type": "program",
+  "body": [
+    { "type": "assign", "op": "=", "place": { "type": "identifier", "name": "t" }, "value": { "type": "object", "entries": [ { "key": { "type": "key", "name": "a" }, "value": { "type": "number", "raw": "1", "value": 1 } }, { "key": { "type": "key", "name": "b" }, "value": { "type": "number", "raw": "2", "value": 2 } } ] } },
+    { "type": "number", "raw": "2", "value": 2 }
+  ]
+}
+```
+
+The optimizer is conservative and only applies simple, safe folds (constants, literal navigation, and statically decidable conditionals).
