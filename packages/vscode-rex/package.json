@@ -132,7 +132,9 @@
 	},
 	"scripts": {
 		"build": "bun build src/extension.ts --outfile dist/extension.js --external vscode --format cjs --target node",
+		"test": "bun test",
 		"package": "bun run build && bunx @vscode/vsce package --no-dependencies",
+		"reinstall": "bun run package && code --install-extension ./rex-vscode-0.2.1.vsix --force",
 		"publish": "bun run build && bunx @vscode/vsce publish --no-dependencies"
 	},
 	"devDependencies": {

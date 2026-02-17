@@ -4,7 +4,7 @@ const DIGIT_SET = new Set(
 );
 
 // Tags that can start a value (excludes closing delimiters)
-const VALUE_TAGS = new Set("+*:%@$^~=([{,?!|&");
+const VALUE_TAGS = new Set("+*:%@$^~=([{,?!|&><;");
 
 export const TOKEN_TYPES = [
 	"byteLength", // 0 - length prefixes
@@ -227,6 +227,35 @@ export function tokenize(text: string): Token[] {
 				break;
 			}
 
+			// Loop/comprehension containers: >( >[ >{ <( <[ <{
+			case ">":
+			case "<": {
+				if (pos + 1 < text.length) {
+					const open = text[pos + 1];
+					const close =
+						open === "(" ? ")"
+						: open === "[" || open === "]" ? "]"
+						: open === "{" || open === "}" ? "}"
+						: "";
+					if (close) {
+						if (pos > prefixStart)
+							emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
+						advance(); // skip > or <
+						advance(); // skip opener
+						emit(tagLine, tagCol, 2, T.keyword);
+						while (pos < text.length) {
+							skipNonCode();
+							if (pos >= text.length || text[pos] === close) break;
+							const prev = pos;
+							parseOneValue();
+							if (pos === prev) advance();
+						}
+						if (pos < text.length && text[pos] === close) advance();
+					}
+				}
+				break;
+			}
+
 			// Call container
 			case "(": {
 				if (pos > prefixStart)
@@ -372,6 +401,12 @@ export function tokenize(text: string): Token[] {
 			case "^":
 				advance();
 				emit(prefixLine, prefixCol, pos - prefixStart, T.operator);
+				break;
+
+			// Loop control scalar (break/continue with encoded kind/depth)
+			case ";":
+				advance();
+				emit(prefixLine, prefixCol, pos - prefixStart, T.keyword);
 				break;
 		}
 	}
