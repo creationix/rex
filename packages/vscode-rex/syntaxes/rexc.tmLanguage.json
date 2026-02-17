@@ -9,12 +9,16 @@
 				{ "include": "#comment-line" },
 				{ "include": "#comment-block" },
 				{ "include": "#annotation-line" },
-				{ "include": "#control-flow" },
+				{ "include": "#control-flow-paren" },
+				{ "include": "#control-flow-loop-paren" },
+				{ "include": "#control-flow-bracket" },
+				{ "include": "#control-flow-brace" },
 				{ "include": "#call" },
 				{ "include": "#array" },
 				{ "include": "#object" },
-					{ "include": "#set-operator" },
+				{ "include": "#set-operator" },
 				{ "include": "#delete-operator" },
+				{ "include": "#loop-control" },
 				{ "include": "#string-container" },
 				{ "include": "#index-marker" },
 				{ "include": "#opcode" },
@@ -46,9 +50,45 @@
 			"name": "comment.line.annotation.rexc"
 		},
 
-		"control-flow": {
+		"control-flow-paren": {
 			"begin": "([-\\w]*)([?!|&]\\()",
 			"end": "(\\))",
+			"beginCaptures": {
+				"1": { "name": "constant.numeric.length.rexc" },
+				"2": { "name": "keyword.control.rexc" }
+			},
+			"endCaptures": {
+				"1": { "name": "keyword.control.rexc" }
+			},
+			"patterns": [{ "include": "#value" }]
+		},
+		"control-flow-loop-paren": {
+			"begin": "([-\\w]*)([><]\\()",
+			"end": "(\\))",
+			"beginCaptures": {
+				"1": { "name": "constant.numeric.length.rexc" },
+				"2": { "name": "keyword.control.rexc" }
+			},
+			"endCaptures": {
+				"1": { "name": "keyword.control.rexc" }
+			},
+			"patterns": [{ "include": "#value" }]
+		},
+		"control-flow-bracket": {
+			"begin": "([-\\w]*)([><][\\[\\]])",
+			"end": "(\\])",
+			"beginCaptures": {
+				"1": { "name": "constant.numeric.length.rexc" },
+				"2": { "name": "keyword.control.rexc" }
+			},
+			"endCaptures": {
+				"1": { "name": "keyword.control.rexc" }
+			},
+			"patterns": [{ "include": "#value" }]
+		},
+		"control-flow-brace": {
+			"begin": "([-\\w]*)([><]\\{)",
+			"end": "(\\})",
 			"beginCaptures": {
 				"1": { "name": "constant.numeric.length.rexc" },
 				"2": { "name": "keyword.control.rexc" }
@@ -108,6 +148,13 @@
 			"captures": {
 				"1": { "name": "constant.numeric.length.rexc" },
 				"2": { "name": "keyword.operator.delete.rexc" }
+			}
+		},
+		"loop-control": {
+			"match": "([-\\w]*)(;)",
+			"captures": {
+				"1": { "name": "keyword.control.loop.rexc" },
+				"2": { "name": "keyword.control.loop.rexc" }
 			}
 		},
 		"string-container": {
