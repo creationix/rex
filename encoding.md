@@ -165,9 +165,9 @@ A single unified opcode family. Control flow (`when`, `unless`, `alt`, `all`, lo
 Opcodes are used as the first value inside `()` calls:
 
 ```rexc
-(1%2+4+)   │ (add 1 2)
-(9%x$k+)   │ (gt x 10)
-(%=x$k+E+) │ (do (set x 10) 20) — do is opcode 0
+(1%2+4+)   │ 1 + 2
+(9%x$k+)   │ x > 10
+(%=x$k+E+) │ do x = 10 20 end
 ```
 
 ## References
@@ -234,8 +234,8 @@ The `(` `)` container groups a function-like expression. The first value determi
 | Any other value  | Navigation from expression result |
 
 ```rexc
-(1%2+4+)                    │ (add 1 2)
-(9%x$k+)                    │ (gt x 10)
+(1%2+4+)                    │ 1 + 2
+(9%x$k+)                    │ x > 10
 (user$address:street:)      │ user.address.street
 (5@x-forwarded-for:origin:) │ headers.x-forwarded-for.origin
 ({a:2+}a:)                  │ {a:1}.a
@@ -434,7 +434,7 @@ The encoder adds byte-length prefixes to container values only where O(1) skippi
 
 ## Worked Examples
 
-### `(add 1 2)`
+### `1 + 2`
 
 ```rexc
 (1%2+4+)
@@ -455,13 +455,13 @@ The encoder adds byte-length prefixes to container values only where O(1) skippi
 ╰───── set operator
 ```
 
-### `(when (gt x 10) (add x 1))`
+### `when x > 10 do x + 1 end`
 
 ```rexc
 ?((9%x$k+)6(1%x$2+))
 ├╯╰──┬───╯╰───┬───╯╰─ closer
 │    │        ╰────── then: (add x 1) — prefixed(6), skip position
-│    ╰─────────────── cond: (gt x 10) — bare, always evaluated
+│    ╰─────────────── cond: x > 10 — bare, always evaluated
 ╰──────────────────── when opener
 ```
 
@@ -477,7 +477,7 @@ The encoder adds byte-length prefixes to container values only where O(1) skippi
 ╰──────────────────── opener
 ```
 
-### `(alt user.name "anonymous")`
+### `user.name or "anonymous"`
 
 ```rexc
 |((user$name:)anonymous:)
@@ -504,8 +504,9 @@ map = {
   abc: "/letters"
   123: "/numbers"
 }
-(when act=(map headers.x-action)
-  headers.x-handler = act)
+when act = map.(headers.x-action) do
+  headers.x-handler = act
+end
 ```
 
 This compiles down to 85 bytes:
@@ -525,12 +526,12 @@ This compiles down to 85 bytes:
 This can be optimized using inline data and `self` instead of two local variables.
 
 ```rex
-(when
-  ({
-    "abc": "/letters"
-    "123": "/numbers"
-  } headers.x-action)
-  headers.x-handler = self)
+when {
+  "abc": "/letters"
+  "123": "/numbers"
+}.(headers.x-action) do
+  headers.x-handler = self
+end
 ```
 
 ```rex-infix

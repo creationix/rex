@@ -1,6 +1,6 @@
 # Rex High-Level Syntax
 
-An infix syntax for Rex that compiles to the same bytecode as the [core s-expression language](core-language.md). Designed for users who want to configure a system and learn as little new stuff as possible.
+An infix syntax for Rex designed for users who want to configure a system and learn as little new syntax as possible.
 
 ## Guiding Principles
 
@@ -28,17 +28,22 @@ Same as the core language. Rex is a superset of JSON with a few additions:
 
 ```rex
 // JSON types
-42, -3.14, 1e10               // numbers
-"hello", 'world'              // strings
+42                            // numbers
+-3.14
+1e10
+"hello"                       // strings
+'world'
 "\"\\\/\b\f\n\r\t\u1234"      // JSON escape codes
-true, false                   // booleans
+true                          // booleans
+false
 null                          // null
 [1, 2, 3]                     // arrays
 {"name": "Rex", "age": 65}    // objects
 
 // Rex additions
 undefined                     // absence of value
-0xFF, 0b1010                  // hex and binary numbers
+0xFF                          // hex number
+0b1010                        // binary number
 "null\0byte"                  // \0 null byte escape
 "\x48\x65\x6c\x6c\x6f"        // \xHH hex byte escapes
 'single quoted strings'       // single quotes allowed
@@ -472,14 +477,12 @@ self.address.street
 ### Nullish Coalescing
 
 ```rex
-// S-expression equivalent: (alt user.preferred-name user.name "anonymous")
 user.preferred-name or user.name or "anonymous"
 ```
 
 ### Range Check
 
 ```rex
-// S-expression equivalent: (when (all (gt age 18) (lt age 65)) (process self))
 when age > 18 and age < 65 do
   process(self)
 end
@@ -488,7 +491,6 @@ end
 ### Object Lookup with Fallback
 
 ```rex
-// S-expression equivalent: (when (map headers.x-action) (set headers.x-handler self))
 actions = {
   abc: "/letters"
   123: "/numbers"
@@ -577,34 +579,7 @@ passed-names = [k, v in scores ; v >= 50 and k]
 // → ["alice", "carol"]
 ```
 
-### Side-by-Side: HTTP API Router
-
-A realistic example using the HTTP routing domain extension. S-expression first, then infix:
-
-**S-expression:**
-
-```rex
-(when (path-match "/api/users/*")
-  (when (eq method "GET")
-    (do
-      status = 200
-      headers.content-type = "application/json")
-    (when (eq method "POST")
-      (when (all
-              (string headers.content-type)
-              (eq headers.content-type "application/json"))
-        (do
-          status = 201
-          headers.x-created = self.id)
-        (do
-          status = 415
-          headers.x-error = "Expected application/json"))
-      (do
-        status = 405
-        headers.x-error = "Method not allowed"))))
-```
-
-**Infix:**
+### HTTP API Router
 
 ```rex
 when path-match("/api/users/*") do
@@ -626,27 +601,7 @@ when path-match("/api/users/*") do
 end
 ```
 
-### Side-by-Side: Access Control
-
-**S-expression:**
-
-```rex
-(when (all
-        headers.x-api-key
-        (eq headers.x-api-key config.api-key))
-  (when (eq method "GET")
-    (set headers.x-allowed "true")
-    (when (all (eq method "POST") user.is-admin)
-      (set headers.x-allowed "true")
-      (do
-        status = 403
-        headers.x-error = "Forbidden")))
-  (do
-    status = 401
-    headers.x-error = "Invalid API key"))
-```
-
-**Infix:**
+### Access Control
 
 ```rex
 when headers.x-api-key and headers.x-api-key == config.api-key do
@@ -664,31 +619,7 @@ else
 end
 ```
 
-### Side-by-Side: Request Transformation
-
-**S-expression:**
-
-```rex
-(when (path-match "/api/search")
-  (do
-    query-term = (alt query.q query.query query.search)
-    (when query-term
-      (do
-        results = (search-index query-term)
-        headers.x-result-count = results.count
-        (when (gt results.count 0)
-          (do
-            status = 200
-            headers.content-type = "application/json")
-          (do
-            status = 404
-            headers.x-error = "No results")))
-      (do
-        status = 400
-        headers.x-error = "Missing search query"))))
-```
-
-**Infix:**
+### Request Transformation
 
 ```rex
 when path-match("/api/search") do
@@ -713,39 +644,6 @@ end
 ```
 
 ## Keyword Reference
-
-### Mapping from Core Language
-
-The high-level infix syntax maps to the same bytecode as the s-expression core:
-
-| Core (s-expression) | High-level (infix)         |
-|---------------------|----------------------------|
-| `(add a b)`         | `a + b`                    |
-| `(sub a b)`         | `a - b`                    |
-| `(mul a b)`         | `a * b`                    |
-| `(div a b)`         | `a / b`                    |
-| `(mod a b)`         | `a % b`                    |
-| `(neg a)`           | `-a`                       |
-| `(eq a b)`          | `a == b`                   |
-| `(neq a b)`         | `a != b`                   |
-| `(gt a b)`          | `a > b`                    |
-| `(gte a b)`         | `a >= b`                   |
-| `(lt a b)`          | `a < b`                    |
-| `(lte a b)`         | `a <= b`                   |
-| `(and a b)`         | `a & b`                    |
-| `(or a b)`          | `a \| b`                   |
-| `(not a)`           | `~a`                       |
-| `(xor a b)`         | `a ^ b`                    |
-| `(all a b ...)`     | `a and b and ...`          |
-| `(alt a b ...)`     | `a or b or ...`            |
-| `(when c t e)`      | `when c do t else e end`   |
-| `(unless c t e)`    | `unless c do t else e end` |
-| `(set x v)`         | `x = v`                    |
-| `(delete x)`        | `delete x`                 |
-| `(actions key)`     | `actions.(key)`            |
-| `actions.name`      | `actions.name`             |
-| `(string v)`        | `string(v)`                |
-| `self`              | `self`                     |
 
 ## Reserved Words
 
