@@ -12,8 +12,8 @@ Rex {
     | ExistenceExpr                  -- value
 
   ExistenceExpr
-    = ExistenceExpr andKw BitExpr    -- and
-    | ExistenceExpr orKw BitExpr     -- or
+    = ExistenceExpr AndKw BitExpr    -- and
+    | ExistenceExpr OrKw BitExpr     -- or
     | BitExpr                        -- value
 
   BitExpr
@@ -40,87 +40,97 @@ Rex {
   UnaryExpr
     = "-" UnaryExpr                  -- neg
     | "~" UnaryExpr                  -- not
-    | deleteKw Place                 -- delete
+    | DeleteKw Place                 -- delete
     | PostfixExpr                    -- value
 
   PostfixExpr
     = PrimaryExpr PostfixTail*       -- chain
 
   PostfixTail
-    = "." KeyName                    -- navStatic
+    = "." keyName                    -- navStatic
     | ".(" Expr ")"                 -- navDynamic
-    | "(" ArgList? ")"              -- call
-
-  ArgList
-    = Any<Expr>
+    | "(" ")"                      -- callEmpty
+    | "(" Elements<Expr> ")"        -- call
 
   PrimaryExpr
-    = WhenExpr
-    | UnlessExpr
+    = ConditionalExpr
     | ForExpr
-    | breakKw                        -- break
-    | continueKw                     -- continue
+    | BreakKw                        -- break
+    | ContinueKw                     -- continue
     | Array
     | Object
     | String
     | Number
-    | trueKw                         -- true
-    | falseKw                        -- false
-    | nullKw                         -- null
-    | undefinedKw                    -- undefined
-    | selfKw                         -- self
-    | Identifier                     -- identifier
+    | StringKw                       -- stringPred
+    | NumberKw                       -- numberPred
+    | ObjectKw                       -- objectPred
+    | ArrayKw                        -- arrayPred
+    | BooleanKw                      -- booleanPred
+    | TrueKw                         -- true
+    | FalseKw                        -- false
+    | NullKw                         -- null
+    | UndefinedKw                    -- undefined
+    | SelfKw                         -- self
+    | identifier                     -- identifier
     | "(" Expr ")"                  -- group
 
   Place
-    = PostfixExpr
+    = PlaceBase PlaceTail*
 
-  WhenExpr
-    = whenKw Expr doKw Block ElsePart? endKw
+  PlaceBase
+    = identifier
+    | SelfKw
 
-  UnlessExpr
-    = unlessKw Expr doKw Block ElsePart? endKw
+  PlaceTail
+    = "." keyName                    -- navStatic
+    | ".(" Expr ")"                 -- navDynamic
 
-  ElsePart
-    = elseKw WhenExpr                -- elseWhen
-    | elseKw Block                   -- else
+  ConditionalExpr
+    = ConditionalHead Expr DoKw Block ConditionalElse? EndKw
+
+  ConditionalHead
+    = WhenKw
+    | UnlessKw
+
+  ConditionalElse
+    = ElseKw ConditionalHead Expr DoKw Block ConditionalElse?  -- elseChain
+    | ElseKw Block                                               -- else
 
   ForExpr
-    = forKw IterBinding doKw Block endKw
+    = ForKw BindingExpr DoKw Block EndKw
+
+  BindingExpr
+    = IterBinding
+    | Expr
 
   Block
     = Expr*
 
   Array
-    = "[" ArrayBody? "]"
-
-  ArrayBody
-    = IterBinding ";" Expr          -- comprehension
-    | Any<Expr>                      -- values
+    = "[" "]"                                -- empty
+    | "[" BindingExpr ";" Expr "]"          -- comprehension
+    | "[" Elements<Expr> "]"                 -- values
 
   Object
-    = "{" ObjectBody? "}"
-
-  ObjectBody
-    = IterBinding ";" ObjKey ":" Expr  -- comprehension
-    | Any<Pair>                             -- pairs
+    = "{" "}"                                 -- empty
+    | "{" BindingExpr ";" ObjKey ":" Expr "}" -- comprehension
+    | "{" Elements<Pair> "}"                 -- pairs
 
   IterBinding
-    = Identifier "," Identifier inKw Expr  -- keyValueIn
-    | Identifier inKw Expr                 -- valueIn
-    | Identifier ofKw Expr                 -- keyOf
-    | Expr                                 -- implicit
+    = identifier "," identifier "in" Expr   -- keyValueIn
+    | identifier "in" Expr                  -- valueIn
+    | identifier "of" Expr                  -- keyOf
 
   Pair
     = ObjKey ":" Expr
 
   ObjKey
-    = KeyName                        -- bare
+    = keyName                        -- bare
     | Number                         -- number
     | String                         -- string
     | "(" Expr ")"                  -- computed
 
-  KeyName
+  keyName
     = nameHead nameTail*
 
   CompareOp
@@ -142,11 +152,11 @@ Rex {
     | "|="
     | "^="
 
-  Any<item>
-    = (item ","?)*
+  Elements<item>
+    = item (","? item)* ","?
 
-  Identifier
-    = ~Reserved nameHead nameTail*
+  identifier
+    = ~reserved nameHead nameTail*
 
   nameHead
     = letter
@@ -158,98 +168,161 @@ Rex {
     | "_"
     | "-"
 
-  Reserved
-    = trueKw
-    | falseKw
-    | nullKw
-    | undefinedKw
-    | selfKw
-    | whenKw
-    | unlessKw
-    | forKw
-    | inKw
-    | ofKw
-    | doKw
-    | elseKw
-    | endKw
-    | breakKw
-    | continueKw
-    | andKw
-    | orKw
-    | deleteKw
-    | stringKw
-    | numberKw
-    | objectKw
-    | arrayKw
-    | booleanKw
+  reserved
+    = trueTok
+    | falseTok
+    | nullTok
+    | undefinedTok
+    | selfTok
+    | whenTok
+    | unlessTok
+    | forTok
+    | inTok
+    | ofTok
+    | doTok
+    | elseTok
+    | endTok
+    | breakTok
+    | continueTok
+    | andTok
+    | orTok
+    | deleteTok
+    | stringTok
+    | numberTok
+    | objectTok
+    | arrayTok
+    | booleanTok
 
-  trueKw
+  TrueKw
+    = trueTok
+
+  FalseKw
+    = falseTok
+
+  NullKw
+    = nullTok
+
+  UndefinedKw
+    = undefinedTok
+
+  SelfKw
+    = selfTok
+
+  WhenKw
+    = whenTok
+
+  UnlessKw
+    = unlessTok
+
+  ForKw
+    = forTok
+
+  DoKw
+    = doTok
+
+  ElseKw
+    = elseTok
+
+  EndKw
+    = endTok
+
+  BreakKw
+    = breakTok
+
+  ContinueKw
+    = continueTok
+
+  AndKw
+    = andTok
+
+  OrKw
+    = orTok
+
+  DeleteKw
+    = deleteTok
+
+  StringKw
+    = stringTok
+
+  NumberKw
+    = numberTok
+
+  ObjectKw
+    = objectTok
+
+  ArrayKw
+    = arrayTok
+
+  BooleanKw
+    = booleanTok
+
+  trueTok
     = "true" ~nameTail
 
-  falseKw
+  falseTok
     = "false" ~nameTail
 
-  nullKw
+  nullTok
     = "null" ~nameTail
 
-  undefinedKw
+  undefinedTok
     = "undefined" ~nameTail
 
-  selfKw
+  selfTok
     = "self" ~nameTail
 
-  whenKw
+  whenTok
     = "when" ~nameTail
 
-  unlessKw
+  unlessTok
     = "unless" ~nameTail
 
-  forKw
+  forTok
     = "for" ~nameTail
 
-  inKw
+  inTok
     = "in" ~nameTail
 
-  ofKw
+  ofTok
     = "of" ~nameTail
 
-  doKw
+  doTok
     = "do" ~nameTail
 
-  elseKw
+  elseTok
     = "else" ~nameTail
 
-  endKw
+  endTok
     = "end" ~nameTail
 
-  breakKw
+  breakTok
     = "break" ~nameTail
 
-  continueKw
+  continueTok
     = "continue" ~nameTail
 
-  andKw
+  andTok
     = "and" ~nameTail
 
-  orKw
+  orTok
     = "or" ~nameTail
 
-  deleteKw
+  deleteTok
     = "delete" ~nameTail
 
-  stringKw
+  stringTok
     = "string" ~nameTail
 
-  numberKw
+  numberTok
     = "number" ~nameTail
 
-  objectKw
+  objectTok
     = "object" ~nameTail
 
-  arrayKw
+  arrayTok
     = "array" ~nameTail
 
-  booleanKw
+  booleanTok
     = "boolean" ~nameTail
 
   String
