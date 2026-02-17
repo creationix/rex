@@ -1,22 +1,22 @@
 /* Error normalization sample for HTTP gateways */
 
-request-id = headers.x-request-id or trace-id()
-operation = headers.x-operation or "unknown"
+request-id = req.headers.x-request-id or trace-id()
+operation = req.headers.x-operation or "unknown"
 
-status = 200
-headers-out = {x-request-id: request-id}
+res.status = 200
+res.headers = {x-request-id: request-id}
 body-out = {ok: true}
 
 raw = execute-operation(operation, {
   request-id: request-id,
-  method: method,
-  path: path,
-  query: query,
-  body: body
+  method: req.method,
+  path: req.path,
+  query: req.query,
+  body: req.body
 })
 
 unless raw do
-  status = 502
+  res.status = 502
   body-out = {
     ok: false,
     error: "upstream_unavailable",
@@ -29,17 +29,17 @@ when raw do
   upstream-error = raw.error
 
   when upstream-status < 400 do
-    status = upstream-status
+    res.status = upstream-status
     body-out = raw.body or {ok: true}
-    headers-out = merge-headers(headers-out, raw.headers or {})
+    res.headers = merge-headers(res.headers, raw.headers or {})
   end
 
   when upstream-status >= 400 do
-    status = upstream-status
+    res.status = upstream-status
 
     // map transient/network class
     when upstream-error and starts-with(upstream-error.code, "ECONN") do
-      status = 503
+      res.status = 503
       body-out = {
         ok: false,
         error: "service_unavailable",
@@ -95,7 +95,7 @@ when raw do
 
     // map fallback 5xx
     when upstream-status >= 500 and body-out.ok != false do
-      status = 502
+      res.status = 502
       body-out = {
         ok: false,
         error: "upstream_failure",
@@ -104,15 +104,15 @@ when raw do
       }
     end
 
-    headers-out.x-error-code = body-out.code or "UNKNOWN"
+    res.headers.x-error-code = body-out.code or "UNKNOWN"
   end
 end
 
 trace("gateway.error-map", {
   id: request-id,
   operation: operation,
-  status: status,
+  status: res.status,
   code: body-out.code
 })
 
-{status: status, headers: headers-out, body: body-out}
+{status: res.status, headers: res.headers, body: body-out}

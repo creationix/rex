@@ -9,9 +9,9 @@ service-name = "billing-api"
 environment = env or "prod"
 maintenance-mode = false
 
-request-id = headers.x-request-id or trace-id()
-request-path = path
-request-method = method
+request-id = req.headers.x-request-id or trace-id()
+request-path = req.path
+request-method = req.method
 route-key = request-method + " " + request-path
 
 // ---------- canonical route table ----------
@@ -173,45 +173,45 @@ routes = {
 matched-route = routes.(route-key)
 
 // ---------- defaults ----------
-status = 200
-response-headers = {}
+res.status = 200
+res.headers = {}
 response-body = {ok: true}
 reject-reason = undefined
 
 // ---------- global middleware behaviors ----------
-headers.x-request-id = request-id
+req.headers.x-request-id = request-id
 trace("request.start", {id: request-id, method: request-method, path: request-path})
 
 // maintenance mode short-circuit
 when maintenance-mode and request-path != "/health" do
-  status = 503
+  res.status = 503
   response-body = {ok: false, error: "service_unavailable"}
   reject-reason = "maintenance"
 end
 
 // route resolution
 unless matched-route do
-  status = 404
+  res.status = 404
   response-body = {ok: false, error: "route_not_found"}
   reject-reason = "route"
 end
 
 // ---------- CORS ----------
-response-headers.access-control-allow-origin = cors-allow-origin(headers.origin)
-response-headers.access-control-allow-credentials = "true"
-response-headers.vary = "Origin"
+res.headers.access-control-allow-origin = cors-allow-origin(req.headers.origin)
+res.headers.access-control-allow-credentials = "true"
+res.headers.vary = "Origin"
 
 when request-method == "OPTIONS" do
-  response-headers.access-control-allow-methods = "GET,POST,PATCH,DELETE,OPTIONS"
-  response-headers.access-control-allow-headers = "authorization,content-type,x-request-id,x-tenant,x-signature"
-  status = 204
+  res.headers.access-control-allow-methods = "GET,POST,PATCH,DELETE,OPTIONS"
+  res.headers.access-control-allow-headers = "authorization,content-type,x-request-id,x-tenant,x-signature"
+  res.status = 204
 end
 
 // ---------- security headers ----------
-response-headers.x-content-type-options = "nosniff"
-response-headers.x-frame-options = "DENY"
-response-headers.referrer-policy = "no-referrer"
-response-headers.content-security-policy = "default-src 'none'"
+res.headers.x-content-type-options = "nosniff"
+res.headers.x-frame-options = "DENY"
+res.headers.referrer-policy = "no-referrer"
+res.headers.content-security-policy = "default-src 'none'"
 
 // ---------- dynamic policy lookup ----------
 rate-policies = {
@@ -232,23 +232,23 @@ route-rate-policy = when matched-route do rate-policies.(matched-route.rate-poli
 route-cache-policy = when matched-route do cache-policies.(matched-route.cache-policy) end
 
 // ---------- tenant middleware ----------
-tenant-id = headers.x-tenant or query.tenant or "public"
+tenant-id = req.headers.x-tenant or req.query.tenant or "public"
 tenant-policy = tenant-config(tenant-id)
 
 unless tenant-policy do
-  status = 403
+  res.status = 403
   response-body = {ok: false, error: "unknown_tenant"}
   reject-reason = "tenant"
 end
 
 // ---------- auth middleware ----------
 auth-mode = when matched-route do matched-route.auth end
-api-key = headers.authorization
-session-token = cookies.session
+api-key = req.headers.authorization
+session-token = req.cookies.session
 
 when auth-mode == "api-key" do
   unless api-key and api-key-valid(api-key, tenant-id) do
-    status = 401
+    res.status = 401
     response-body = {ok: false, error: "invalid_api_key"}
     reject-reason = "auth"
   end
@@ -256,7 +256,7 @@ end
 
 when auth-mode == "session" do
   unless session-token and session-valid(session-token, tenant-id) do
-    status = 401
+    res.status = 401
     response-body = {ok: false, error: "invalid_session"}
     reject-reason = "auth"
   end
@@ -264,76 +264,76 @@ end
 
 when auth-mode == "admin" do
   unless session-token and session-has-role(session-token, "admin") do
-    status = 403
+    res.status = 403
     response-body = {ok: false, error: "admin_required"}
     reject-reason = "auth"
   end
 end
 
 // ---------- request size middleware ----------
-content-length = number(headers.content-length) or 0
+content-length = number(req.headers.content-length) or 0
 max-body-bytes = when tenant-policy do tenant-policy.max-body-bytes else 1048576 end
 
 when content-length > max-body-bytes do
-  status = 413
+  res.status = 413
   response-body = {ok: false, error: "payload_too_large"}
   reject-reason = "body-limit"
 end
 
 // ---------- signature middleware for webhooks ----------
 when matched-route and matched-route.operation == "payments/charge" do
-  unless verify-signature(headers.x-signature, body, tenant-policy.signing-secret) do
-    status = 401
+  unless verify-signature(req.headers.x-signature, req.body, tenant-policy.signing-secret) do
+    res.status = 401
     response-body = {ok: false, error: "bad_signature"}
     reject-reason = "signature"
   end
 end
 
 // ---------- rate limit middleware ----------
-rate-key = tenant-id + ":" + ip + ":" + route-key
+rate-key = tenant-id + ":" + req.ip + ":" + route-key
 when route-rate-policy do
   unless rate-limit-allow(rate-key, route-rate-policy.window-ms, route-rate-policy.limit) do
-    status = 429
-    response-headers.retry-after = "60"
+    res.status = 429
+    res.headers.retry-after = "60"
     response-body = {ok: false, error: "rate_limited"}
     reject-reason = "rate-limit"
   end
 end
 
 // ---------- body parse + validation middleware ----------
-parsed-body = when headers.content-type == "application/json" do json-parse(body) end
+parsed-body = when req.headers.content-type == "application/json" do json-parse(req.body) end
 validation-schema = when matched-route do schema-for-operation(matched-route.operation) end
 
 when validation-schema and parsed-body do
   unless validate-json(parsed-body, validation-schema) do
-    status = 422
+    res.status = 422
     response-body = {ok: false, error: "validation_failed", details: validation-errors()}
     reject-reason = "validate"
   end
 end
 
 // ---------- idempotency middleware ----------
-idempotency-key = headers.idempotency-key
+idempotency-key = req.headers.idempotency-key
 when request-method == "POST" or request-method == "PATCH" do
   when idempotency-key do
     cached-write = idempotency-read(tenant-id, idempotency-key)
     when cached-write do
-      status = cached-write.status
+      res.status = cached-write.status
       response-body = cached-write.body
-      response-headers.x-idempotent-replay = "true"
+      res.headers.x-idempotent-replay = "true"
       reject-reason = "idempotency-replay"
     end
   end
 end
 
 // ---------- cache read middleware ----------
-cache-key = tenant-id + ":" + route-key + ":" + query-cache-key(query)
+cache-key = tenant-id + ":" + route-key + ":" + query-cache-key(req.query)
 when route-cache-policy and route-cache-policy.enabled and request-method == "GET" do
   cached-response = cache-read(cache-key)
   when cached-response do
-    status = cached-response.status
+    res.status = cached-response.status
     response-body = cached-response.body
-    response-headers.x-cache = "HIT"
+    res.headers.x-cache = "HIT"
     reject-reason = "cache-hit"
   end
 end
@@ -348,28 +348,28 @@ when should-execute do
     request-id: request-id,
     path: request-path,
     method: request-method,
-    headers: headers,
-    query: query,
-    body: parsed-body or body
+    headers: req.headers,
+    query: req.query,
+    body: parsed-body or req.body
   }, timeout-ms)
 
   unless upstream do
-    status = 502
+    res.status = 502
     response-body = {ok: false, error: "upstream_unavailable"}
     reject-reason = "upstream"
   end
 
   when upstream do
-    status = upstream.status or 200
+    res.status = upstream.status or 200
     response-body = upstream.body or {ok: true}
-    response-headers = merge-headers(response-headers, upstream.headers or {})
+    res.headers = merge-headers(res.headers, upstream.headers or {})
   end
 end
 
 // ---------- cache write middleware ----------
-when route-cache-policy and route-cache-policy.enabled and request-method == "GET" and status == 200 do
-  cache-write(cache-key, {status: status, body: response-body}, route-cache-policy.ttl-ms)
-  response-headers.x-cache = "MISS"
+when route-cache-policy and route-cache-policy.enabled and request-method == "GET" and res.status == 200 do
+  cache-write(cache-key, {status: res.status, body: response-body}, route-cache-policy.ttl-ms)
+  res.headers.x-cache = "MISS"
 end
 
 // ---------- audit + trace middleware ----------
@@ -379,7 +379,7 @@ audit-event = {
   method: request-method
   path: request-path
   route: route-key
-  status: status
+  status: res.status
   rejected-by: reject-reason
 }
 
@@ -390,23 +390,23 @@ end
 trace("request.finish", {
   id: request-id,
   route: route-key,
-  status: status,
+  status: res.status,
   rejected: reject-reason,
-  cache: response-headers.x-cache
+  cache: res.headers.x-cache
 })
 
 // ---------- response envelope middleware ----------
 response-body = {
-  ok: status < 400,
+  ok: res.status < 400,
   request-id: request-id,
-  data: when status < 400 do response-body end,
-  error: when status >= 400 do response-body.error or "unknown" end
+  data: when res.status < 400 do response-body end,
+  error: when res.status >= 400 do response-body.error or "unknown" end
 }
 
 // ---------- final output ----------
 result = {
-  status: status,
-  headers: response-headers,
+  status: res.status,
+  headers: res.headers,
   body: response-body
 }
 
