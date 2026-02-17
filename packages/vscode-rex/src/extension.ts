@@ -18,9 +18,9 @@ const BYTE_LENGTH_TYPE = TOKEN_TYPES.indexOf("byteLength");
 const NUMBER_TYPE = TOKEN_TYPES.indexOf("number");
 
 const rexcLegend = new vscode.SemanticTokensLegend(TOKEN_TYPES as unknown as string[]);
-const REX_TOKEN_TYPES = ["variable", "type"];
+const REX_TOKEN_TYPES = ["rexLocal", "rexDomain"];
 const REX_TOKEN_MODIFIERS = ["declaration"];
-const REX_VARIABLE_TYPE = 0;
+const REX_LOCAL_TYPE = 0;
 const REX_DOMAIN_TYPE = 1;
 const REX_DECLARATION_MODIFIER = 1 << 0;
 const rexLegend = new vscode.SemanticTokensLegend(REX_TOKEN_TYPES, REX_TOKEN_MODIFIERS);
@@ -111,7 +111,7 @@ class RexSemanticTokenProvider
 				start.line,
 				start.character,
 				definition.end - definition.start,
-				REX_VARIABLE_TYPE,
+				REX_LOCAL_TYPE,
 				REX_DECLARATION_MODIFIER,
 			);
 		}
@@ -124,7 +124,7 @@ class RexSemanticTokenProvider
 					start.line,
 					start.character,
 					reference.end - reference.start,
-					REX_VARIABLE_TYPE,
+					REX_LOCAL_TYPE,
 					0,
 				);
 				continue;
