@@ -15,6 +15,8 @@ describe("Rex IR (handwritten)", () => {
 		expectIR("null", { type: "null" });
 		expectIR("undefined", { type: "undefined" });
 		expectIR("self", { type: "self" });
+		expectIR("-42", { type: "number", raw: "-42", value: -42 });
+		expectIR("-123.456", { type: "number", raw: "-123.456", value: -123.456 });
 		expectIR("0x2A", { type: "number", raw: "0x2A", value: 42 });
 		expectIR("0b101", { type: "number", raw: "0b101", value: 5 });
 		expectIR("'ok'", { type: "string", raw: "'ok'" });
@@ -302,5 +304,27 @@ total`,
 				],
 			},
 		);
+	});
+
+	test("standalone do-expression lowers to sequence semantics", () => {
+		expectIR("do x = 10 x + 2 end", {
+			type: "program",
+			body: [
+				{
+					type: "assign",
+					op: "=",
+					place: { type: "identifier", name: "x" },
+					value: { type: "number", raw: "10", value: 10 },
+				},
+				{
+					type: "binary",
+					op: "add",
+					left: { type: "identifier", name: "x" },
+					right: { type: "number", raw: "2", value: 2 },
+				},
+			],
+		});
+
+		expectIR("do end", { type: "undefined" });
 	});
 });

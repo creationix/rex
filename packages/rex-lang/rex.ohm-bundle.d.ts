@@ -77,6 +77,7 @@ export interface RexActionDict<T> extends BaseActionDict<T> {
   ConditionalElse_else?: (this: NonterminalNode, arg0: NonterminalNode, arg1: NonterminalNode) => T;
   ConditionalElse?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   ForExpr?: (this: NonterminalNode, arg0: NonterminalNode, arg1: NonterminalNode, arg2: NonterminalNode, arg3: NonterminalNode, arg4: NonterminalNode) => T;
+  DoExpr?: (this: NonterminalNode, arg0: NonterminalNode, arg1: NonterminalNode, arg2: NonterminalNode) => T;
   BindingExpr?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   Block?: (this: NonterminalNode, arg0: IterationNode) => T;
   Array_empty?: (this: NonterminalNode, arg0: TerminalNode, arg1: TerminalNode) => T;

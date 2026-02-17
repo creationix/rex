@@ -9,7 +9,9 @@
 	},
 	"scripts": {
 		"test": "bun test",
-		"build:grammar": "ohm generateBundles --withTypes rex.ohm"
+		"build:grammar": "ohm generateBundles --withTypes rex.ohm",
+		"compile": "bun run rex-compile.ts",
+		"verify:docs": "bun run verify-doc-examples.ts"
 	},
 	"repository": {
 		"type": "git",
