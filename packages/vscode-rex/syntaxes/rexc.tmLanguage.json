@@ -2,6 +2,7 @@
 	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
 	"name": "Rex Compact Encoding",
 	"scopeName": "source.rexc",
+	"wordPattern": "[a-zA-Z_][a-zA-Z0-9_-]*",
 	"patterns": [{ "include": "#value" }],
 	"repository": {
 		"value": {
