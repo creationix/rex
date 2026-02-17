@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { compile, optimizeIR, parseToIR } from "./rex.ts";
+import {
+	clearDomainExtensionRefs,
+	compile,
+	minifyLocalNamesIR,
+	optimizeIR,
+	parseToIR,
+	registerDomainExtensionRef,
+} from "./rex.ts";
 
 describe("Rex IR optimizer", () => {
 	test("folds arithmetic constants", () => {
@@ -176,5 +183,67 @@ end
 				{ type: "identifier", name: "x" },
 			],
 		});
+	});
+
+	test("minifies local variable names by frequency", () => {
+		const minified = minifyLocalNamesIR(parseToIR("x = method y = x + path y"));
+		expect(minified).toEqual({
+			type: "program",
+			body: [
+				{
+					type: "assign",
+					op: "=",
+					place: { type: "identifier", name: "" },
+					value: { type: "identifier", name: "method" },
+				},
+				{
+					type: "assign",
+					op: "=",
+					place: { type: "identifier", name: "1" },
+					value: {
+						type: "binary",
+						op: "add",
+						left: { type: "identifier", name: "" },
+						right: { type: "identifier", name: "path" },
+					},
+				},
+				{ type: "identifier", name: "1" },
+			],
+		});
+	});
+
+	test("compile supports minifyNames without renaming globals", () => {
+		const encoded = compile("route-key = method + path route-key", { minifyNames: true });
+		expect(encoded).toContain("method$");
+		expect(encoded).toContain("path$");
+		expect(encoded).toContain("=$");
+		expect(encoded).not.toContain("route-key$");
+	});
+
+	test("compile maps configured domain symbols to apostrophe refs", () => {
+		const encoded = compile("headers.x-tenant", { domainRefs: { headers: 0 } });
+		expect(encoded).toBe("('x-tenant:)");
+	});
+
+	test("registered domain extension refs are used by compile", () => {
+		registerDomainExtensionRef("headers", 0);
+		registerDomainExtensionRef("edge-config", 12);
+		const encoded = compile("headers.x-request-id or edge-config.routing");
+		expect(encoded).toContain("('x-request-id:)");
+		expect(encoded).toContain("c'routing:");
+		clearDomainExtensionRefs();
+	});
+
+	test("compile deduplicates repeated large literals with pointers", () => {
+		const encoded = compile("a = {message: \"this_is_a_large_repeated_literal\"} b = {message: \"this_is_a_large_repeated_literal\"} [a b]", {
+			dedupeValues: true,
+			dedupeMinBytes: 12,
+		});
+		expect(encoded.includes("^")).toBe(true);
+	});
+
+	test("compile deduplicates short repeated values when pointer is smaller", () => {
+		const encoded = compile("[\"abcd\" \"abcd\"]", { dedupeValues: true });
+		expect(encoded.includes("^")).toBe(true);
 	});
 });

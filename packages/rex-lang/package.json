@@ -1,17 +1,45 @@
 {
 	"name": "@creationix/rex",
-	"version": "0.1.0",
+	"version": "0.1.2",
 	"description": "Compiler and parser for the Rex language",
+	"keywords": [
+		"rex",
+		"dsl",
+		"compiler",
+		"parser",
+		"configuration"
+	],
 	"type": "module",
+	"bin": {
+		"rex": "./rex-cli.js"
+	},
 	"main": "rex.ts",
+	"types": "./rex.ts",
 	"exports": {
 		".": "./rex.ts"
 	},
+	"files": [
+		"README.md",
+		"LICENSE",
+		"rex.ts",
+		"rex-compile.ts",
+		"rex-cli.js",
+		"rex.ohm",
+		"rex.ohm-bundle.cjs",
+		"rex.ohm-bundle.js",
+		"rex.ohm-bundle.d.ts",
+		"rexc-interpreter.ts"
+	],
 	"scripts": {
 		"test": "bun test",
-		"build:grammar": "ohm generateBundles --withTypes rex.ohm",
+		"build:grammar": "ohm generateBundles --withTypes rex.ohm && node -e \"require('node:fs').copyFileSync('rex.ohm-bundle.js','rex.ohm-bundle.cjs')\"",
 		"compile": "bun run rex-compile.ts",
-		"verify:docs": "bun run verify-doc-examples.ts"
+		"verify:docs": "bun run verify-doc-examples.ts",
+		"pack:dry-run": "npm pack --dry-run",
+		"prepublishOnly": "bun run build:grammar && bun test && npm run pack:dry-run"
+	},
+	"publishConfig": {
+		"access": "public"
 	},
 	"repository": {
 		"type": "git",

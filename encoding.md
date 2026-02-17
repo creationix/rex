@@ -510,7 +510,7 @@ This yields `[3, 6, 12, 15, 21, 24, 30]`.
 
 ### HTTP Server Action Annotations
 
-This is a larger example using a domain provided `headers` ref object `5'`.
+This is a larger example using a domain provided `headers` ref object `0'` (shown as `'` in compact form).
 
 ```rex
 map = {
@@ -522,18 +522,10 @@ when act = map.(headers.x-action) do
 end
 ```
 
-This compiles down to 85 bytes:
+This compiles down to 84 bytes:
 
 ```rexc
-(%=map${abc:8,/letters123:8,/numbers}?(=act$(map$(5'x-action:))g=(5'x-handler:)act$))
-├╯╰────────────────┬────────────────╯├╯╰──────────┬───────────╯│╰───────┬─────────╯│╰─ do closer
-│                  │                 │            │            │        │          ╰── when closer
-│                  │                 │            │            │        ╰───────────── headers.x-handler = act
-│                  │                 │            │            ╰────────────────────── skippable prefix
-│                  │                 │            ╰─────────────────────────────────── act = map.(headers.x-action)
-│                  │                 ╰──────────────────────────────────────────────── when opener
-│                  ╰────────────────────────────────────────────────────────────────── map = {...}
-╰───────────────────────────────────────────────────────────────────────────────────── do opener
+(%=map$r{abc:8,/letters3S+8,/numbers}?(=act$g(map$('x-action:))h=('x-handler:)act$))
 ```
 
 This can be optimized using inline data and `self` instead of two local variables.
@@ -547,44 +539,26 @@ when {
 end
 ```
 
-```rex-infix
-when {
-  abc: "/letters"
-  123: "/numbers"
-}.(headers.x-action) do
-  headers.x-handler = self
-end
-```
-
-Which compiles down to 65 bytes:
+Which compiles down to 62 bytes:
 
 ```rexc
-?(({abc:8,/letters123:8,/numbers}(5'x-action:))f=(5'x-handler:)@)
-├╯╰─────────────────────┬─────────────────────╯│╰──────┬───────╯╰─ when closer
-│                       │                      │       ╰────────── headers.x-handler=self
-│                       │                      ╰────────────────── skippable prefix
-│                       ╰───────────────────────────────────────── {...}.(headers.x-action)
-╰───────────────────────────────────────────────────────────────── when opener
+?(({abc:8,/letters3S+8,/numbers}('x-action:))e=('x-handler:)@)
 ```
 
-### Large Object with Duplicates
+### Repeated Value with Pointers
 
-Consider this array of objects with some duplicate values:
+Consider this array with a repeated large string value:
 
 ```rex
 [
-  { color: 'green' fruits: ['apple'] }
-  { color: 'yellow' fruits: ['apple' 'banana'] }
-  { color: 'orange' fruits: ['orange'] }
+  { cache-key: "tenant:public:route:GET:/v1/search" }
+  { cache-key: "tenant:public:route:GET:/v1/search" }
+  { cache-key: "tenant:public:route:GET:/v1/search" }
 ]
 ```
 
-Using pointers, this encodes to 78 bytes:
+Using pointers, this encodes to 81 bytes:
 
 ```rexc
-[f{K^green:K^2[h^]}r{s^yellow:r^d[apple:banana:]}p{color:9^fruits:7[orange:]}]
-    │       │   │     │        │  │                │      ╰┼────────╯ pointer to "orange"
-    │       ╰───┼─────┼────────┴──┼────────────────┼───────╯ pointers to "fruits"
-    ╰───────────┼─────┴───────────┼────────────────╯ pointers to "color"
-                ╰─────────────────╯ pointer to "apple"
+[K{cache-key:-^}K{cache-key:L^}K{cache-key:y,tenant:public:route:GET:/v1/search}]
 ```

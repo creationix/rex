@@ -17,6 +17,24 @@ Use the dedicated compiler helper instead of mentally deriving compact encodings
 bun run rex:compile --expr "when x do y end"
 bun run rex:compile --file input.rex
 cat input.rex | bun run rex:compile
+bun run rex:compile --expr "x = method + path x" --minify-names
+```
+
+Installable CLI alternative:
+
+```sh
+bun add -g @creationix/rex
+rex --expr "when x do y end"
+rex --file input.rex
+cat input.rex | rex
+rex --expr "x = method + path x" --minify-names
+```
+
+No-install alternatives:
+
+```sh
+bunx @creationix/rex --expr "when x do y end"
+npx -y @creationix/rex -- --expr "when x do y end"
 ```
 
 Use `--ir` when you want lowered IR JSON instead of compact encoding.
@@ -40,6 +58,20 @@ From repo root:
 ```sh
 bun run rex:compile --expr "when x do y end"
 bun run rex:verify-docs
+```
+
+Installable CLI:
+
+```sh
+rex --expr "when x do y end"
+bun run rex:verify-docs
+```
+
+No-install CLI:
+
+```sh
+bunx @creationix/rex --expr "when x do y end"
+npx -y @creationix/rex -- --expr "when x do y end"
 ```
 
 From `packages/rex-lang`:
