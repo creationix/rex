@@ -2148,6 +2148,7 @@ semantics.addOperation("toIR", {
 // rex-compile.ts
 import { dirname, resolve } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
+var FIRST_NON_RESERVED_REF = 5;
 function parseArgs(argv) {
   const options = {
     ir: false,
@@ -2300,10 +2301,24 @@ async function loadDomainRefsFromFolder(folderPath) {
     throw new Error(`Invalid rex-domain.json at ${schemaPath}: expected { globals: { ... } }`);
   }
   const refs = {};
-  let nextRef = 0;
-  for (const name of Object.keys(parsed.globals)) {
-    refs[name] = nextRef;
-    nextRef += 1;
+  const seenRefIds = new Map;
+  for (const [name, entry] of Object.entries(parsed.globals)) {
+    if (!entry || typeof entry !== "object") {
+      throw new Error(`Invalid rex-domain.json at ${schemaPath}: globals.${name} must be an object with a numeric ref`);
+    }
+    const ref = entry.ref;
+    if (!Number.isInteger(ref)) {
+      throw new Error(`Invalid rex-domain.json at ${schemaPath}: globals.${name}.ref must be an integer`);
+    }
+    if (ref < FIRST_NON_RESERVED_REF) {
+      throw new Error(`Invalid rex-domain.json at ${schemaPath}: globals.${name}.ref must be >= ${FIRST_NON_RESERVED_REF} (0-4 are reserved built-ins)`);
+    }
+    const existing = seenRefIds.get(ref);
+    if (existing) {
+      throw new Error(`Invalid rex-domain.json at ${schemaPath}: duplicate ref ${ref} for globals.${existing} and globals.${name}`);
+    }
+    seenRefIds.set(ref, name);
+    refs[name] = ref;
   }
   return refs;
 }
