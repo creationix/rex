@@ -403,6 +403,26 @@ function encodeNode(node: IRNode): string {
 			if (node.op === "neg") return encodeCallParts([encodeOpcode("neg"), encodeNode(node.value)]);
 			return encodeCallParts([encodeOpcode("not"), encodeNode(node.value)]);
 		case "binary":
+			if (node.op === "and") {
+				const operands = collectLogicalChain(node, "and");
+				const body = operands
+					.map((operand, index) => {
+						const encoded = encodeNode(operand);
+						return index === 0 ? encoded : addOptionalPrefix(encoded);
+					})
+					.join("");
+				return `&(${body})`;
+			}
+			if (node.op === "or") {
+				const operands = collectLogicalChain(node, "or");
+				const body = operands
+					.map((operand, index) => {
+						const encoded = encodeNode(operand);
+						return index === 0 ? encoded : addOptionalPrefix(encoded);
+					})
+					.join("");
+				return `|(${body})`;
+			}
 			return encodeCallParts([
 				encodeOpcode(BINARY_TO_OPCODE[node.op]),
 				encodeNode(node.left),
@@ -437,6 +457,11 @@ function encodeNode(node: IRNode): string {
 			throw new Error(`Unsupported IR node ${(exhaustive as { type?: string }).type ?? "unknown"}`);
 		}
 	}
+}
+
+function collectLogicalChain(node: IRNode, op: "and" | "or"): IRNode[] {
+	if (node.type !== "binary" || node.op !== op) return [node];
+	return [...collectLogicalChain(node.left, op), ...collectLogicalChain(node.right, op)];
 }
 
 export function parseToIR(source: string): IRNode {
@@ -863,7 +888,7 @@ function optimizeBlock(block: IRNode[], env: OptimizeEnv, currentDepth: number):
 	return eliminateDeadAssignments(out);
 }
 
-function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number): IRNode {
+function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number, asPlace = false): IRNode {
 	switch (node.type) {
 		case "program": {
 			const body = optimizeBlock(node.body, cloneOptimizeEnv(env), currentDepth);
@@ -872,6 +897,7 @@ function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number): IRN
 			return { type: "program", body } satisfies IRNode;
 		}
 		case "identifier": {
+			if (asPlace) return node;
 			const selfTarget = env.selfCaptures[node.name];
 			if (selfTarget !== undefined) {
 				const rewritten = selfNodeFromTarget(selfTarget, currentDepth);
@@ -896,7 +922,7 @@ function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number): IRN
 			} satisfies IRNode;
 		}
 		case "unary": {
-			const value = optimizeNode(node.value, env, currentDepth);
+			const value = optimizeNode(node.value, env, currentDepth, node.op === "delete");
 			const foldedValue = constValue(value);
 			if (foldedValue !== undefined || value.type === "undefined") {
 				const folded = foldUnary(node.op, foldedValue);
@@ -963,7 +989,7 @@ function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number): IRN
 			return {
 				type: "assign",
 				op: node.op,
-				place: optimizeNode(node.place, env, currentDepth),
+				place: optimizeNode(node.place, env, currentDepth, true),
 				value: optimizeNode(node.value, env, currentDepth),
 			} satisfies IRNode;
 		}
