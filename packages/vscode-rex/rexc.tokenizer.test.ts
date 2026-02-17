@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { TOKEN_TYPES, tokenize } from "./src/rexc-tokenizer.ts";
 
 const K = TOKEN_TYPES.indexOf("keyword");
+const P = TOKEN_TYPES.indexOf("property");
+const S = TOKEN_TYPES.indexOf("string");
 
 function keywordCount(input: string) {
 	return tokenize(input).filter((token) => token.type === K).length;
@@ -24,5 +26,13 @@ describe("rexc tokenizer", () => {
 		const tokens = tokenize("; 1; 2; x;");
 		const keywordTokens = tokens.filter((token) => token.type === K);
 		expect(keywordTokens.length).toBe(4);
+	});
+
+	test("treats @ and apostrophe as scalar tags, not string quote", () => {
+		const tokens = tokenize("@ 1@ ' 1'");
+		const propertyTokens = tokens.filter((token) => token.type === P);
+		const stringTokens = tokens.filter((token) => token.type === S);
+		expect(propertyTokens.length).toBe(4);
+		expect(stringTokens.length).toBe(0);
 	});
 });

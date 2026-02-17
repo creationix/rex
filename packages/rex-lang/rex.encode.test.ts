@@ -34,4 +34,8 @@ describe("Rex encoding backend", () => {
 	test("encodes standalone do-expression", () => {
 		expect(compile("do x = 10 20 end")).toBe("(%=x$k+E+)");
 	});
+
+	test("encodes depth-aware self from high-level form", () => {
+		expect(compile("self@2")).toBe("1@");
+	});
 });

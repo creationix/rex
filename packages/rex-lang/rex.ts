@@ -7,6 +7,7 @@ export type IRNode =
 	| { type: "program"; body: IRNode[] }
 	| { type: "identifier"; name: string }
 	| { type: "self" }
+	| { type: "selfDepth"; depth: number }
 	| { type: "boolean"; value: boolean }
 	| { type: "null" }
 	| { type: "undefined" }
@@ -287,7 +288,7 @@ function addOptionalPrefix(encoded: string): string {
 }
 
 function encodeBlockExpression(block: IRNode[]): string {
-	if (block.length === 0) return "4@";
+	if (block.length === 0) return "4'";
 	if (block.length === 1) return encodeNode(block[0] as IRNode);
 	return encodeCallParts([encodeOpcode("do"), ...block.map((node) => encodeNode(node))]);
 }
@@ -364,12 +365,17 @@ function encodeNode(node: IRNode): string {
 			return `${node.name}$`;
 		case "self":
 			return "@";
+		case "selfDepth": {
+			if (!Number.isInteger(node.depth) || node.depth < 1) throw new Error(`Invalid self depth: ${node.depth}`);
+			if (node.depth === 1) return "@";
+			return `${encodeUint(node.depth - 1)}@`;
+		}
 		case "boolean":
-			return node.value ? "1@" : "2@";
+			return node.value ? "1'" : "2'";
 		case "null":
-			return "3@";
+			return "3'";
 		case "undefined":
-			return "4@";
+			return "4'";
 		case "number":
 			return encodeNumberNode(node);
 		case "string":
@@ -446,8 +452,671 @@ export function encodeIR(node: IRNode): string {
 	return encodeNode(node);
 }
 
-export function compile(source: string): string {
-	return encodeIR(parseToIR(source));
+type OptimizeEnv = {
+	constants: Record<string, IRNode>;
+	selfCaptures: Record<string, number>;
+};
+
+function cloneNode<T extends IRNode>(node: T): T {
+	return structuredClone(node);
+}
+
+function emptyOptimizeEnv(): OptimizeEnv {
+	return { constants: {}, selfCaptures: {} };
+}
+
+function cloneOptimizeEnv(env: OptimizeEnv): OptimizeEnv {
+	return {
+		constants: { ...env.constants },
+		selfCaptures: { ...env.selfCaptures },
+	};
+}
+
+function clearOptimizeEnv(env: OptimizeEnv) {
+	for (const key of Object.keys(env.constants)) delete env.constants[key];
+	for (const key of Object.keys(env.selfCaptures)) delete env.selfCaptures[key];
+}
+
+function clearBinding(env: OptimizeEnv, name: string) {
+	delete env.constants[name];
+	delete env.selfCaptures[name];
+}
+
+function selfTargetFromNode(node: IRNode, currentDepth: number): number | undefined {
+	if (node.type === "self") return currentDepth;
+	if (node.type === "selfDepth") {
+		const target = currentDepth - (node.depth - 1);
+		if (target >= 1) return target;
+	}
+	return undefined;
+}
+
+function selfNodeFromTarget(targetDepth: number, currentDepth: number): IRNode | undefined {
+	const relDepth = currentDepth - targetDepth + 1;
+	if (!Number.isInteger(relDepth) || relDepth < 1) return undefined;
+	if (relDepth === 1) return { type: "self" } satisfies IRNode;
+	return { type: "selfDepth", depth: relDepth } satisfies IRNode;
+}
+
+function dropBindingNames(env: OptimizeEnv, binding: IRBindingOrExpr) {
+	if (binding.type === "binding:valueIn") {
+		clearBinding(env, binding.value);
+		return;
+	}
+	if (binding.type === "binding:keyValueIn") {
+		clearBinding(env, binding.key);
+		clearBinding(env, binding.value);
+		return;
+	}
+	if (binding.type === "binding:keyOf") {
+		clearBinding(env, binding.key);
+	}
+}
+
+function collectReads(node: IRNode, out: Set<string>) {
+	switch (node.type) {
+		case "identifier":
+			out.add(node.name);
+			return;
+		case "group":
+			collectReads(node.expression, out);
+			return;
+		case "array":
+			for (const item of node.items) collectReads(item, out);
+			return;
+		case "object":
+			for (const entry of node.entries) {
+				collectReads(entry.key, out);
+				collectReads(entry.value, out);
+			}
+			return;
+		case "arrayComprehension":
+			collectReads(node.binding.source, out);
+			collectReads(node.body, out);
+			return;
+		case "objectComprehension":
+			collectReads(node.binding.source, out);
+			collectReads(node.key, out);
+			collectReads(node.value, out);
+			return;
+		case "unary":
+			collectReads(node.value, out);
+			return;
+		case "binary":
+			collectReads(node.left, out);
+			collectReads(node.right, out);
+			return;
+		case "assign":
+			if (!(node.op === "=" && node.place.type === "identifier")) collectReads(node.place, out);
+			collectReads(node.value, out);
+			return;
+		case "navigation":
+			collectReads(node.target, out);
+			for (const segment of node.segments) {
+				if (segment.type === "dynamic") collectReads(segment.key, out);
+			}
+			return;
+		case "call":
+			collectReads(node.callee, out);
+			for (const arg of node.args) collectReads(arg, out);
+			return;
+		case "conditional":
+			collectReads(node.condition, out);
+			for (const part of node.thenBlock) collectReads(part, out);
+			if (node.elseBranch) collectReadsElse(node.elseBranch, out);
+			return;
+		case "for":
+			collectReads(node.binding.source, out);
+			for (const part of node.body) collectReads(part, out);
+			return;
+		case "program":
+			for (const part of node.body) collectReads(part, out);
+			return;
+		default:
+			return;
+	}
+}
+
+function collectReadsElse(elseBranch: IRConditionalElse, out: Set<string>) {
+	if (elseBranch.type === "else") {
+		for (const part of elseBranch.block) collectReads(part, out);
+		return;
+	}
+	collectReads(elseBranch.condition, out);
+	for (const part of elseBranch.thenBlock) collectReads(part, out);
+	if (elseBranch.elseBranch) collectReadsElse(elseBranch.elseBranch, out);
+}
+
+function isPureNode(node: IRNode): boolean {
+	switch (node.type) {
+		case "identifier":
+		case "self":
+		case "selfDepth":
+		case "boolean":
+		case "null":
+		case "undefined":
+		case "number":
+		case "string":
+		case "key":
+			return true;
+		case "group":
+			return isPureNode(node.expression);
+		case "array":
+			return node.items.every((item) => isPureNode(item));
+		case "object":
+			return node.entries.every((entry) => isPureNode(entry.key) && isPureNode(entry.value));
+		case "navigation":
+			return isPureNode(node.target) && node.segments.every((segment) => segment.type === "static" || isPureNode(segment.key));
+		case "unary":
+			return node.op !== "delete" && isPureNode(node.value);
+		case "binary":
+			return isPureNode(node.left) && isPureNode(node.right);
+		default:
+			return false;
+	}
+}
+
+function eliminateDeadAssignments(block: IRNode[]): IRNode[] {
+	const needed = new Set<string>();
+	const out: IRNode[] = [];
+
+	for (let index = block.length - 1; index >= 0; index -= 1) {
+		const node = block[index] as IRNode;
+
+		if (node.type === "conditional") {
+			let rewritten = node;
+			if (
+				node.condition.type === "assign"
+				&& node.condition.op === "="
+				&& node.condition.place.type === "identifier"
+			) {
+				const name = node.condition.place.name;
+				const branchReads = new Set<string>();
+				for (const part of node.thenBlock) collectReads(part, branchReads);
+				if (node.elseBranch) collectReadsElse(node.elseBranch, branchReads);
+				if (!needed.has(name) && !branchReads.has(name)) {
+					rewritten = {
+						type: "conditional",
+						head: node.head,
+						condition: node.condition.value,
+						thenBlock: node.thenBlock,
+						elseBranch: node.elseBranch,
+					} satisfies IRNode;
+				}
+			}
+
+			collectReads(rewritten, needed);
+			out.push(rewritten);
+			continue;
+		}
+
+		if (node.type === "assign" && node.op === "=" && node.place.type === "identifier") {
+			collectReads(node.value, needed);
+			const name = node.place.name;
+			const canDrop = !needed.has(name) && isPureNode(node.value);
+			needed.delete(name);
+			if (canDrop) continue;
+			out.push(node);
+			continue;
+		}
+
+		collectReads(node, needed);
+		out.push(node);
+	}
+
+	out.reverse();
+	return out;
+}
+
+function toNumberNode(value: number): IRNode {
+	return { type: "number", raw: String(value), value } satisfies IRNode;
+}
+
+function toStringNode(value: string): IRNode {
+	return { type: "string", raw: JSON.stringify(value) } satisfies IRNode;
+}
+
+function toLiteralNode(value: unknown): IRNode | undefined {
+	if (value === undefined) return { type: "undefined" } satisfies IRNode;
+	if (value === null) return { type: "null" } satisfies IRNode;
+	if (typeof value === "boolean") return { type: "boolean", value } satisfies IRNode;
+	if (typeof value === "number" && Number.isFinite(value)) return toNumberNode(value);
+	if (typeof value === "string") return toStringNode(value);
+	if (Array.isArray(value)) {
+		const items: IRNode[] = [];
+		for (const item of value) {
+			const lowered = toLiteralNode(item);
+			if (!lowered) return undefined;
+			items.push(lowered);
+		}
+		return { type: "array", items } satisfies IRNode;
+	}
+	if (value && typeof value === "object") {
+		const entries: Array<{ key: IRNode; value: IRNode }> = [];
+		for (const [key, entryValue] of Object.entries(value as Record<string, unknown>)) {
+			const loweredValue = toLiteralNode(entryValue);
+			if (!loweredValue) return undefined;
+			entries.push({ key: { type: "key", name: key }, value: loweredValue });
+		}
+		return { type: "object", entries } satisfies IRNode;
+	}
+	return undefined;
+}
+
+function constValue(node: IRNode): unknown | undefined {
+	switch (node.type) {
+		case "undefined":
+			return undefined;
+		case "null":
+			return null;
+		case "boolean":
+			return node.value;
+		case "number":
+			return node.value;
+		case "string":
+			return decodeStringLiteral(node.raw);
+		case "key":
+			return node.name;
+		case "array": {
+			const out: unknown[] = [];
+			for (const item of node.items) {
+				const value = constValue(item);
+				if (value === undefined && item.type !== "undefined") return undefined;
+				out.push(value);
+			}
+			return out;
+		}
+		case "object": {
+			const out: Record<string, unknown> = {};
+			for (const entry of node.entries) {
+				const key = constValue(entry.key);
+				if (key === undefined && entry.key.type !== "undefined") return undefined;
+				const value = constValue(entry.value);
+				if (value === undefined && entry.value.type !== "undefined") return undefined;
+				out[String(key)] = value;
+			}
+			return out;
+		}
+		default:
+			return undefined;
+	}
+}
+
+function isDefinedValue(value: unknown): boolean {
+	return value !== undefined;
+}
+
+function foldUnary(op: Extract<IRNode, { type: "unary" }> ["op"], value: unknown): unknown | undefined {
+	if (op === "neg") {
+		if (typeof value !== "number") return undefined;
+		return -value;
+	}
+	if (op === "not") {
+		if (typeof value === "boolean") return !value;
+		if (typeof value === "number") return ~value;
+		return undefined;
+	}
+	return undefined;
+}
+
+function foldBinary(op: Extract<IRNode, { type: "binary" }> ["op"], left: unknown, right: unknown): unknown | undefined {
+	if (op === "add" || op === "sub" || op === "mul" || op === "div" || op === "mod") {
+		if (typeof left !== "number" || typeof right !== "number") return undefined;
+		if (op === "add") return left + right;
+		if (op === "sub") return left - right;
+		if (op === "mul") return left * right;
+		if (op === "div") return left / right;
+		return left % right;
+	}
+
+	if (op === "bitAnd" || op === "bitOr" || op === "bitXor") {
+		if (typeof left !== "number" || typeof right !== "number") return undefined;
+		if (op === "bitAnd") return left & right;
+		if (op === "bitOr") return left | right;
+		return left ^ right;
+	}
+
+	if (op === "eq") return left === right ? left : undefined;
+	if (op === "neq") return left !== right ? left : undefined;
+
+	if (op === "gt" || op === "gte" || op === "lt" || op === "lte") {
+		if (typeof left !== "number" || typeof right !== "number") return undefined;
+		if (op === "gt") return left > right ? left : undefined;
+		if (op === "gte") return left >= right ? left : undefined;
+		if (op === "lt") return left < right ? left : undefined;
+		return left <= right ? left : undefined;
+	}
+
+	if (op === "and") return isDefinedValue(left) ? right : undefined;
+	if (op === "or") return isDefinedValue(left) ? left : right;
+	return undefined;
+}
+
+function optimizeElse(elseBranch: IRConditionalElse | undefined, env: OptimizeEnv, currentDepth: number): IRConditionalElse | undefined {
+	if (!elseBranch) return undefined;
+	if (elseBranch.type === "else") {
+		return { type: "else", block: optimizeBlock(elseBranch.block, cloneOptimizeEnv(env), currentDepth) } satisfies IRConditionalElse;
+	}
+
+	const optimizedCondition = optimizeNode(elseBranch.condition, env, currentDepth);
+	const foldedCondition = constValue(optimizedCondition);
+	if (foldedCondition !== undefined || optimizedCondition.type === "undefined") {
+		const passes = elseBranch.head === "when" ? isDefinedValue(foldedCondition) : !isDefinedValue(foldedCondition);
+		if (passes) {
+			return {
+				type: "else",
+				block: optimizeBlock(elseBranch.thenBlock, cloneOptimizeEnv(env), currentDepth),
+			} satisfies IRConditionalElse;
+		}
+		return optimizeElse(elseBranch.elseBranch, env, currentDepth);
+	}
+
+	return {
+		type: "elseChain",
+		head: elseBranch.head,
+		condition: optimizedCondition,
+		thenBlock: optimizeBlock(elseBranch.thenBlock, cloneOptimizeEnv(env), currentDepth),
+		elseBranch: optimizeElse(elseBranch.elseBranch, cloneOptimizeEnv(env), currentDepth),
+	} satisfies IRConditionalElse;
+}
+
+function optimizeBlock(block: IRNode[], env: OptimizeEnv, currentDepth: number): IRNode[] {
+	const out: IRNode[] = [];
+	for (const node of block) {
+		const optimized = optimizeNode(node, env, currentDepth);
+		out.push(optimized);
+		if (optimized.type === "break" || optimized.type === "continue") break;
+
+		if (optimized.type === "assign" && optimized.op === "=" && optimized.place.type === "identifier") {
+			const selfTarget = selfTargetFromNode(optimized.value, currentDepth);
+			if (selfTarget !== undefined) {
+				env.selfCaptures[optimized.place.name] = selfTarget;
+				delete env.constants[optimized.place.name];
+				continue;
+			}
+
+			const folded = constValue(optimized.value);
+			if (folded !== undefined || optimized.value.type === "undefined") {
+				env.constants[optimized.place.name] = cloneNode(optimized.value);
+				delete env.selfCaptures[optimized.place.name];
+			}
+			else {
+				clearBinding(env, optimized.place.name);
+			}
+			continue;
+		}
+
+		if (optimized.type === "unary" && optimized.op === "delete" && optimized.value.type === "identifier") {
+			clearBinding(env, optimized.value.name);
+			continue;
+		}
+
+		if (optimized.type === "assign" && optimized.place.type === "identifier") {
+			clearBinding(env, optimized.place.name);
+			continue;
+		}
+
+		if (optimized.type === "assign" || optimized.type === "for" || optimized.type === "call") {
+			clearOptimizeEnv(env);
+		}
+	}
+	return eliminateDeadAssignments(out);
+}
+
+function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number): IRNode {
+	switch (node.type) {
+		case "program": {
+			const body = optimizeBlock(node.body, cloneOptimizeEnv(env), currentDepth);
+			if (body.length === 0) return { type: "undefined" } satisfies IRNode;
+			if (body.length === 1) return body[0] as IRNode;
+			return { type: "program", body } satisfies IRNode;
+		}
+		case "identifier": {
+			const selfTarget = env.selfCaptures[node.name];
+			if (selfTarget !== undefined) {
+				const rewritten = selfNodeFromTarget(selfTarget, currentDepth);
+				if (rewritten) return rewritten;
+			}
+			const replacement = env.constants[node.name];
+			return replacement ? cloneNode(replacement) : node;
+		}
+		case "group": {
+			return optimizeNode(node.expression, env, currentDepth);
+		}
+		case "array": {
+			return { type: "array", items: node.items.map((item) => optimizeNode(item, env, currentDepth)) } satisfies IRNode;
+		}
+		case "object": {
+			return {
+				type: "object",
+				entries: node.entries.map((entry) => ({
+					key: optimizeNode(entry.key, env, currentDepth),
+					value: optimizeNode(entry.value, env, currentDepth),
+				})),
+			} satisfies IRNode;
+		}
+		case "unary": {
+			const value = optimizeNode(node.value, env, currentDepth);
+			const foldedValue = constValue(value);
+			if (foldedValue !== undefined || value.type === "undefined") {
+				const folded = foldUnary(node.op, foldedValue);
+				const literal = folded === undefined ? undefined : toLiteralNode(folded);
+				if (literal) return literal;
+			}
+			return { type: "unary", op: node.op, value } satisfies IRNode;
+		}
+		case "binary": {
+			const left = optimizeNode(node.left, env, currentDepth);
+			const right = optimizeNode(node.right, env, currentDepth);
+			const leftValue = constValue(left);
+			const rightValue = constValue(right);
+			if ((leftValue !== undefined || left.type === "undefined") && (rightValue !== undefined || right.type === "undefined")) {
+				const folded = foldBinary(node.op, leftValue, rightValue);
+				const literal = folded === undefined ? undefined : toLiteralNode(folded);
+				if (literal) return literal;
+			}
+			return { type: "binary", op: node.op, left, right } satisfies IRNode;
+		}
+		case "navigation": {
+			const target = optimizeNode(node.target, env, currentDepth);
+			const segments = node.segments.map((segment) => (segment.type === "static"
+				? segment
+				: { type: "dynamic", key: optimizeNode(segment.key, env, currentDepth) }));
+
+			const targetValue = constValue(target);
+			if (targetValue !== undefined || target.type === "undefined") {
+				let current: unknown = targetValue;
+				let foldable = true;
+				for (const segment of segments) {
+					if (!foldable) break;
+					const key = segment.type === "static" ? segment.key : constValue(segment.key);
+					if (segment.type === "dynamic" && key === undefined && segment.key.type !== "undefined") {
+						foldable = false;
+						break;
+					}
+					if (current === null || current === undefined) {
+						current = undefined;
+						continue;
+					}
+					current = (current as Record<string, unknown>)[String(key)];
+				}
+				if (foldable) {
+					const literal = toLiteralNode(current);
+					if (literal) return literal;
+				}
+			}
+
+			return {
+				type: "navigation",
+				target,
+				segments: segments as Extract<IRNode, { type: "navigation" }> ["segments"],
+			} satisfies IRNode;
+		}
+		case "call": {
+			return {
+				type: "call",
+				callee: optimizeNode(node.callee, env, currentDepth),
+				args: node.args.map((arg) => optimizeNode(arg, env, currentDepth)),
+			} satisfies IRNode;
+		}
+		case "assign": {
+			return {
+				type: "assign",
+				op: node.op,
+				place: optimizeNode(node.place, env, currentDepth),
+				value: optimizeNode(node.value, env, currentDepth),
+			} satisfies IRNode;
+		}
+		case "conditional": {
+			const condition = optimizeNode(node.condition, env, currentDepth);
+			const thenEnv = cloneOptimizeEnv(env);
+			if (condition.type === "assign" && condition.op === "=" && condition.place.type === "identifier") {
+				thenEnv.selfCaptures[condition.place.name] = currentDepth;
+				delete thenEnv.constants[condition.place.name];
+			}
+			const conditionValue = constValue(condition);
+			if (conditionValue !== undefined || condition.type === "undefined") {
+				const passes = node.head === "when" ? isDefinedValue(conditionValue) : !isDefinedValue(conditionValue);
+				if (passes) {
+					const thenBlock = optimizeBlock(node.thenBlock, thenEnv, currentDepth);
+					if (thenBlock.length === 0) return { type: "undefined" } satisfies IRNode;
+					if (thenBlock.length === 1) return thenBlock[0] as IRNode;
+					return { type: "program", body: thenBlock } satisfies IRNode;
+				}
+				if (!node.elseBranch) return { type: "undefined" } satisfies IRNode;
+				const loweredElse = optimizeElse(node.elseBranch, cloneOptimizeEnv(env), currentDepth);
+				if (!loweredElse) return { type: "undefined" } satisfies IRNode;
+				if (loweredElse.type === "else") {
+					if (loweredElse.block.length === 0) return { type: "undefined" } satisfies IRNode;
+					if (loweredElse.block.length === 1) return loweredElse.block[0] as IRNode;
+					return { type: "program", body: loweredElse.block } satisfies IRNode;
+				}
+				return {
+					type: "conditional",
+					head: loweredElse.head,
+					condition: loweredElse.condition,
+					thenBlock: loweredElse.thenBlock,
+					elseBranch: loweredElse.elseBranch,
+				} satisfies IRNode;
+			}
+
+			return {
+				type: "conditional",
+				head: node.head,
+				condition,
+				thenBlock: optimizeBlock(node.thenBlock, thenEnv, currentDepth),
+				elseBranch: optimizeElse(node.elseBranch, cloneOptimizeEnv(env), currentDepth),
+			} satisfies IRNode;
+		}
+		case "for": {
+			const sourceEnv = cloneOptimizeEnv(env);
+			const binding = (() => {
+				if (node.binding.type === "binding:expr") {
+					return { type: "binding:expr", source: optimizeNode(node.binding.source, sourceEnv, currentDepth) } satisfies IRBindingOrExpr;
+				}
+				if (node.binding.type === "binding:valueIn") {
+					return {
+						type: "binding:valueIn",
+						value: node.binding.value,
+						source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
+					} satisfies IRBinding;
+				}
+				if (node.binding.type === "binding:keyValueIn") {
+					return {
+						type: "binding:keyValueIn",
+						key: node.binding.key,
+						value: node.binding.value,
+						source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
+					} satisfies IRBinding;
+				}
+				return {
+					type: "binding:keyOf",
+					key: node.binding.key,
+					source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
+				} satisfies IRBinding;
+			})();
+			const bodyEnv = cloneOptimizeEnv(env);
+			dropBindingNames(bodyEnv, binding);
+			return {
+				type: "for",
+				binding,
+				body: optimizeBlock(node.body, bodyEnv, currentDepth + 1),
+			} satisfies IRNode;
+		}
+		case "arrayComprehension": {
+			const sourceEnv = cloneOptimizeEnv(env);
+			const binding = node.binding.type === "binding:expr"
+				? ({ type: "binding:expr", source: optimizeNode(node.binding.source, sourceEnv, currentDepth) } satisfies IRBindingOrExpr)
+				: node.binding.type === "binding:valueIn"
+					? ({
+						type: "binding:valueIn",
+						value: node.binding.value,
+						source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
+					} satisfies IRBinding)
+					: node.binding.type === "binding:keyValueIn"
+						? ({
+							type: "binding:keyValueIn",
+							key: node.binding.key,
+							value: node.binding.value,
+							source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
+						} satisfies IRBinding)
+						: ({
+							type: "binding:keyOf",
+							key: node.binding.key,
+							source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
+						} satisfies IRBinding);
+			const bodyEnv = cloneOptimizeEnv(env);
+			dropBindingNames(bodyEnv, binding);
+			return {
+				type: "arrayComprehension",
+				binding,
+				body: optimizeNode(node.body, bodyEnv, currentDepth + 1),
+			} satisfies IRNode;
+		}
+		case "objectComprehension": {
+			const sourceEnv = cloneOptimizeEnv(env);
+			const binding = node.binding.type === "binding:expr"
+				? ({ type: "binding:expr", source: optimizeNode(node.binding.source, sourceEnv, currentDepth) } satisfies IRBindingOrExpr)
+				: node.binding.type === "binding:valueIn"
+					? ({
+						type: "binding:valueIn",
+						value: node.binding.value,
+						source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
+					} satisfies IRBinding)
+					: node.binding.type === "binding:keyValueIn"
+						? ({
+							type: "binding:keyValueIn",
+							key: node.binding.key,
+							value: node.binding.value,
+							source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
+						} satisfies IRBinding)
+						: ({
+							type: "binding:keyOf",
+							key: node.binding.key,
+							source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
+						} satisfies IRBinding);
+			const bodyEnv = cloneOptimizeEnv(env);
+			dropBindingNames(bodyEnv, binding);
+			return {
+				type: "objectComprehension",
+				binding,
+				key: optimizeNode(node.key, bodyEnv, currentDepth + 1),
+				value: optimizeNode(node.value, bodyEnv, currentDepth + 1),
+			} satisfies IRNode;
+		}
+		default:
+			return node;
+	}
+}
+
+export function optimizeIR(node: IRNode): IRNode {
+	return optimizeNode(node, emptyOptimizeEnv(), 1);
+}
+
+export function compile(source: string, options?: { optimize?: boolean }): string {
+	const ir = parseToIR(source);
+	const lowered = options?.optimize ? optimizeIR(ir) : ir;
+	return encodeIR(lowered);
 }
 
 type IRPostfixStep =
@@ -782,6 +1451,17 @@ semantics.addOperation("toIR", {
 	},
 	ContinueKw(_kw) {
 		return { type: "continue" } satisfies IRNode;
+	},
+	SelfExpr_depth(_self, _at, depth) {
+		const value = depth.toIR() as IRNode;
+		if (value.type !== "number" || !Number.isInteger(value.value) || value.value < 1) {
+			throw new Error("self depth must be a positive integer literal");
+		}
+		if (value.value === 1) return { type: "self" } satisfies IRNode;
+		return { type: "selfDepth", depth: value.value } satisfies IRNode;
+	},
+	SelfExpr_plain(selfKw) {
+		return selfKw.toIR();
 	},
 	SelfKw(_kw) {
 		return { type: "self" } satisfies IRNode;
