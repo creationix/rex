@@ -29,17 +29,37 @@ Rex keeps the model data-oriented and explicit:
 
 ## Quick Start
 
-From repo root:
+Install CLI once:
+
+```sh
+bun add -g @creationix/rex
+```
+
+Compile Rex directly:
+
+```sh
+rex --expr "when x do y end"
+rex --file input.rex
+cat input.rex | rex
+rex --expr "a and b" --ir
+```
+
+Run without global install:
+
+```sh
+bunx @creationix/rex --help
+bunx @creationix/rex --expr "when x do y end"
+
+npx -y @creationix/rex -- --help
+npx -y @creationix/rex -- --expr "when x do y end"
+```
+
+Or, from repo root, use workspace scripts:
 
 ```sh
 bun run rex:compile --expr "when x do y end"
 bun run rex:compile --file input.rex
 cat input.rex | bun run rex:compile
-```
-
-Use `--ir` to inspect lowered IR:
-
-```sh
 bun run rex:compile --expr "a and b" --ir
 ```
 
@@ -100,7 +120,7 @@ end
 Normal compile output (names preserved):
 
 ```rexc
-(%=actions${create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profile}?(=handler$(actions$(headers$x-action:))s=(headers$x-handler:)handler$))
+(%=actions$1p{create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profile}?(=handler$r(actions$(headers$x-action:))s=(headers$x-handler:)handler$))
 ```
 
 Optimized compile output:
@@ -168,6 +188,22 @@ From repo root:
 ```sh
 bun run rex:compile --expr "when x do y end"
 bun run rex:verify-docs
+```
+
+Installable CLI (`rex`):
+
+```sh
+bun add -g @creationix/rex
+rex --help
+rex --expr "when x do y end"
+rex --expr "a and b" --ir
+```
+
+Zero-install CLI:
+
+```sh
+bunx @creationix/rex --expr "when x do y end"
+npx -y @creationix/rex -- --expr "when x do y end"
 ```
 
 When editing grammar (`packages/rex-lang/rex.ohm`):
