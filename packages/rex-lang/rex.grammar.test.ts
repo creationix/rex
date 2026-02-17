@@ -82,6 +82,8 @@ describe("Rex grammar", () => {
 		expectParses("when authorized == true do proceed() else deny() end");
 		expectParses("when string(value) do a() else when number(value) do b() else c() end");
 		expectParses("when a do x() else unless b do y() else z() end");
+		expectParses("do x = 1 x + 2 end");
+		expectParses("value = do n = 10 n * 2 end");
 	});
 
 	test("parses for loops", () => {
