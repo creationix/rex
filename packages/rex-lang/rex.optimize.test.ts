@@ -1,0 +1,106 @@
+import { describe, expect, test } from "bun:test";
+import { compile, optimizeIR, parseToIR } from "./rex.ts";
+
+describe("Rex IR optimizer", () => {
+	test("folds arithmetic constants", () => {
+		const optimized = optimizeIR(parseToIR("1 + 2"));
+		expect(optimized).toEqual({ type: "number", raw: "3", value: 3 });
+	});
+
+	test("propagates constant bindings into navigation", () => {
+		const optimized = optimizeIR(parseToIR(`
+	t = {a: 1, b: 2}
+	t.b
+`));
+
+		expect(optimized).toEqual({ type: "number", raw: "2", value: 2 });
+	});
+
+	test("folds constant conditionals", () => {
+		expect(optimizeIR(parseToIR("when 1 do 2 else 3 end"))).toEqual({ type: "number", raw: "2", value: 2 });
+		expect(optimizeIR(parseToIR("unless undefined do 2 else 3 end"))).toEqual({
+			type: "number",
+			raw: "2",
+			value: 2,
+		});
+	});
+
+	test("supports compile with optimize option", () => {
+		expect(compile("1 + 2")).toBe("(1%2+4+)");
+		expect(compile("1 + 2", { optimize: true })).toBe("6+");
+	});
+
+	test("replaces self capture vars with self forms", () => {
+		const optimized = optimizeIR(parseToIR(`
+x = self
+x
+`));
+
+		expect(optimized).toEqual({ type: "self" });
+	});
+
+	test("rewrites captured self to depth-aware self in nested loop body", () => {
+		const optimized = optimizeIR(parseToIR("x = self for [1] do x end"));
+		expect(optimized).toEqual({
+			type: "for",
+			binding: {
+				type: "binding:expr",
+				source: {
+					type: "array",
+					items: [{ type: "number", raw: "1", value: 1 }],
+				},
+			},
+			body: [{ type: "selfDepth", depth: 2 }],
+		});
+	});
+
+	test("inlines named lookup table in explicit actions/handler form", () => {
+		const source = `
+actions = {
+  create-user: 'users/create'
+  delete-user: 'users/delete'
+}
+when handler = actions.(headers.x-action) do
+  headers.x-handler = handler
+end
+`;
+
+		const optimized = optimizeIR(parseToIR(source));
+		expect(optimized).toEqual({
+			type: "conditional",
+			head: "when",
+			condition: {
+				type: "navigation",
+				target: {
+					type: "object",
+					entries: [
+						{ key: { type: "key", name: "create-user" }, value: { type: "string", raw: "'users/create'" } },
+						{ key: { type: "key", name: "delete-user" }, value: { type: "string", raw: "'users/delete'" } },
+					],
+				},
+				segments: [
+					{
+						type: "dynamic",
+						key: {
+							type: "navigation",
+							target: { type: "identifier", name: "headers" },
+							segments: [{ type: "static", key: "x-action" }],
+						},
+					},
+				],
+			},
+			thenBlock: [
+				{
+					type: "assign",
+					op: "=",
+					place: {
+						type: "navigation",
+						target: { type: "identifier", name: "headers" },
+						segments: [{ type: "static", key: "x-handler" }],
+					},
+					value: { type: "self" },
+				},
+			],
+		});
+	});
+});

@@ -23,6 +23,7 @@
 				{ "include": "#index-marker" },
 				{ "include": "#opcode" },
 				{ "include": "#variable" },
+				{ "include": "#self-depth" },
 				{ "include": "#reference" },
 				{ "include": "#integer" },
 				{ "include": "#decimal" },
@@ -189,6 +190,13 @@
 			}
 		},
 		"reference": {
+			"match": "([-\\w]*)(')",
+			"captures": {
+				"1": { "name": "constant.language.rexc" },
+				"2": { "name": "constant.language.rexc" }
+			}
+		},
+		"self-depth": {
 			"match": "([-\\w]*)(@)",
 			"captures": {
 				"1": { "name": "constant.language.rexc" },

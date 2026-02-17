@@ -276,6 +276,12 @@ eval_value = function(state)
     return { __opcode = prefix }
   elseif tag == "@" then
     state.pos = pos + 1
+    local depth = prefix + 1
+    local index = #state.self_stack - depth + 1
+    if index < 1 then return nil end
+    return state.self_stack[index]
+  elseif tag == "'" then
+    state.pos = pos + 1
     return state.refs[prefix]
   elseif tag == "$" then
     state.pos = pos + 1
@@ -302,18 +308,21 @@ end
 
 function Rex.evaluate(rexc, opts)
   opts = opts or {}
+  local initial_self = opts.self
+  if initial_self == nil and opts.refs then initial_self = opts.refs[0] end
   local state = {
     src = rexc,
     len = #rexc,
     pos = 1,
     vars = opts.vars or {},
     refs = {
-      [0] = opts.self,
+      [0] = initial_self,
       [1] = true,
       [2] = false,
       [3] = nil,
       [4] = nil,
     },
+    self_stack = { initial_self },
     custom_opcodes = opts.opcodes,
   }
   if opts.refs then

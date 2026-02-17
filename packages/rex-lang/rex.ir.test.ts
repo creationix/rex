@@ -15,6 +15,13 @@ describe("Rex IR (handwritten)", () => {
 		expectIR("null", { type: "null" });
 		expectIR("undefined", { type: "undefined" });
 		expectIR("self", { type: "self" });
+		expectIR("self@2", { type: "selfDepth", depth: 2 });
+		expectIR("self ^ 2", {
+			type: "binary",
+			op: "bitXor",
+			left: { type: "self" },
+			right: { type: "number", raw: "2", value: 2 },
+		});
 		expectIR("-42", { type: "number", raw: "-42", value: -42 });
 		expectIR("-123.456", { type: "number", raw: "-123.456", value: -123.456 });
 		expectIR("0x2A", { type: "number", raw: "0x2A", value: 42 });
