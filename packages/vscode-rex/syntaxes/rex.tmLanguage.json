@@ -10,17 +10,22 @@
 				{ "include": "#string-single" },
 				{ "include": "#string-double" },
 				{ "include": "#number" },
-				{ "include": "#boolean" },
-				{ "include": "#null" },
-				{ "include": "#binding" },
-				{ "include": "#inline-keyword" },
-				{ "include": "#paren-expression" },
-				{ "include": "#paren-expression-generic" },
-				{ "include": "#bracket-array" },
-				{ "include": "#brace-object" },
-				{ "include": "#interpolation" },
-				{ "include": "#builtin-variable" },
-				{ "include": "#bare-word" }
+				{ "include": "#literal-keyword" },
+				{ "include": "#control-keyword" },
+				{ "include": "#self-depth" },
+				{ "include": "#existence-operator" },
+				{ "include": "#comparison-operator" },
+				{ "include": "#assignment-operator" },
+				{ "include": "#value-operator" },
+				{ "include": "#comma-separator" },
+				{ "include": "#container-paren" },
+				{ "include": "#container-bracket" },
+				{ "include": "#container-brace" },
+				{ "include": "#object-key" },
+				{ "include": "#navigation-dynamic" },
+				{ "include": "#navigation-static" },
+				{ "include": "#function-call" },
+				{ "include": "#identifier" }
 			]
 		},
 		"comment": {
@@ -87,7 +92,7 @@
 					"name": "constant.character.escape.hex.rex"
 				},
 				{
-					"match": "\\\\['\"\\\\\/bfnrt0]",
+					"match": "\\\\['\"\\\\\\/bfnrt0]",
 					"name": "constant.character.escape.rex"
 				},
 				{
@@ -99,63 +104,63 @@
 		"number": {
 			"patterns": [
 				{
-					"comment": "Hex: 0xFF, -0x20",
 					"match": "(?<![a-zA-Z_])-?\\b0[xX][0-9a-fA-F]+\\b",
 					"name": "constant.numeric.hex.rex"
 				},
 				{
-					"comment": "Binary: 0b1010",
 					"match": "(?<![a-zA-Z_])-?\\b0[bB][01]+\\b",
 					"name": "constant.numeric.binary.rex"
 				},
 				{
-					"comment": "Decimal with optional fraction and/or exponent: 42, 3.14, 1e10, 2.5e-3",
 					"match": "(?<![a-zA-Z_])-?\\b[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?\\b",
 					"name": "constant.numeric.rex"
 				}
 			]
 		},
-		"boolean": {
-			"match": "\\b(true|false)\\b",
-			"name": "constant.language.boolean.rex"
+		"literal-keyword": {
+			"match": "\\b(true|false|null|undefined)\\b",
+			"name": "constant.language.rex"
 		},
-		"null": {
-			"match": "\\b(null)\\b",
-			"name": "constant.language.null.rex"
+		"control-keyword": {
+			"match": "\\b(when|unless|else|for|in|of|do|end|break|continue)\\b",
+			"name": "keyword.control.rex"
 		},
-		"binding": {
-			"match": "([a-zA-Z_][a-zA-Z0-9_.-]*)(=)",
-			"captures": {
-				"1": { "name": "variable.other.binding.rex" },
-				"2": { "name": "keyword.operator.assignment.rex" }
-			}
+		"self-depth": {
+			"match": "\\bself(?:@[1-9][0-9]*)?\\b",
+			"name": "variable.language.self.rex"
 		},
-		"inline-keyword": {
-			"match": "\\b(else-when|else-if|else)\\b",
-			"name": "keyword.control.inline.rex"
+		"existence-operator": {
+			"match": "\\b(and|or)\\b",
+			"name": "keyword.operator.logical.rex"
 		},
-		"paren-expression": {
-			"begin": "(\\()\\s*(when|if|else-when|else-if|do|match|map|filter|each|reduce|reverse)(?=\\s|\\)|$)",
-			"beginCaptures": {
-				"1": { "name": "punctuation.section.parens.begin.rex" },
-				"2": { "name": "keyword.control.rex" }
-			},
+		"comparison-operator": {
+			"match": "==|!=|<=|>=|<|>",
+			"name": "keyword.operator.comparison.rex"
+		},
+		"assignment-operator": {
+			"match": "\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=",
+			"name": "keyword.operator.assignment.rex"
+		},
+		"value-operator": {
+			"match": "[+\\-*/%^&|~]",
+			"name": "keyword.operator.rex"
+		},
+		"comma-separator": {
+			"match": ",",
+			"name": "punctuation.separator.comma.rex"
+		},
+		"container-paren": {
+			"begin": "\\(",
 			"end": "\\)",
-			"endCaptures": { "0": { "name": "punctuation.section.parens.end.rex" } },
+			"beginCaptures": {
+				"0": { "name": "punctuation.section.parens.begin.rex" }
+			},
+			"endCaptures": {
+				"0": { "name": "punctuation.section.parens.end.rex" }
+			},
 			"patterns": [{ "include": "#expressions" }]
 		},
-		"paren-expression-generic": {
-			"comment": "Fallback for non-keyword opcodes",
-			"begin": "(\\()\\s*([a-zA-Z_][a-zA-Z0-9_.-]*)(?=\\s|\\)|$)",
-			"beginCaptures": {
-				"1": { "name": "punctuation.section.parens.begin.rex" },
-				"2": { "name": "entity.name.function.rex" }
-			},
-			"end": "\\)",
-			"endCaptures": { "0": { "name": "punctuation.section.parens.end.rex" } },
-			"patterns": [{ "include": "#expressions" }]
-		},
-		"bracket-array": {
+		"container-bracket": {
 			"begin": "\\[",
 			"end": "\\]",
 			"beginCaptures": {
@@ -166,40 +171,38 @@
 			},
 			"patterns": [{ "include": "#expressions" }]
 		},
-		"brace-object": {
+		"container-brace": {
 			"begin": "\\{",
 			"end": "\\}",
 			"beginCaptures": {
 				"0": { "name": "punctuation.section.braces.begin.rex" }
 			},
-			"endCaptures": { "0": { "name": "punctuation.section.braces.end.rex" } },
-			"patterns": [{ "include": "#object-key" }, { "include": "#expressions" }]
+			"endCaptures": {
+				"0": { "name": "punctuation.section.braces.end.rex" }
+			},
+			"patterns": [{ "include": "#expressions" }]
 		},
 		"object-key": {
-			"match": "([a-zA-Z_][a-zA-Z0-9_.-]*|'[^']*'|\"[^\"]*\")\\s*(:)",
+			"match": "((?:[a-zA-Z_][a-zA-Z0-9_-]*|-?[0-9]+)|'(?:\\\\.|[^'\\\\])*'|\"(?:\\\\.|[^\"\\\\])*\")\\s*(:)",
 			"captures": {
 				"1": { "name": "support.type.property-name.rex" },
 				"2": { "name": "punctuation.separator.key-value.rex" }
 			}
 		},
-		"interpolation": {
-			"begin": "\\$\\{",
-			"end": "\\}",
-			"name": "meta.interpolation.rex",
-			"beginCaptures": {
-				"0": { "name": "punctuation.section.interpolation.begin.rex" }
-			},
-			"endCaptures": {
-				"0": { "name": "punctuation.section.interpolation.end.rex" }
-			},
-			"contentName": "source.ts"
+		"navigation-dynamic": {
+			"match": "\\.\\(",
+			"name": "meta.navigation.dynamic.rex"
 		},
-		"builtin-variable": {
-			"match": "\\b(self|data|config|headers|query|cookies|method|path|host|url|status|res|path\\.segments|host\\.segments)\\b",
-			"name": "variable.language.rex"
+		"navigation-static": {
+			"match": "\\.[a-zA-Z_][a-zA-Z0-9_-]*",
+			"name": "meta.navigation.static.rex"
 		},
-		"bare-word": {
-			"match": "\\b[a-zA-Z_][a-zA-Z0-9_.-]*\\b",
+		"function-call": {
+			"match": "\\b[a-zA-Z_][a-zA-Z0-9_-]*\\s*(?=\\()",
+			"name": "entity.name.function.rex"
+		},
+		"identifier": {
+			"match": "\\b[a-zA-Z_][a-zA-Z0-9_-]*\\b",
 			"name": "variable.other.rex"
 		}
 	}

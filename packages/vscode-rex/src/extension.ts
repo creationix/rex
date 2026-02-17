@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { TOKEN_TYPES, tokenize, type Token } from "./rexc-tokenizer";
+import { getRexParseFailure } from "./rex-diagnostics";
 
 const ANNOTATION_TYPE = TOKEN_TYPES.indexOf("annotation");
 const BYTE_LENGTH_TYPE = TOKEN_TYPES.indexOf("byteLength");
@@ -92,6 +93,33 @@ function updateAnnotationDecorations(editor: vscode.TextEditor) {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+	const rexDiagnostics = vscode.languages.createDiagnosticCollection("rex");
+	context.subscriptions.push(rexDiagnostics);
+
+	function updateRexDiagnostics(document: vscode.TextDocument) {
+		if (document.languageId !== "rex") {
+			rexDiagnostics.delete(document.uri);
+			return;
+		}
+
+		const failure = getRexParseFailure(document.getText());
+		if (!failure) {
+			rexDiagnostics.delete(document.uri);
+			return;
+		}
+
+		const start = document.positionAt(failure.startOffset);
+		const end = document.positionAt(failure.endOffset);
+		const range = new vscode.Range(start, end);
+		const diagnostic = new vscode.Diagnostic(
+			range,
+			failure.message,
+			vscode.DiagnosticSeverity.Error,
+		);
+		diagnostic.source = "rex";
+		rexDiagnostics.set(document.uri, [diagnostic]);
+	}
+
 	const provider = new RexcSemanticTokenProvider();
 	context.subscriptions.push(
 		vscode.languages.registerDocumentSemanticTokensProvider(
@@ -106,21 +134,30 @@ export function activate(context: vscode.ExtensionContext) {
 		),
 	);
 
+	for (const document of vscode.workspace.textDocuments) {
+		updateRexDiagnostics(document);
+	}
+
 	// Apply non-italic decoration to annotation ranges
 	function updateAllVisible() {
 		for (const editor of vscode.window.visibleTextEditors) {
 			updateAnnotationDecorations(editor);
+			updateRexDiagnostics(editor.document);
 		}
 	}
 	updateAllVisible();
 	// Re-apply after a short delay so decorations survive initial token processing
 	setTimeout(updateAllVisible, 500);
 	context.subscriptions.push(
+		vscode.workspace.onDidOpenTextDocument(updateRexDiagnostics),
 		vscode.window.onDidChangeActiveTextEditor((editor) => {
-			if (editor) updateAnnotationDecorations(editor);
+			if (!editor) return;
+			updateAnnotationDecorations(editor);
+			updateRexDiagnostics(editor.document);
 		}),
 		vscode.window.onDidChangeVisibleTextEditors(updateAllVisible),
 		vscode.workspace.onDidChangeTextDocument((e) => {
+			updateRexDiagnostics(e.document);
 			for (const editor of vscode.window.visibleTextEditors) {
 				if (editor.document === e.document) {
 					updateAnnotationDecorations(editor);
