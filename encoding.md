@@ -173,11 +173,11 @@ Opcodes are used as the first value inside `()` calls:
 
 ## References
 
-Pre-assigned constants. IDs 5+ are domain-defined.
+Pre-assigned constants. IDs other than 1-4 are domain-defined.
 
 | ID | Value       | Encoding |
 |----|-------------|----------|
-| 0  | reserved (legacy self) | `0'` |
+| 0  | Domain-defined | `0'` |
 | 1  | `true`      | `1'`     |
 | 2  | `false`     | `2'`     |
 | 3  | `null`      | `3'`     |

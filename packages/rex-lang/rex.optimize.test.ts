@@ -103,4 +103,46 @@ end
 			],
 		});
 	});
+
+	test("eliminates dead pure assignments after propagation", () => {
+		expect(optimizeIR(parseToIR("x = 1 y = 2 y"))).toEqual({
+			type: "number",
+			raw: "2",
+			value: 2,
+		});
+	});
+
+	test("keeps unresolved explicit selfDepth captures as named vars", () => {
+		const optimized = optimizeIR(parseToIR("x = self@2 for [1] do x end"));
+		expect(optimized).toEqual({
+			type: "program",
+			body: [
+				{
+					type: "assign",
+					op: "=",
+					place: { type: "identifier", name: "x" },
+					value: { type: "selfDepth", depth: 2 },
+				},
+				{
+					type: "for",
+					binding: {
+						type: "binding:expr",
+						source: {
+							type: "array",
+							items: [{ type: "number", raw: "1", value: 1 }],
+						},
+					},
+					body: [{ type: "identifier", name: "x" }],
+				},
+			],
+		});
+	});
+
+	test("does not treat reassigned captures as self", () => {
+		expect(optimizeIR(parseToIR("x = self x = 1 x"))).toEqual({
+			type: "number",
+			raw: "1",
+			value: 1,
+		});
+	});
 });

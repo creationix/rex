@@ -80,12 +80,12 @@ class CursorInterpreter {
 	constructor(text: string, ctx: RexcContext = {}) {
 		const initialSelf = ctx.selfStack && ctx.selfStack.length > 0
 			? ctx.selfStack[ctx.selfStack.length - 1]
-			: (ctx.self ?? ctx.refs?.[0]);
+			: ctx.self;
 		this.text = text;
 		this.state = {
 			vars: ctx.vars ?? {},
 			refs: {
-				0: initialSelf,
+				0: ctx.refs?.[0],
 				1: ctx.refs?.[1] ?? true,
 				2: ctx.refs?.[2] ?? false,
 				3: ctx.refs?.[3] ?? null,
@@ -507,7 +507,6 @@ class CursorInterpreter {
 		let last: unknown = undefined;
 		for (const item of items) {
 			const currentSelf = keysOnly ? item.key : item.value;
-			this.state.refs[0] = currentSelf;
 			this.selfStack.push(currentSelf);
 			if (varA && varB) {
 				this.state.vars[varA] = item.key;
@@ -518,7 +517,6 @@ class CursorInterpreter {
 			}
 			last = this.evalBodySlice(bodyStart, bodyEnd);
 			this.selfStack.pop();
-			this.state.refs[0] = this.selfStack[this.selfStack.length - 1];
 			const control = this.handleLoopControl(last);
 			if (!control) continue;
 			if (control.depth > 1) return { kind: control.kind, depth: control.depth - 1 } satisfies LoopControl;
@@ -534,7 +532,6 @@ class CursorInterpreter {
 		const out: unknown[] = [];
 		for (const item of items) {
 			const currentSelf = keysOnly ? item.key : item.value;
-			this.state.refs[0] = currentSelf;
 			this.selfStack.push(currentSelf);
 			if (varA && varB) {
 				this.state.vars[varA] = item.key;
@@ -545,7 +542,6 @@ class CursorInterpreter {
 			}
 			const value = this.evalBodySlice(bodyStart, bodyEnd);
 			this.selfStack.pop();
-			this.state.refs[0] = this.selfStack[this.selfStack.length - 1];
 			const control = this.handleLoopControl(value);
 			if (control) {
 				if (control.depth > 1) return { kind: control.kind, depth: control.depth - 1 } satisfies LoopControl;
@@ -562,7 +558,6 @@ class CursorInterpreter {
 		const out: Record<string, unknown> = {};
 		for (const item of items) {
 			const currentSelf = keysOnly ? item.key : item.value;
-			this.state.refs[0] = currentSelf;
 			this.selfStack.push(currentSelf);
 			if (varA && varB) {
 				this.state.vars[varA] = item.key;
@@ -577,7 +572,6 @@ class CursorInterpreter {
 			const value = this.evalValue();
 			this.pos = save;
 			this.selfStack.pop();
-			this.state.refs[0] = this.selfStack[this.selfStack.length - 1];
 			const control = this.handleLoopControl(value);
 			if (control) {
 				if (control.depth > 1) return { kind: control.kind, depth: control.depth - 1 } satisfies LoopControl;

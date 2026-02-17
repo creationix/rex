@@ -64,4 +64,26 @@ describe("rexc interpreter (streaming)", () => {
 		expect(evaluateRexc("5'", { refs: { 5: "headers" } }).value).toBe("headers");
 		expect(evaluateSource("for [10] do for [20] do self@2 end end").value).toBe(10);
 	});
+
+	test("supports built-in apostrophe references", () => {
+		expect(evaluateRexc("1'").value).toBe(true);
+		expect(evaluateRexc("2'").value).toBe(false);
+		expect(evaluateRexc("3'").value).toBeNull();
+		expect(evaluateRexc("4'").value).toBeUndefined();
+	});
+
+	test("supports existence operator runtime semantics", () => {
+		expect(evaluateSource("undefined or 5").value).toBe(5);
+		expect(evaluateSource("0 or 5").value).toBe(0);
+		expect(evaluateSource("undefined and 5").value).toBeUndefined();
+		expect(evaluateSource("1 and 2").value).toBe(2);
+	});
+
+	test("supports deep self stack reads", () => {
+		expect(evaluateRexc("2@", { selfStack: ["grand", "parent", "child"] }).value).toBe("grand");
+	});
+
+	test("supports reference place mutation", () => {
+		expect(evaluateRexc("(%=5'k+5')", { refs: { 5: 0 } }).value).toBe(10);
+	});
 });

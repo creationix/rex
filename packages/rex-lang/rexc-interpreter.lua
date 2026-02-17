@@ -309,14 +309,13 @@ end
 function Rex.evaluate(rexc, opts)
   opts = opts or {}
   local initial_self = opts.self
-  if initial_self == nil and opts.refs then initial_self = opts.refs[0] end
   local state = {
     src = rexc,
     len = #rexc,
     pos = 1,
     vars = opts.vars or {},
     refs = {
-      [0] = initial_self,
+      [0] = opts.refs and opts.refs[0] or nil,
       [1] = true,
       [2] = false,
       [3] = nil,
