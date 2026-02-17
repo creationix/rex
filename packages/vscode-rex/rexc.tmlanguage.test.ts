@@ -17,9 +17,13 @@ describe("rexc TextMate grammar", () => {
 		expect(includes.has("#control-flow-bracket")).toBe(true);
 		expect(includes.has("#control-flow-brace")).toBe(true);
 		expect(includes.has("#loop-control")).toBe(true);
+		expect(includes.has("#reference")).toBe(true);
+		expect(includes.has("#self-depth")).toBe(true);
 
 		expect(grammar.repository["control-flow-loop-paren"]?.begin).toContain("[><]\\(");
 		expect(grammar.repository["control-flow-bracket"]?.begin).toContain("[><][\\[\\]]");
 		expect(grammar.repository["control-flow-brace"]?.begin).toContain("[><]\\{");
+		expect(grammar.repository["reference"]?.match).toContain("('");
+		expect(grammar.repository["self-depth"]?.match).toContain("(@)");
 	});
 });

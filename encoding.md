@@ -42,7 +42,8 @@ Digits form a **big-endian base-64 integer**. Zero is **no digits** (zero-length
 | `*` | Decimal     | Zigzag-encoded power of 10 (consumes next integer value) |
 | `:` | Bare string | The string content itself                                |
 | `%` | Opcode      | Opcode ID                                                |
-| `@` | Reference   | Reference ID                                             |
+| `@` | Self        | Depth (empty=`self`, `1@`=one level up, etc.)          |
+| `'` | Reference   | Reference ID                                             |
 | `$` | Variable    | The variable name itself                                 |
 | `^` | Pointer     | Byte offset to another value                             |
 | `;` | Loop control| Encodes break/continue kind and depth                    |
@@ -78,8 +79,8 @@ Digits form a **big-endian base-64 integer**. Zero is **no digits** (zero-length
 | `&(`   | All    | expr, expr, ... (first undefined short-circuits) |
 | `>(`   | For-in | iterable, body OR iterable, value-var, body OR iterable, key-var, value-var, body |
 | `<(`   | For-of | iterable, body OR iterable, key-var, body    |
-| `>[`   | Array comprehension | iteration clause, body expression |
-| `>{`   | Object comprehension | iteration clause, key expression, value expression |
+| `>[`,`<[` | Array comprehension | iteration clause, body expression |
+| `>{`,`<{` | Object comprehension | iteration clause, key expression, value expression |
 
 ### Structural
 
@@ -176,20 +177,32 @@ Pre-assigned constants. IDs 5+ are domain-defined.
 
 | ID | Value       | Encoding |
 |----|-------------|----------|
-| 0  | `self`      | `@`      |
-| 1  | `true`      | `1@`     |
-| 2  | `false`     | `2@`     |
-| 3  | `null`      | `3@`     |
-| 4  | `undefined` | `4@`     |
-| 5+ | Domain-defined | `5@`, `6@`, ... |
+| 0  | reserved (legacy self) | `0'` |
+| 1  | `true`      | `1'`     |
+| 2  | `false`     | `2'`     |
+| 3  | `null`      | `3'`     |
+| 4  | `undefined` | `4'`     |
+| 5+ | Domain-defined | `5'`, `6'`, ... |
 
 For navigation into a domain reference, use a call:
 
 ```rexc
-(5@host:)                   │ headers.host
-(5@x-forwarded-for:origin:) │ headers.x-forwarded-for.origin
-(5@key$)                    │ headers[key]
+(5'host:)                   │ headers.host
+(5'x-forwarded-for:origin:) │ headers.x-forwarded-for.origin
+(5'key$)                    │ headers[key]
 ```
+
+## Self Depth
+
+`@` reads `self` from a dynamic depth stack:
+
+```rexc
+@   │ self (depth 1)
+1@  │ parent self (depth 2)
+2@  │ grandparent self (depth 3)
+```
+
+Depth decode rule: `depth = prefix + 1`.
 
 ## Variables
 
@@ -217,7 +230,7 @@ Both have an optional byte-length prefix for when the operation itself needs to 
 
 ```rexc
 =x$1k+                │ x = 42
-=(5@x-handler:)handler$ │ headers['x-handler'] = handler
+=(5'x-handler:)handler$ │ headers['x-handler'] = handler
 ~x$                    │ delete x
 ~(user$temp:)          │ delete user.temp
 ```
@@ -230,14 +243,14 @@ The `(` `)` container groups a function-like expression. The first value determi
 |------------------|---------------------------|
 | Opcode `%`       | Operation call            |
 | Variable `$`     | Navigation (place read)   |
-| Reference `@`    | Domain builtin navigation |
+| Reference `'`    | Domain builtin navigation |
 | Any other value  | Navigation from expression result |
 
 ```rexc
 (1%2+4+)                    │ 1 + 2
 (9%x$k+)                    │ x > 10
 (user$address:street:)      │ user.address.street
-(5@x-forwarded-for:origin:) │ headers.x-forwarded-for.origin
+(5'x-forwarded-for:origin:) │ headers.x-forwarded-for.origin
 ({a:2+}a:)                  │ {a:1}.a
 ```
 
@@ -490,14 +503,14 @@ The encoder adds byte-length prefixes to container values only where O(1) skippi
 ### `[x in 10 ; when self % 3 > 0 do x * 3 end]`
 
 ```rexc
->[k+x$?((9%(k%@6+)+)(3%x$6+))]
+>[k+x$?((9%(k%'6+)+)(3%x$6+))]
 ```
 
 This yields `[3, 6, 12, 15, 21, 24, 30]`.
 
 ### HTTP Server Action Annotations
 
-This is a larger example using a domain provided `headers` ref object `5@`.
+This is a larger example using a domain provided `headers` ref object `5'`.
 
 ```rex
 map = {
@@ -512,7 +525,7 @@ end
 This compiles down to 85 bytes:
 
 ```rexc
-(%=map${abc:8,/letters123:8,/numbers}?(=act$(map$(5@x-action:))g=(5@x-handler:)act$))
+(%=map${abc:8,/letters123:8,/numbers}?(=act$(map$(5'x-action:))g=(5'x-handler:)act$))
 ├╯╰────────────────┬────────────────╯├╯╰──────────┬───────────╯│╰───────┬─────────╯│╰─ do closer
 │                  │                 │            │            │        │          ╰── when closer
 │                  │                 │            │            │        ╰───────────── headers.x-handler = act
@@ -546,7 +559,7 @@ end
 Which compiles down to 65 bytes:
 
 ```rexc
-?(({abc:8,/letters123:8,/numbers}(5@x-action:))f=(5@x-handler:)@)
+?(({abc:8,/letters123:8,/numbers}(5'x-action:))f=(5'x-handler:)@)
 ├╯╰─────────────────────┬─────────────────────╯│╰──────┬───────╯╰─ when closer
 │                       │                      │       ╰────────── headers.x-handler=self
 │                       │                      ╰────────────────── skippable prefix

@@ -4,7 +4,7 @@ const DIGIT_SET = new Set(
 );
 
 // Tags that can start a value (excludes closing delimiters)
-const VALUE_TAGS = new Set("+*:%@$^~=([{,?!|&><;");
+const VALUE_TAGS = new Set("+*:%$@^~=([{,?!|&><;'");
 
 export const TOKEN_TYPES = [
 	"byteLength", // 0 - length prefixes
@@ -14,7 +14,7 @@ export const TOKEN_TYPES = [
 	"number", // 4 - integers (+), decimals (*)
 	"string", // 5 - bare strings (:), string containers (,)
 	"operator", // 6 - set (=), delete (~), pointer (^)
-	"property", // 7 - references (@)
+	"property", // 7 - self/reference scalars (@ and ')
 	"decorator", // 8 - index marker (#)
 	"annotation", // 9 - line-drawing annotations
 	"objectKey", // 10 - object keys
@@ -385,16 +385,16 @@ export function tokenize(text: string): Token[] {
 				emit(prefixLine, prefixCol, pos - prefixStart, T.keyword);
 				break;
 
-			// Reference
-			case "@":
-				advance();
-				emit(prefixLine, prefixCol, pos - prefixStart, T.property);
-				break;
-
 			// Variable
 			case "$":
 				advance();
 				emit(prefixLine, prefixCol, pos - prefixStart, T.variable);
+				break;
+
+			// Self-depth scalar tag (@)
+			case "@":
+				advance();
+				emit(prefixLine, prefixCol, pos - prefixStart, T.property);
 				break;
 
 			// Pointer
@@ -407,6 +407,12 @@ export function tokenize(text: string): Token[] {
 			case ";":
 				advance();
 				emit(prefixLine, prefixCol, pos - prefixStart, T.keyword);
+				break;
+
+			// Reference scalar tag (apostrophe)
+			case "'":
+				advance();
+				emit(prefixLine, prefixCol, pos - prefixStart, T.property);
 				break;
 		}
 	}

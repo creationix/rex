@@ -57,4 +57,11 @@ describe("rexc interpreter (streaming)", () => {
 		expect(result.value).toBeUndefined();
 		expect(result.state.vars["x"]).toBeUndefined();
 	});
+
+	test("supports depth-aware self and apostrophe references", () => {
+		expect(evaluateRexc("@", { self: "root" }).value).toBe("root");
+		expect(evaluateRexc(">([2+]1@)", { self: "outer" }).value).toBe("outer");
+		expect(evaluateRexc("5'", { refs: { 5: "headers" } }).value).toBe("headers");
+		expect(evaluateSource("for [10] do for [20] do self@2 end end").value).toBe(10);
+	});
 });

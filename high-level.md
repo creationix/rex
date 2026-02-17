@@ -97,6 +97,14 @@ foo.bar.(key).baz          // static, dynamic, static
 table.(k1).(k2)            // multiple dynamic keys
 ```
 
+Depth-aware self uses `self@N`:
+
+```rex
+self            // current self (depth 1)
+self@2          // parent self (depth 2)
+self@3          // grandparent self (depth 3)
+```
+
 Bare `()` is always grouping — `.()` is always navigation. No ambiguity, no significant whitespace:
 
 ```rex

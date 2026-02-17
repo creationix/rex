@@ -66,6 +66,9 @@ export interface RexActionDict<T> extends BaseActionDict<T> {
   PrimaryExpr_identifier?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   PrimaryExpr_group?: (this: NonterminalNode, arg0: TerminalNode, arg1: NonterminalNode, arg2: TerminalNode) => T;
   PrimaryExpr?: (this: NonterminalNode, arg0: NonterminalNode) => T;
+  SelfExpr_depth?: (this: NonterminalNode, arg0: NonterminalNode, arg1: TerminalNode, arg2: NonterminalNode) => T;
+  SelfExpr_plain?: (this: NonterminalNode, arg0: NonterminalNode) => T;
+  SelfExpr?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   Place?: (this: NonterminalNode, arg0: NonterminalNode, arg1: IterationNode) => T;
   PlaceBase?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   PlaceTail_navStatic?: (this: NonterminalNode, arg0: TerminalNode, arg1: NonterminalNode) => T;

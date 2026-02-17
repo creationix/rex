@@ -31,6 +31,8 @@ const OPCODES = {
 export type RexcContext = {
 	vars?: Record<string, unknown>;
 	refs?: Partial<Record<number, unknown>>;
+	self?: unknown;
+	selfStack?: unknown[];
 	opcodes?: Partial<Record<number, (args: unknown[], state: RexcRuntimeState) => unknown>>;
 };
 
@@ -60,7 +62,7 @@ function decodeZigzag(value: number): number {
 function isValueStart(char: string | undefined): boolean {
 	if (!char) return false;
 	if (digitMap.has(char)) return true;
-	return "+*:%@$^~=([{,?!|&><;".includes(char);
+	return "+*:%$@'^~=([{,?!|&><;".includes(char);
 }
 
 function isDefined(value: unknown): boolean {
@@ -71,21 +73,26 @@ class CursorInterpreter {
 	private readonly text: string;
 	private pos = 0;
 	private readonly state: RexcRuntimeState;
+	private readonly selfStack: unknown[];
 	private readonly opcodeMarkers: OpcodeMarker[];
 	private readonly pointerCache = new Map<number, unknown>();
 
 	constructor(text: string, ctx: RexcContext = {}) {
+		const initialSelf = ctx.selfStack && ctx.selfStack.length > 0
+			? ctx.selfStack[ctx.selfStack.length - 1]
+			: (ctx.self ?? ctx.refs?.[0]);
 		this.text = text;
 		this.state = {
 			vars: ctx.vars ?? {},
 			refs: {
-				0: ctx.refs?.[0],
+				0: initialSelf,
 				1: ctx.refs?.[1] ?? true,
 				2: ctx.refs?.[2] ?? false,
 				3: ctx.refs?.[3] ?? null,
 				4: ctx.refs?.[4] ?? undefined,
 			},
 		};
+		this.selfStack = ctx.selfStack && ctx.selfStack.length > 0 ? [...ctx.selfStack] : [initialSelf];
 		this.opcodeMarkers = Array.from({ length: 256 }, (_, id) => ({ __opcode: id }));
 		for (const [idText, value] of Object.entries(ctx.refs ?? {})) {
 			const id = Number(idText);
@@ -99,6 +106,13 @@ class CursorInterpreter {
 	}
 
 	private readonly customOpcodes = new Map<number, (args: unknown[], state: RexcRuntimeState) => unknown>();
+
+	private readSelf(depthPrefix: number): unknown {
+		const depth = depthPrefix + 1;
+		const index = this.selfStack.length - depth;
+		if (index < 0) return undefined;
+		return this.selfStack[index];
+	}
 
 	get runtimeState() {
 		return this.state;
@@ -197,6 +211,9 @@ class CursorInterpreter {
 				this.pos += 1;
 				return this.opcodeMarkers[prefix.value] ?? { __opcode: prefix.value };
 			case "@":
+				this.pos += 1;
+				return this.readSelf(prefix.value);
+			case "'":
 				this.pos += 1;
 				return this.state.refs[prefix.value];
 			case "$":
@@ -489,7 +506,9 @@ class CursorInterpreter {
 		const items = this.iterate(iterable, keysOnly);
 		let last: unknown = undefined;
 		for (const item of items) {
-			this.state.refs[0] = keysOnly ? item.key : item.value;
+			const currentSelf = keysOnly ? item.key : item.value;
+			this.state.refs[0] = currentSelf;
+			this.selfStack.push(currentSelf);
 			if (varA && varB) {
 				this.state.vars[varA] = item.key;
 				this.state.vars[varB] = keysOnly ? item.key : item.value;
@@ -498,6 +517,8 @@ class CursorInterpreter {
 				this.state.vars[varA] = keysOnly ? item.key : item.value;
 			}
 			last = this.evalBodySlice(bodyStart, bodyEnd);
+			this.selfStack.pop();
+			this.state.refs[0] = this.selfStack[this.selfStack.length - 1];
 			const control = this.handleLoopControl(last);
 			if (!control) continue;
 			if (control.depth > 1) return { kind: control.kind, depth: control.depth - 1 } satisfies LoopControl;
@@ -512,7 +533,9 @@ class CursorInterpreter {
 		const items = this.iterate(iterable, keysOnly);
 		const out: unknown[] = [];
 		for (const item of items) {
-			this.state.refs[0] = keysOnly ? item.key : item.value;
+			const currentSelf = keysOnly ? item.key : item.value;
+			this.state.refs[0] = currentSelf;
+			this.selfStack.push(currentSelf);
 			if (varA && varB) {
 				this.state.vars[varA] = item.key;
 				this.state.vars[varB] = keysOnly ? item.key : item.value;
@@ -521,6 +544,8 @@ class CursorInterpreter {
 				this.state.vars[varA] = keysOnly ? item.key : item.value;
 			}
 			const value = this.evalBodySlice(bodyStart, bodyEnd);
+			this.selfStack.pop();
+			this.state.refs[0] = this.selfStack[this.selfStack.length - 1];
 			const control = this.handleLoopControl(value);
 			if (control) {
 				if (control.depth > 1) return { kind: control.kind, depth: control.depth - 1 } satisfies LoopControl;
@@ -536,7 +561,9 @@ class CursorInterpreter {
 		const items = this.iterate(iterable, keysOnly);
 		const out: Record<string, unknown> = {};
 		for (const item of items) {
-			this.state.refs[0] = keysOnly ? item.key : item.value;
+			const currentSelf = keysOnly ? item.key : item.value;
+			this.state.refs[0] = currentSelf;
+			this.selfStack.push(currentSelf);
 			if (varA && varB) {
 				this.state.vars[varA] = item.key;
 				this.state.vars[varB] = keysOnly ? item.key : item.value;
@@ -549,6 +576,8 @@ class CursorInterpreter {
 			const key = this.evalValue();
 			const value = this.evalValue();
 			this.pos = save;
+			this.selfStack.pop();
+			this.state.refs[0] = this.selfStack[this.selfStack.length - 1];
 			const control = this.handleLoopControl(value);
 			if (control) {
 				if (control.depth > 1) return { kind: control.kind, depth: control.depth - 1 } satisfies LoopControl;
@@ -638,7 +667,7 @@ class CursorInterpreter {
 		this.skipNonCode();
 		const prefix = this.readPrefix();
 		const tag = this.text[this.pos];
-		if (tag === "$" || tag === "@") {
+		if (tag === "$" || tag === "'") {
 			this.pos += 1;
 			const keys: unknown[] = [];
 			this.skipNonCode();
@@ -654,7 +683,7 @@ class CursorInterpreter {
 			return {
 				root: tag === "$" ? prefix.raw : prefix.value,
 				keys,
-				isRef: tag === "@",
+				isRef: tag === "'",
 			};
 		}
 		throw new Error(`Invalid place at ${this.pos}`);
@@ -740,7 +769,7 @@ class CursorInterpreter {
 			this.pos = save;
 			return end;
 		}
-		if ("+:%@$^;".includes(tag)) {
+		if ("+:%$@'^;".includes(tag)) {
 			this.pos += 1;
 			const end = this.pos;
 			this.pos = save;
