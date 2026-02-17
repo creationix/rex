@@ -6,87 +6,30 @@
   <img alt="Rex mascot" src="img/rex-mascot-light.png" align="right" width="200">
 </picture>
 
-Programmable JSON. Small arms, big bite!
+Programmable JSON. Small arms, big bite.
 
-Rex is a data format with three containers: `{}` for objects, `[]` for arrays, `()` for code. Any valid JSON is already valid Rex — you just add parentheses where you need logic. Source compiles to compact JSON bytecode that you can store, serialize, and diff like any other data.
+Rex is a compact expression language for configuration and data-driven logic. It is a superset of JSON with high-level infix syntax (`when`, `unless`, `and`, `or`, assignment, loops, comprehensions) that compiles to a compact bytecode string format called `rexc`.
 
-If you like tools that feel inevitable once you see them, you’re in the right place.
+If you need data-first configs with just enough logic—without embedding a full scripting runtime—Rex is built for that.
 
-## What Problem This Solves
+## Why Rex
 
-You have structured data. JSON handles it fine. Then you need a little logic — a lookup, a conditional, a fallback — and suddenly you're choosing between:
+When JSON-only configs hit real-world logic, teams usually end up with one of these:
 
-- Hardcoding every case — rigid, verbose, duplicated across rules.
-- Embedding a scripting language — Lua, JS, WASM — a whole new runtime and security surface for a few if statements.
-- Writing a custom DSL — fun at first, maintenance forever.
+- Massive duplicated rules
+- Embedded JavaScript/Lua/WASM runtimes
+- A custom DSL that keeps growing forever
 
-Rex is the fourth option. Your data stays JSON. You add `()` where you need logic. The compiled output is JSON arrays — storable, serializable, diffable.
+Rex keeps the model data-oriented and explicit:
 
+- JSON-like literals and object/array ergonomics
+- Existence-based control flow (`undefined` means absence)
+- Compact, serializable `rexc` output
+- Domain-agnostic core language
 
-## Core Language
+## Quick Start
 
-Rex is designed to be used in various problem domains with a flexible core.
-
-- `when`, `unless`, `do` - conditional control flow
-- `alt`, `all` - short-circuit operators
-- `set`, `delete` - place operations
-- `eq`, `neq`, `gt`, `gte`, `lt`, `lte` - comparison (return value or `undefined`)
-- `and`, `or`, `not`, `xor` - boolean / bitwise operators
-- `add`, `sub`, `mul`, `div`, `mod`, `neg` - arithmetic
-- `string`, `number`, `object`, `array`, `boolean`, `bytes` - type predicates
-- `literal` - escape hatch for data that looks like code
-
-## Example
-
-A common pattern: hundreds of named actions, each mapped to a handler. In plain JSON, every action needs its own rule:
-
-```ts
-export default [
-  { when: [{ condition: "header", key: "x-action", equals: "create-user" }],
-    do:   [{ action: "set-header", key: "x-handler", value: "users/create" }] },
-  { when: [{ condition: "header", key: "x-action", equals: "delete-user" }],
-    do:   [{ action: "set-header", key: "x-handler", value: "users/delete" }] },
-  // ... 200+ more rules, each repeating the same structure
-]
-```
-
-Every entry duplicates the same conditional logic. At 200 actions, that's 200 copy-pasted rules.
-
-In Rex, the data is a lookup table and the logic is written once:
-
-```rex
-actions = {
-  create-user:       "users/create"
-  delete-user:       "users/delete"
-  update-profile:    "users/update-profile"
-  create-order:      "orders/create"
-  process-payment:   "payments/process"
-  send-notification: "notifications/send"
-  // ... 200+ more entries
-}
-
-when handler = actions.(headers.x-action) do
-  headers.x-handler = handler
-end
-```
-
-Adding a new action is one line in the table. The logic doesn't change.
-
-When compiled this uses Rex's compact encoding. In normal debug mode, variable names are preserved (`actions`, `handler`):
-
-```rexc
-(%=actions${create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profilecreate-order:d,orders/createprocess-payment:g,payments/processsend-notification:i,notifications/send}?(=handler$(actions$(headers$x-action:))s=(headers$x-handler:)handler$))
-```
-
-Optimized mode inlines the lookup table and removes the extra named table assignment, then uses `self` for the matched value in the branch body:
-
-```rexc
-?(({create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profilecreate-order:d,orders/createprocess-payment:g,payments/processsend-notification:i,notifications/send}(headers$x-action:))l=(headers$x-handler:)@)
-```
-
-## Compiler Helper
-
-Use the built-in CLI helper to compile high-level Rex to compact encoding instead of deriving rexc by hand:
+From repo root:
 
 ```sh
 bun run rex:compile --expr "when x do y end"
@@ -94,56 +37,155 @@ bun run rex:compile --file input.rex
 cat input.rex | bun run rex:compile
 ```
 
-Use `--ir` to emit lowered IR JSON.
+Use `--ir` to inspect lowered IR:
 
-## IR Optimizer
-
-Rex now includes an IR-to-IR optimizer pass.
-
-### API
-
-```ts
-import { parseToIR, optimizeIR, compile } from "./packages/rex-lang/rex.ts";
-
-const ir = parseToIR("1 + 2");
-const optimized = optimizeIR(ir);
-
-const encoded = compile("1 + 2", { optimize: true });
+```sh
+bun run rex:compile --expr "a and b" --ir
 ```
 
-### Example: constant fold
+## Language Snapshot
 
-Input IR:
-
-```json
-{ "type": "binary", "op": "add", "left": { "type": "number", "raw": "1", "value": 1 }, "right": { "type": "number", "raw": "2", "value": 2 } }
-```
-
-Optimized IR:
-
-```json
-{ "type": "number", "raw": "3", "value": 3 }
-```
-
-### Example: constant propagation + navigation fold
-
-Source:
+Rex uses **existence semantics** (defined vs `undefined`), not truthiness.
 
 ```rex
-t = {a: 1, b: 2}
-t.b
+0 or "fallback"         // => 0
+false or "fallback"     // => false
+null or "fallback"      // => null
+undefined or "fallback" // => "fallback"
 ```
 
-Optimized IR (shape):
+Core forms:
 
-```json
-{
-  "type": "program",
-  "body": [
-    { "type": "assign", "op": "=", "place": { "type": "identifier", "name": "t" }, "value": { "type": "object", "entries": [ { "key": { "type": "key", "name": "a" }, "value": { "type": "number", "raw": "1", "value": 1 } }, { "key": { "type": "key", "name": "b" }, "value": { "type": "number", "raw": "2", "value": 2 } } ] } },
-    { "type": "number", "raw": "2", "value": 2 }
-  ]
+```rex
+// conditionals
+when cond do expr end
+unless cond do expr else other end
+
+// assignment
+x = 42
+obj.key += 1
+
+// existence operators
+a and b
+a or b
+
+// value operators (boolean/bitwise depending on type)
+a & b
+~a
+
+// depth-aware self
+self
+self@2
+
+// loops and comprehensions
+for v in items do v end
+[v in items ; v * 2]
+{k, v in obj ; (k): v}
+```
+
+## Example: table-driven routing
+
+```rex
+actions = {
+  create-user: "users/create"
+  delete-user: "users/delete"
+  update-profile: "users/update-profile"
 }
+
+when handler = actions.(headers.x-action) do
+  headers.x-handler = handler
+end
 ```
 
-The optimizer is conservative and only applies simple, safe folds (constants, literal navigation, and statically decidable conditionals).
+Normal compile output (names preserved):
+
+```rexc
+(%=actions${create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profile}?(=handler$(actions$(headers$x-action:))s=(headers$x-handler:)handler$))
+```
+
+Optimized compile output:
+
+```rexc
+?(({create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profile}(headers$x-action:))l=(headers$x-handler:)@)
+```
+
+## Programmatic API
+
+```ts
+import { compile, parseToIR, optimizeIR, encodeIR } from "./packages/rex-lang/rex.ts";
+
+const source = "when x do y else z end";
+
+const encoded = compile(source);
+const optimizedEncoded = compile(source, { optimize: true });
+
+const ir = parseToIR(source);
+const optimizedIR = optimizeIR(ir);
+const reEncoded = encodeIR(optimizedIR);
+```
+
+## Tooling
+
+### Rex compiler package
+
+- Location: `packages/rex-lang`
+- Includes grammar, parser/lowering, optimizer, and encoder
+
+Useful commands:
+
+```sh
+cd packages/rex-lang
+bun test
+bun run build:grammar
+```
+
+### VS Code extension
+
+- Location: `packages/vscode-rex`
+- Adds syntax highlighting for `.rex` and `.rexc`
+
+Useful commands:
+
+```sh
+cd packages/vscode-rex
+bun test
+bun run build
+bun run reinstall
+```
+
+## Repo Layout
+
+- `packages/rex-lang` — language/compiler implementation
+- `packages/vscode-rex` — VS Code grammar + tokenizer + extension
+- `high-level.md` — complete high-level language reference
+- `encoding.md` — `rexc` encoding format reference
+- `core-language.md` — historical/core language design notes
+
+## Development Workflow
+
+From repo root:
+
+```sh
+bun run rex:compile --expr "when x do y end"
+bun run rex:verify-docs
+```
+
+When editing grammar (`packages/rex-lang/rex.ohm`):
+
+```sh
+cd packages/rex-lang
+bun run build:grammar
+bun test
+```
+
+When editing VS Code grammar/tokenizer:
+
+```sh
+cd packages/vscode-rex
+bun test
+bun run build
+```
+
+## Status
+
+Rex now uses high-level infix syntax as the primary source form. The old s-expression-style representation is no longer the user-facing language in this repo.
