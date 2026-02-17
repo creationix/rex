@@ -47,6 +47,15 @@ undefined                     // absence of value
 [1,2,3,]  {a:1,b:2,}          // trailing comma allowed
 {name: "Rex", age: 65}        // bare string keys allowed when [0-9a-zA-Z_-]+
 {404:"Not Found" 500:"Error"} // integer keys allowed (stay as integers)
+{(field): "value"}            // computed key expression
+{("x-" + id): payload}        // any expression can be a key
+```
+
+In object syntax, bare identifier-like keys are always literal strings. Use parentheses for computed keys:
+
+```rex
+{name: "Rex"}                 // key is literal string "name"
+{(name): "Rex"}               // key is value of variable name
 ```
 
 ## Comments
@@ -170,7 +179,9 @@ user and user.name and user.email
 
 These are variadic in the bytecode, but in infix they chain naturally with standard left-to-right evaluation.
 
-If you want a ternary expression `a ? b : c`, you can use `a and b or c` if b is known to be defined, otherwise use `when a do b else c end`.
+If you want a ternary expression `a ? b : c`, you can use `a and b or c` when `a` is an existence-style condition and `b` is known to be defined, otherwise use `when a do b else c end`.
+
+For boolean conditions, compare explicitly (for example `when flag == true do ... end`) since `when` checks defined-vs-`undefined`, not truthiness.
 
 ### Bitwise / Boolean Value Operators
 
@@ -241,7 +252,7 @@ end
 With else:
 
 ```rex
-when authorized do
+when authorized == true do
   proceed()
 else
   deny()
@@ -368,20 +379,20 @@ Comprehensions build new collections using `;` to separate the iteration clause 
 
 #### Object Comprehensions
 
-Object comprehensions use `key-expr: value-expr` after `;`. Both sides are expressions — bare words reference variables, not literal strings (use quotes for literal keys):
+Object comprehensions use `key: value` after `;` with the same key rules as object literals: bare identifier-like keys are literal strings, and computed keys use parentheses.
 
 ```rex
-{k, v in {a: 1, b: 2} ; k: v * 10}
+{k, v in {a: 1, b: 2} ; (k): v * 10}
 // → {a: 10, b: 20}
 
-{v in ["x", "y", "z"] ; v: true}
+{v in ["x", "y", "z"] ; (v): true}
 // → {x: true, y: true, z: true}
 
-{k, v in scores ; "player-" + k: v * 100}
+{k, v in scores ; ("player-" + k): v * 100}
 // → {"player-alice": 9500, "player-bob": 8700}
 
 // Implicit self
-{users ; self.name: self.score}
+{users ; (self.name): self.score}
 // → {Alice: 95, Bob: 87}
 ```
 
@@ -395,7 +406,7 @@ Return `undefined` to exclude an element from the result:
 // → [2, 4]
 
 // Remove null values from an object
-{k, v in data ; k: v != null and v}
+{k, v in data ; (k): v != null and v}
 // → new object without null values
 ```
 
@@ -516,8 +527,8 @@ end
 // Compute a boolean value (value operators)
 user.can-edit = user.is-admin & ~user.is-suspended
 
-// Then branch on whether it's defined AND true
-when user.can-edit do
+// Then branch only when it's true
+when user.can-edit == true do
   show-editor()
 end
 ```
@@ -548,7 +559,7 @@ end
 
 ```rex
 users = [{name: "Alice", id: 1}, {name: "Bob", id: 2}]
-lookup = {v in users ; v.name: v}
+lookup = {v in users ; (v.name): v}
 // → {Alice: {name: "Alice", id: 1}, Bob: {name: "Bob", id: 2}}
 ```
 
@@ -558,7 +569,7 @@ lookup = {v in users ; v.name: v}
 scores = {alice: 95, bob: 42, carol: 78}
 
 // Students who passed (score >= 50)
-passed = {k, v in scores ; k: v >= 50 and v}
+passed = {k, v in scores ; (k): v >= 50 and v}
 // → {alice: 95, carol: 78}
 
 // Just the names

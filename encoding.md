@@ -45,6 +45,7 @@ Digits form a **big-endian base-64 integer**. Zero is **no digits** (zero-length
 | `@` | Reference   | Reference ID                                             |
 | `$` | Variable    | The variable name itself                                 |
 | `^` | Pointer     | Byte offset to another value                             |
+| `;` | Loop control| Encodes break/continue kind and depth                    |
 
 ### Paired Containers (optional byte-length prefix)
 
@@ -67,14 +68,18 @@ Digits form a **big-endian base-64 integer**. Zero is **no digits** (zero-length
 | `=` | Set    | Place, then value |
 | `~` | Delete | Place             |
 
-### Control-Flow Containers (optional byte-length prefix, close with `)`)
+### Control-Flow Containers (optional byte-length prefix)
 
 | Opener | Type   | Body contains                                |
 |--------|--------|----------------------------------------------|
 | `?(`   | When   | cond, then-expr, else-expr?                  |
 | `!(`   | Unless | cond, then-expr, else-expr?                  |
 | `\|(`  | Alt    | expr, expr, ... (first non-undefined wins)   |
-| `&(`   | All    | expr, expr, ... (first falsy short-circuits) |
+| `&(`   | All    | expr, expr, ... (first undefined short-circuits) |
+| `>(`   | For-in | iterable, body OR iterable, value-var, body OR iterable, key-var, value-var, body |
+| `<(`   | For-of | iterable, body OR iterable, key-var, body    |
+| `>[`   | Array comprehension | iteration clause, body expression |
+| `>{`   | Object comprehension | iteration clause, key expression, value expression |
 
 ### Structural
 
@@ -141,7 +146,7 @@ b,hello world │ "hello world"
 
 ## Opcodes
 
-A single unified opcode family. Control flow (`when`, `unless`, `alt`, `all`) has dedicated syntax and is not in this table. Domain opcodes extend from 24+.
+A single unified opcode family. Control flow (`when`, `unless`, `alt`, `all`, loops, loop control) has dedicated syntax and is not in this table. Domain opcodes extend from 22+.
 
 | ID | Opcode | Enc. |  | ID | Opcode    | Enc. |
 |----|--------|------|--|----|-----------|------|
@@ -154,8 +159,8 @@ A single unified opcode family. Control flow (`when`, `unless`, `alt`, `all`) ha
 | 6  | `neq`  | `6%` |  | 17 | `string`  | `h%` |
 | 7  | `lt`   | `7%` |  | 18 | `array`   | `i%` |
 | 8  | `lte`  | `8%` |  | 19 | `object`  | `j%` |
-| 9  | `gt`   | `9%` |  |    |           |      |
-| 10 | `gte`  | `a%` |  |    |           |      |
+| 9  | `gt`   | `9%` |  | 20 | `mod`     | `k%` |
+| 10 | `gte`  | `a%` |  | 21 | `neg`     | `l%` |
 
 Opcodes are used as the first value inside `()` calls:
 
@@ -226,24 +231,26 @@ The `(` `)` container groups a function-like expression. The first value determi
 | Opcode `%`       | Operation call            |
 | Variable `$`     | Navigation (place read)   |
 | Reference `@`    | Domain builtin navigation |
+| Any other value  | Navigation from expression result |
 
 ```rexc
 (1%2+4+)                    │ (add 1 2)
 (9%x$k+)                    │ (gt x 10)
 (user$address:street:)      │ user.address.street
 (5@x-forwarded-for:origin:) │ headers.x-forwarded-for.origin
+({a:2+}a:)                  │ {a:1}.a
 ```
 
 ## Control Flow
 
-Control-flow operations have dedicated container syntax with compound openers. All close with `)`. The encoder adds byte-length prefixes to container values in skip positions.
+Control-flow operations have dedicated container syntax with compound openers. `?(`, `!(`, `|(`, `&(`, `>(`, and `<(` close with `)`. `>[` closes with `]`, and `>{` closes with `}`. The encoder adds byte-length prefixes to container values in skip positions.
 
 ### When / Unless
 
 ```rexc
-?(cond then-expr)            │ when: evaluate then if cond truthy
+?(cond then-expr)            │ when: evaluate then if cond is defined
 ?(cond then-expr else-expr)  │ when: evaluate then or else
-!(cond then-expr else-expr)  │ unless: evaluate then if cond falsy
+!(cond then-expr else-expr)  │ unless: evaluate then if cond is undefined
 ```
 
 The condition is always evaluated. Then-expr and else-expr are in skip positions — the interpreter jumps past whichever branch isn't taken. Container values in these positions get byte-length prefixes.
@@ -273,6 +280,44 @@ The first expression is always evaluated. Remaining expressions are in skip posi
 │      ╰────────────────── user.name — bare, always evaluated
 ╰───────────────────────── alt opener
 ```
+
+### Loops and Comprehensions
+
+`for` forms are dedicated control-flow containers, not opcodes.
+
+```rexc
+>(iter body)                 │ for self in iter
+>(iter v$ body)              │ for v in iter
+>(iter k$ v$ body)           │ for k, v in iter
+<(iter body)                 │ for self of iter
+<(iter k$ body)              │ for k of iter
+```
+
+Comprehensions use dedicated containers to avoid ambiguity with plain loop expressions:
+
+```rexc
+>[iter body]                 │ [iter ; body] array comprehension
+>[iter v$ body]              │ [v in iter ; body]
+>[iter k$ v$ body]           │ [k, v in iter ; body]
+>{iter key val}              │ {iter ; key: val} object comprehension
+>{iter v$ key val}           │ {v in iter ; key: val}
+>{iter k$ v$ key val}        │ {k, v in iter ; key: val}
+```
+
+`>[...]` collects defined body results into a new array (undefined results are skipped). `>{...}` evaluates key/value expressions and writes entries only when the value is defined.
+
+`break` and `continue` use scalar `;` with a compact digit payload:
+
+```rexc
+;    │ break depth 1
+1;   │ continue depth 1
+2;   │ break depth 2
+3;   │ continue depth 2
+```
+
+Decode rule: `kind = n % 2` (`0=break`, `1=continue`), `depth = floor(n / 2) + 1`.
+
+`;` is valid only inside loop bodies; otherwise decoding/validation must fail.
 
 ## Objects
 
@@ -372,14 +417,20 @@ The encoder adds byte-length prefixes to container values only where O(1) skippi
 - Inside indexed containers (index provides direct access)
 - Condition in `?(` / `!(`  (always evaluated)
 - First expression in `|(` / `&(` (always evaluated)
+- Iterable and binding slots in `>(` / `<(` (always evaluated)
+- Iterable and binding slots in `>[` / `>{` (always evaluated)
 - All arguments in regular `()` calls (all evaluated)
 - Body of `=` / `~` (fixed arity, all parts evaluated)
+- `;` loop-control scalar (self-delimiting)
 
 **Prefix added to container values in:**
 - Non-indexed array elements
 - Non-indexed object values
 - Then-expr and else-expr in `?(` / `!(`
 - Second and later expressions in `|(` / `&(`
+- Loop body in `>(` / `<(` (skip/jump target)
+- Body expression in `>[` (skip/jump target)
+- Key/value expressions in `>{` (skip/jump targets)
 
 ## Worked Examples
 
@@ -436,6 +487,14 @@ The encoder adds byte-length prefixes to container values only where O(1) skippi
 ╰───────────────────────── alt opener
 ```
 
+### `[x in 10 ; when self % 3 > 0 do x * 3 end]`
+
+```rexc
+>[k+x$?((9%(k%@6+)+)(3%x$6+))]
+```
+
+This yields `[3, 6, 12, 15, 21, 24, 30]`.
+
 ### HTTP Server Action Annotations
 
 This is a larger example using a domain provided `headers` ref object `5@`.
@@ -457,7 +516,7 @@ This compiles down to 85 bytes:
 │                  │                 │            │            │        │          ╰── when closer
 │                  │                 │            │            │        ╰───────────── headers.x-handler = act
 │                  │                 │            │            ╰────────────────────── skippable prefix
-│                  │                 │            ╰─────────────────────────────────── act = map[headers.x-action]
+│                  │                 │            ╰─────────────────────────────────── act = map.(headers.x-action)
 │                  │                 ╰──────────────────────────────────────────────── when opener
 │                  ╰────────────────────────────────────────────────────────────────── map = {...}
 ╰───────────────────────────────────────────────────────────────────────────────────── do opener
@@ -478,7 +537,7 @@ This can be optimized using inline data and `self` instead of two local variable
 when {
   abc: "/letters"
   123: "/numbers"
-}[headers.x-action] do
+}.(headers.x-action) do
   headers.x-handler = self
 end
 ```
@@ -490,7 +549,7 @@ Which compiles down to 65 bytes:
 ├╯╰─────────────────────┬─────────────────────╯│╰──────┬───────╯╰─ when closer
 │                       │                      │       ╰────────── headers.x-handler=self
 │                       │                      ╰────────────────── skippable prefix
-│                       ╰───────────────────────────────────────── {...}[headers.x-action]
+│                       ╰───────────────────────────────────────── {...}.(headers.x-action)
 ╰───────────────────────────────────────────────────────────────── when opener
 ```
 
