@@ -590,7 +590,10 @@ class CursorInterpreter {
 			case OPCODES.do:
 				return args.length ? args[args.length - 1] : undefined;
 			case OPCODES.add:
-				return Number(args[0] ?? 0) + Number(args[1] ?? 0);
+					if (typeof args[0] === "string" || typeof args[1] === "string") {
+						return String(args[0] ?? "") + String(args[1] ?? "");
+					}
+					return Number(args[0] ?? 0) + Number(args[1] ?? 0);
 			case OPCODES.sub:
 				return Number(args[0] ?? 0) - Number(args[1] ?? 0);
 			case OPCODES.mul:
@@ -659,10 +662,8 @@ class CursorInterpreter {
 
 	private readPlace(): { root: string | number; keys: unknown[]; isRef: boolean } {
 		this.skipNonCode();
-		const prefix = this.readPrefix();
-		const tag = this.text[this.pos];
-		if (tag === "$" || tag === "'") {
-			this.pos += 1;
+		const direct = this.readRootVarOrRefIfPresent();
+		if (direct) {
 			const keys: unknown[] = [];
 			this.skipNonCode();
 			if (this.text[this.pos] === "(") {
@@ -675,12 +676,49 @@ class CursorInterpreter {
 				this.pos += 1;
 			}
 			return {
-				root: tag === "$" ? prefix.raw : prefix.value,
+				root: direct.root,
 				keys,
-				isRef: tag === "'",
+				isRef: direct.isRef,
 			};
 		}
+
+		if (this.text[this.pos] === "(") {
+			this.pos += 1;
+			this.skipNonCode();
+			const rootFromNav = this.readRootVarOrRefIfPresent();
+			if (!rootFromNav) throw new Error(`Invalid place root at ${this.pos}`);
+
+			const keys: unknown[] = [];
+			while (true) {
+				this.skipNonCode();
+				if (this.text[this.pos] === ")") break;
+				keys.push(this.evalValue());
+			}
+			this.pos += 1;
+
+			return {
+				root: rootFromNav.root,
+				keys,
+				isRef: rootFromNav.isRef,
+			};
+		}
+
 		throw new Error(`Invalid place at ${this.pos}`);
+	}
+
+	private readRootVarOrRefIfPresent(): { root: string | number; isRef: boolean } | undefined {
+		const save = this.pos;
+		const prefix = this.readPrefix();
+		const tag = this.text[this.pos];
+		if (tag !== "$" && tag !== "'") {
+			this.pos = save;
+			return undefined;
+		}
+		this.pos += 1;
+		return {
+			root: tag === "$" ? prefix.raw : prefix.value,
+			isRef: tag === "'",
+		};
 	}
 
 	private writePlace(place: { root: string | number; keys: unknown[]; isRef: boolean }, value: unknown) {

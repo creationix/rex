@@ -1,0 +1,43 @@
+{
+  "globals": {
+    "headers": {
+      "type": "object",
+      "description": "Inbound request headers",
+      "properties": {
+        "x-action": { "type": "string", "description": "Action identifier for router lookup" },
+        "x-tenant": { "type": "string", "description": "Tenant identifier" },
+        "x-request-id": { "type": "string", "description": "Request correlation id" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "description": "Authentication context",
+      "properties": {
+        "user-id": { "type": "string", "description": "Authenticated user id" },
+        "roles": { "type": "array", "description": "User role list" }
+      }
+    },
+    "edge-config": {
+      "type": "object",
+      "description": "Host-managed read-only project edge configuration attached by customers",
+      "properties": {
+        "routing": {
+          "type": "object",
+          "description": "Routing-level runtime config",
+          "properties": {
+            "default-operation-timeout-ms": { "type": "number", "description": "Default operation timeout when routes omit explicit timeout" },
+            "response-tag": { "type": "string", "description": "Optional response tag stamped into headers" }
+          }
+        }
+      }
+    },
+    "trace": {
+      "type": "function",
+      "description": "Platform trace emitter"
+    },
+    "provider-signing-secret": {
+      "type": "function",
+      "description": "Host-managed read-only secret lookup for webhook providers"
+    }
+  }
+}

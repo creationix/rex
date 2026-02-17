@@ -27,16 +27,16 @@ describe("Rex encoding backend", () => {
 	});
 
 	test("encodes compound assignments for identifiers and navigations", () => {
-		expect(compile("x += 2")).toBe("=x$(1%x$4+)");
-		expect(compile("x -= 2")).toBe("=x$(2%x$4+)");
-		expect(compile("x *= 2")).toBe("=x$(3%x$4+)");
-		expect(compile("x /= 2")).toBe("=x$(4%x$4+)");
-		expect(compile("x %= 2")).toBe("=x$(k%x$4+)");
-		expect(compile("x &= y")).toBe("=x$(b%x$y$)");
-		expect(compile("x |= y")).toBe("=x$(c%x$y$)");
-		expect(compile("x ^= y")).toBe("=x$(d%x$y$)");
-		expect(compile("obj.count += 1")).toBe("=(obj$count:)(1%(obj$count:)2+)");
-		expect(compile("table.(k) *= 3")).toBe("=(table$k$)(3%(table$k$)6+)");
+		expect(compile("x += 2")).toBe("=x$6(1%x$4+)");
+		expect(compile("x -= 2")).toBe("=x$6(2%x$4+)");
+		expect(compile("x *= 2")).toBe("=x$6(3%x$4+)");
+		expect(compile("x /= 2")).toBe("=x$6(4%x$4+)");
+		expect(compile("x %= 2")).toBe("=x$6(k%x$4+)");
+		expect(compile("x &= y")).toBe("=x$6(b%x$y$)");
+		expect(compile("x |= y")).toBe("=x$6(c%x$y$)");
+		expect(compile("x ^= y")).toBe("=x$6(d%x$y$)");
+		expect(compile("obj.count += 1")).toBe("=(obj$count:)g(1%(obj$count:)2+)");
+		expect(compile("table.(k) *= 3")).toBe("=(table$k$)e(3%(table$k$)6+)");
 	});
 
 	test("exposes parseToIR and encodeIR", () => {
