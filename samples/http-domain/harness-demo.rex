@@ -1,6 +1,6 @@
 /* Deterministic program for sample harness vectors */
 
-route-key = method + " " + path
+route-key = req.method + " " + req.path
 routes = {
   "GET /health": {operation: "health/read"}
   "GET /v1/users": {operation: "users/list"}
@@ -8,18 +8,18 @@ routes = {
 }
 
 matched = routes.(route-key)
-status = 200
+res.status = 200
 error = undefined
 operation = matched.operation
-tenant = headers.x-tenant or "public"
+tenant = req.headers.x-tenant or "public"
 
 unless matched do
-  status = 404
+  res.status = 404
   error = "route_not_found"
 end
 
 result = {
-  status: status
+  status: res.status
   route: route-key
   operation: operation
   error: error

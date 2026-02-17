@@ -49,4 +49,37 @@ describe("rex domain schema", () => {
 		expect(entry?.description).toBe("Request id");
 		expect(entryToDetail(entry!)).toBe("string");
 	});
+
+	test("resolves aliases on globals and properties", () => {
+		const schema = parseDomainSchema(
+			JSON.stringify({
+				globals: {
+					req: {
+						type: "object",
+						properties: {
+							headers: {
+								type: "object",
+								aliases: ["headers"],
+								properties: {
+									"x-request-id": { type: "string" },
+								},
+							},
+						},
+					},
+				},
+			}),
+		)!;
+
+		expect(resolveDomainPath(schema, ["headers"])?.type).toBe("object");
+		expect(resolveDomainPath(schema, ["req", "headers", "x-request-id"])?.type).toBe("string");
+		expect(resolveDomainPath(schema, ["req", "x-request-id"])).toBeNull();
+	});
+
+	test("rejects non-string aliases", () => {
+		expect(
+			parseDomainSchema(
+				JSON.stringify({ globals: { req: { type: "object", aliases: [1] } } }),
+			),
+		).toBeNull();
+	});
 });

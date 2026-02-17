@@ -15,8 +15,10 @@ type CliOptions = {
 };
 
 type DomainSchema = {
-	globals?: Record<string, unknown>;
+	globals?: Record<string, { ref?: unknown }>;
 };
+
+const FIRST_NON_RESERVED_REF = 5;
 
 function parseArgs(argv: string[]): CliOptions {
 	const options: CliOptions = {
@@ -160,10 +162,26 @@ async function loadDomainRefsFromFolder(folderPath: string): Promise<Record<stri
 	}
 
 	const refs: Record<string, number> = {};
-	let nextRef = 0;
-	for (const name of Object.keys(parsed.globals)) {
-		refs[name] = nextRef;
-		nextRef += 1;
+	const seenRefIds = new Map<number, string>();
+	for (const [name, entry] of Object.entries(parsed.globals)) {
+		if (!entry || typeof entry !== "object") {
+			throw new Error(`Invalid rex-domain.json at ${schemaPath}: globals.${name} must be an object with a numeric ref`);
+		}
+		const ref = entry.ref;
+		if (!Number.isInteger(ref)) {
+			throw new Error(`Invalid rex-domain.json at ${schemaPath}: globals.${name}.ref must be an integer`);
+		}
+		if (ref < FIRST_NON_RESERVED_REF) {
+			throw new Error(
+				`Invalid rex-domain.json at ${schemaPath}: globals.${name}.ref must be >= ${FIRST_NON_RESERVED_REF} (0-4 are reserved built-ins)`,
+			);
+		}
+		const existing = seenRefIds.get(ref);
+		if (existing) {
+			throw new Error(`Invalid rex-domain.json at ${schemaPath}: duplicate ref ${ref} for globals.${existing} and globals.${name}`);
+		}
+		seenRefIds.set(ref, name);
+		refs[name] = ref;
 	}
 	return refs;
 }

@@ -1,9 +1,9 @@
 /* Event ingestion + streaming response policy sample */
 
-request-id = headers.x-request-id or trace-id()
-route-key = method + " " + path
-status = 200
-headers-out = {
+request-id = req.headers.x-request-id or trace-id()
+route-key = req.method + " " + req.path
+res.status = 200
+res.headers = {
   x-request-id: request-id
   content-type: "application/json"
 }
@@ -16,15 +16,15 @@ routes = {
 
 route = routes.(route-key)
 unless route do
-  status = 404
+  res.status = 404
   body-out = {ok: false, error: "route_not_found"}
 end
 
-when status == 200 and route.mode == "ingest" do
-  parsed = json-parse(body)
+when res.status == 200 and route.mode == "ingest" do
+  parsed = json-parse(req.body)
 
   unless parsed and array(parsed.events) do
-    status = 422
+    res.status = 422
     body-out = {ok: false, error: "invalid_events_payload"}
   end
 
@@ -55,24 +55,24 @@ when status == 200 and route.mode == "ingest" do
       dropped: dropped,
       request-id: request-id
     }
-    status = 202
+    res.status = 202
   end
 end
 
-when status == 200 and route.mode == "stream" do
-  cursor = query.cursor or "0"
-  batch-size = number(query.limit) or 100
+when res.status == 200 and route.mode == "stream" do
+  cursor = req.query.cursor or "0"
+  batch-size = number(req.query.limit) or 100
   stream = stream-read(cursor, batch-size)
 
   unless stream do
-    status = 503
+    res.status = 503
     body-out = {ok: false, error: "stream_unavailable"}
   end
 
   when stream do
-    headers-out.content-type = "application/x-ndjson"
-    headers-out.cache-control = "no-store"
-    headers-out.x-stream-next-cursor = stream.next-cursor or cursor
+    res.headers.content-type = "application/x-ndjson"
+    res.headers.cache-control = "no-store"
+    res.headers.x-stream-next-cursor = stream.next-cursor or cursor
 
     // represent stream result as structured object for policy layer
     body-out = {
@@ -88,7 +88,7 @@ end
 trace("events.request", {
   id: request-id,
   route: route-key,
-  status: status
+  status: res.status
 })
 
-{status: status, headers: headers-out, body: body-out}
+{status: res.status, headers: res.headers, body: body-out}
