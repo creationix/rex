@@ -45,6 +45,14 @@
 				"configuration": "./rexc-language-configuration.json"
 			}
 		],
+		"configurationDefaults": {
+			"[rex]": {
+				"editor.wordSeparators": "`~!@#$%^&*()=+[{]}\\|;:'\",.<>/?"
+			},
+			"[rexc]": {
+				"editor.wordSeparators": "`~!@#$%^&*()=+[{]}\\|;:'\",.<>/?"
+			}
+		},
 		"semanticTokenTypes": [
 			{
 				"id": "objectKey",
@@ -79,7 +87,8 @@
 				"scopeName": "markdown.rex.codeblock",
 				"path": "./syntaxes/rex-markdown.tmLanguage.json",
 				"injectTo": [
-					"text.html.markdown"
+					"text.html.markdown",
+					"source.gfm"
 				],
 				"embeddedLanguages": {
 					"meta.embedded.block.rex": "rex"
@@ -108,7 +117,8 @@
 				"scopeName": "markdown.rexc.codeblock",
 				"path": "./syntaxes/rexc-markdown.tmLanguage.json",
 				"injectTo": [
-					"text.html.markdown"
+					"text.html.markdown",
+					"source.gfm"
 				],
 				"embeddedLanguages": {
 					"meta.embedded.block.rexc": "rexc"
