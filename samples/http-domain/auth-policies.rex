@@ -1,7 +1,7 @@
 /* Authentication and authorization policy matrix */
 
-request-id = headers.x-request-id or trace-id()
-route-key = method + " " + path
+request-id = req.headers.x-request-id or trace-id()
+route-key = req.method + " " + req.path
 
 policies = {
   "GET /v1/me": {auth: "session", required-role: "user"}
@@ -13,20 +13,20 @@ policies = {
 policy = policies.(route-key)
 auth-ok = false
 principal = undefined
-status = 200
+res.status = 200
 error-code = undefined
 
 unless policy do
-  status = 404
+  res.status = 404
   error-code = "route_not_found"
 end
 
 when policy and policy.auth == "session" do
-  token = cookies.session
+  token = req.cookies.session
   session = when token do session-parse(token) end
 
   unless session do
-    status = 401
+    res.status = 401
     error-code = "invalid_session"
   end
 
@@ -42,11 +42,11 @@ when policy and policy.auth == "session" do
 end
 
 when policy and policy.auth == "api-key" do
-  api-key = headers.authorization
+  api-key = req.headers.authorization
   key-meta = when api-key do api-key-lookup(api-key) end
 
   unless key-meta do
-    status = 401
+    res.status = 401
     error-code = "invalid_api_key"
   end
 
@@ -61,15 +61,15 @@ when policy and policy.auth == "api-key" do
 end
 
 when policy and policy.auth == "signature" do
-  sig = headers.x-signature
+  sig = req.headers.x-signature
   secret = provider-signing-secret(policy.provider)
 
-  unless verify-signature(sig, body, secret) do
-    status = 401
+  unless verify-signature(sig, req.body, secret) do
+    res.status = 401
     error-code = "bad_signature"
   end
 
-  when verify-signature(sig, body, secret) do
+  when verify-signature(sig, req.body, secret) do
     auth-ok = true
     principal = {kind: "webhook", provider: policy.provider}
   end
@@ -77,24 +77,24 @@ end
 
 when auth-ok and policy.required-role do
   unless principal.roles and contains(principal.roles, policy.required-role) do
-    status = 403
+    res.status = 403
     error-code = "insufficient_role"
   end
 end
 
 when auth-ok and policy.required-scope do
   unless principal.scopes and contains(principal.scopes, policy.required-scope) do
-    status = 403
+    res.status = 403
     error-code = "insufficient_scope"
   end
 end
 
 result = {
   request-id: request-id
-  authorized: status < 400
-  principal: when status < 400 do principal end
-  status: status
-  error: when status >= 400 do error-code end
+  authorized: res.status < 400
+  principal: when res.status < 400 do principal end
+  status: res.status
+  error: when res.status >= 400 do error-code end
 }
 
 result

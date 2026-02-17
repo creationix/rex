@@ -1,6 +1,7 @@
 export interface RexDomainEntry {
 	type?: string;
 	description?: string;
+	aliases?: string[];
 	properties?: Record<string, RexDomainEntry>;
 }
 
@@ -30,13 +31,18 @@ export function resolveDomainPath(
 	segments: string[],
 ): RexDomainEntry | null {
 	if (segments.length === 0) return null;
-	const [head, ...tail] = segments;
 	const globals = schema.globals;
 	if (!globals) return null;
-	let current = globals[head];
+	const [head, ...tail] = segments;
+	let current = resolveEntryByName(globals, head);
+	if (!current) {
+		current = resolveEntryByAliasDeep(globals, head);
+	}
 	if (!current) return null;
 	for (const segment of tail) {
-		current = current.properties?.[segment];
+		const properties = current.properties;
+		if (!properties) return null;
+		current = resolveEntryByName(properties, segment);
 		if (!current) return null;
 	}
 	return current;
@@ -62,8 +68,38 @@ function isEntry(value: unknown): value is RexDomainEntry {
 	const candidate = value as Record<string, unknown>;
 	if (candidate.type !== undefined && typeof candidate.type !== "string") return false;
 	if (candidate.description !== undefined && typeof candidate.description !== "string") return false;
+	if (candidate.aliases !== undefined) {
+		if (!Array.isArray(candidate.aliases)) return false;
+		if (!candidate.aliases.every((item) => typeof item === "string")) return false;
+	}
 	if (candidate.properties !== undefined && !isEntryMap(candidate.properties)) return false;
 	return true;
+}
+
+function resolveEntryByName(
+	map: Record<string, RexDomainEntry>,
+	name: string,
+): RexDomainEntry | undefined {
+	const exact = map[name];
+	if (exact) return exact;
+	for (const entry of Object.values(map)) {
+		if (entry.aliases?.includes(name)) return entry;
+	}
+	return undefined;
+}
+
+function resolveEntryByAliasDeep(
+	map: Record<string, RexDomainEntry>,
+	name: string,
+): RexDomainEntry | undefined {
+	for (const entry of Object.values(map)) {
+		if (entry.aliases?.includes(name)) return entry;
+		if (entry.properties) {
+			const nested = resolveEntryByAliasDeep(entry.properties, name);
+			if (nested) return nested;
+		}
+	}
+	return undefined;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
