@@ -1,4 +1,8 @@
-import rexGrammar from "./rex.ohm-bundle.js";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const rexGrammarModule = require("./rex.ohm-bundle.cjs");
+const rexGrammar = rexGrammarModule?.default ?? rexGrammarModule;
 
 export const grammar = rexGrammar;
 export const semantics = rexGrammar.createSemantics();
@@ -119,6 +123,52 @@ const OPCODE_IDS = {
 } as const;
 
 type OpcodeName = keyof typeof OPCODE_IDS;
+
+type EncodeOptions = {
+	domainRefs?: Record<string, number>;
+};
+
+type CompileOptions = {
+	optimize?: boolean;
+	minifyNames?: boolean;
+	domainRefs?: Record<string, number>;
+	dedupeValues?: boolean;
+	dedupeMinBytes?: number;
+};
+
+const registeredDomainRefs: Record<string, number> = {};
+
+export function registerDomainExtensionRef(name: string, refId = 0) {
+	if (!name) throw new Error("Domain extension name cannot be empty");
+	if (!Number.isInteger(refId) || refId < 0) throw new Error(`Invalid domain extension ref id for '${name}': ${refId}`);
+	registeredDomainRefs[name] = refId;
+}
+
+export function registerDomainExtensionRefs(refs: Record<string, number>) {
+	for (const [name, refId] of Object.entries(refs)) {
+		registerDomainExtensionRef(name, refId);
+	}
+}
+
+export function clearDomainExtensionRefs() {
+	for (const name of Object.keys(registeredDomainRefs)) delete registeredDomainRefs[name];
+}
+
+export function getRegisteredDomainExtensionRefs(): Record<string, number> {
+	return { ...registeredDomainRefs };
+}
+
+function resolveDomainRefMap(overrides?: Record<string, number>): Record<string, number> | undefined {
+	if (!overrides || Object.keys(overrides).length === 0) {
+		return Object.keys(registeredDomainRefs).length > 0 ? { ...registeredDomainRefs } : undefined;
+	}
+	const merged = { ...registeredDomainRefs };
+	for (const [name, refId] of Object.entries(overrides)) {
+		if (!Number.isInteger(refId) || refId < 0) throw new Error(`Invalid domain extension ref id for '${name}': ${refId}`);
+		merged[name] = refId;
+	}
+	return merged;
+}
 
 const BINARY_TO_OPCODE: Record<Extract<IRNode, { type: "binary" }> ["op"], OpcodeName> = {
 	add: "add",
@@ -357,12 +407,17 @@ function encodeObjectComprehension(node: Extract<IRNode, { type: "objectComprehe
 	return `>{${encodeNode(node.binding.source)}${node.binding.key}$${key}${value}}`;
 }
 
+let activeEncodeOptions: EncodeOptions | undefined;
+
 function encodeNode(node: IRNode): string {
 	switch (node.type) {
 		case "program":
 			return encodeBlockExpression(node.body);
-		case "identifier":
+		case "identifier": {
+			const domainRef = activeEncodeOptions?.domainRefs?.[node.name];
+			if (domainRef !== undefined) return `${encodeUint(domainRef)}'`;
 			return `${node.name}$`;
+		}
 		case "self":
 			return "@";
 		case "selfDepth": {
@@ -599,8 +654,218 @@ export function stringify(value: unknown, options?: { indent?: number; maxWidth?
 	return stringifyPretty(value, 0, indent, maxWidth);
 }
 
-export function encodeIR(node: IRNode): string {
-	return encodeNode(node);
+const DIGIT_SET = new Set(DIGITS.split(""));
+const DIGIT_INDEX = new Map<string, number>(Array.from(DIGITS).map((char, index) => [char, index]));
+
+type EncodedSpan = { start: number; end: number; raw: string };
+type DedupeCandidate = {
+	span: EncodedSpan;
+	sizeBytes: number;
+	offsetFromEnd: number;
+};
+
+function readPrefixAt(text: string, start: number): { end: number; raw: string; value: number } {
+	let index = start;
+	while (index < text.length && DIGIT_SET.has(text[index] as string)) index += 1;
+	const raw = text.slice(start, index);
+	let value = 0;
+	for (const char of raw) {
+		const digit = DIGIT_INDEX.get(char);
+		if (digit === undefined) throw new Error(`Invalid prefix in encoded stream at ${start}`);
+		value = value * 64 + digit;
+	}
+	return { end: index, raw, value };
+}
+
+function parsePlaceEnd(text: string, start: number, out?: EncodedSpan[]): number {
+	if (text[start] === "(") {
+		let index = start + 1;
+		while (index < text.length && text[index] !== ")") {
+			index = parseValueEnd(text, index, out).end;
+		}
+		if (text[index] !== ")") throw new Error(`Unterminated place at ${start}`);
+		return index + 1;
+	}
+
+	const prefix = readPrefixAt(text, start);
+	const tag = text[prefix.end];
+	if (tag !== "$" && tag !== "'") throw new Error(`Invalid place at ${start}`);
+	let index = prefix.end + 1;
+	if (text[index] !== "(") return index;
+	index += 1;
+	while (index < text.length && text[index] !== ")") {
+		index = parseValueEnd(text, index, out).end;
+	}
+	if (text[index] !== ")") throw new Error(`Unterminated place at ${start}`);
+	return index + 1;
+}
+
+function parseValueEnd(text: string, start: number, out?: EncodedSpan[]): EncodedSpan {
+	const prefix = readPrefixAt(text, start);
+	const tag = text[prefix.end];
+	if (!tag) throw new Error(`Unexpected end of encoded stream at ${start}`);
+
+	if (tag === ",") {
+		const strStart = prefix.end + 1;
+		const strEnd = strStart + prefix.value;
+		if (strEnd > text.length) throw new Error(`String overflows encoded stream at ${start}`);
+		const raw = text.slice(start, strEnd);
+		if (Buffer.byteLength(text.slice(strStart, strEnd), "utf8") !== prefix.value) {
+			throw new Error(`Non-ASCII length-string not currently dedupe-safe at ${start}`);
+		}
+		const span = { start, end: strEnd, raw };
+		if (out) out.push(span);
+		return span;
+	}
+
+	if (tag === "=") {
+		const placeEnd = parsePlaceEnd(text, prefix.end + 1, out);
+		const valueEnd = parseValueEnd(text, placeEnd, out).end;
+		const span = { start, end: valueEnd, raw: text.slice(start, valueEnd) };
+		if (out) out.push(span);
+		return span;
+	}
+
+	if (tag === "~") {
+		const placeEnd = parsePlaceEnd(text, prefix.end + 1, out);
+		const span = { start, end: placeEnd, raw: text.slice(start, placeEnd) };
+		if (out) out.push(span);
+		return span;
+	}
+
+	if (tag === "(" || tag === "[" || tag === "{") {
+		const close = tag === "(" ? ")" : tag === "[" ? "]" : "}";
+		let index = prefix.end + 1;
+		while (index < text.length && text[index] !== close) {
+			index = parseValueEnd(text, index, out).end;
+		}
+		if (text[index] !== close) throw new Error(`Unterminated container at ${start}`);
+		const span = { start, end: index + 1, raw: text.slice(start, index + 1) };
+		if (out) out.push(span);
+		return span;
+	}
+
+	if (tag === "?" || tag === "!" || tag === "|" || tag === "&") {
+		if (text[prefix.end + 1] !== "(") throw new Error(`Expected '(' after '${tag}' at ${start}`);
+		let index = prefix.end + 2;
+		while (index < text.length && text[index] !== ")") {
+			index = parseValueEnd(text, index, out).end;
+		}
+		if (text[index] !== ")") throw new Error(`Unterminated flow container at ${start}`);
+		const span = { start, end: index + 1, raw: text.slice(start, index + 1) };
+		if (out) out.push(span);
+		return span;
+	}
+
+	if (tag === ">" || tag === "<") {
+		const open = text[prefix.end + 1];
+		if (open !== "(" && open !== "[" && open !== "{") throw new Error(`Invalid loop opener at ${start}`);
+		const close = open === "(" ? ")" : open === "[" ? "]" : "}";
+		let index = prefix.end + 2;
+		while (index < text.length && text[index] !== close) {
+			index = parseValueEnd(text, index, out).end;
+		}
+		if (text[index] !== close) throw new Error(`Unterminated loop container at ${start}`);
+		const span = { start, end: index + 1, raw: text.slice(start, index + 1) };
+		if (out) out.push(span);
+		return span;
+	}
+
+	const span = { start, end: prefix.end + 1, raw: text.slice(start, prefix.end + 1) };
+	if (out) out.push(span);
+	return span;
+}
+
+function gatherEncodedValueSpans(text: string): EncodedSpan[] {
+	const spans: EncodedSpan[] = [];
+	let index = 0;
+	while (index < text.length) {
+		const span = parseValueEnd(text, index, spans);
+		index = span.end;
+	}
+	return spans;
+}
+
+function buildPointerToken(pointerStart: number, targetStart: number): string | undefined {
+	let offset = targetStart - (pointerStart + 1);
+	if (offset < 0) return undefined;
+	for (let guard = 0; guard < 8; guard += 1) {
+		const prefix = encodeUint(offset);
+		const recalculated = targetStart - (pointerStart + prefix.length + 1);
+		if (recalculated === offset) return `${prefix}^`;
+		offset = recalculated;
+		if (offset < 0) return undefined;
+	}
+	return undefined;
+}
+
+function buildDedupeCandidateTable(encoded: string, minBytes: number): Map<string, DedupeCandidate[]> {
+	const spans = gatherEncodedValueSpans(encoded);
+	const table = new Map<string, DedupeCandidate[]>();
+	for (const span of spans) {
+		const sizeBytes = span.raw.length;
+		if (sizeBytes < minBytes) continue;
+		const prefix = readPrefixAt(encoded, span.start);
+		const tag = encoded[prefix.end];
+		if (tag !== "{" && tag !== "[" && tag !== "," && tag !== ":") continue;
+
+		const offsetFromEnd = encoded.length - span.end;
+		const entry: DedupeCandidate = {
+			span,
+			sizeBytes,
+			offsetFromEnd,
+		};
+
+		if (!table.has(span.raw)) table.set(span.raw, []);
+		(table.get(span.raw) as DedupeCandidate[]).push(entry);
+	}
+	return table;
+}
+
+function dedupeLargeEncodedValues(encoded: string, minBytes = 4): string {
+	const effectiveMinBytes = Math.max(1, minBytes);
+	let current = encoded;
+	while (true) {
+		const groups = buildDedupeCandidateTable(current, effectiveMinBytes);
+
+		let replaced = false;
+		for (const [value, occurrences] of groups.entries()) {
+			if (occurrences.length < 2) continue;
+			const canonical = occurrences[occurrences.length - 1] as DedupeCandidate;
+			for (let index = occurrences.length - 2; index >= 0; index -= 1) {
+				const occurrence = occurrences[index] as DedupeCandidate;
+				if (occurrence.span.end > canonical.span.start) continue;
+
+				if (current.slice(occurrence.span.start, occurrence.span.end) !== value) continue;
+
+				const canonicalCurrentStart = current.length - canonical.offsetFromEnd - canonical.sizeBytes;
+				const pointerToken = buildPointerToken(occurrence.span.start, canonicalCurrentStart);
+				if (!pointerToken) continue;
+				if (pointerToken.length >= occurrence.sizeBytes) continue;
+
+				current = `${current.slice(0, occurrence.span.start)}${pointerToken}${current.slice(occurrence.span.end)}`;
+				replaced = true;
+				break;
+			}
+			if (replaced) break;
+		}
+
+		if (!replaced) return current;
+	}
+}
+
+export function encodeIR(node: IRNode, options?: EncodeOptions & { dedupeValues?: boolean; dedupeMinBytes?: number }): string {
+	const previous = activeEncodeOptions;
+	activeEncodeOptions = options;
+	try {
+		const encoded = encodeNode(node);
+		if (options?.dedupeValues) {
+			return dedupeLargeEncodedValues(encoded, options.dedupeMinBytes ?? 4);
+		}
+		return encoded;
+	} finally {
+		activeEncodeOptions = previous;
+	}
 }
 
 type OptimizeEnv = {
@@ -1399,10 +1664,365 @@ export function optimizeIR(node: IRNode): IRNode {
 	return optimizeNode(node, emptyOptimizeEnv(), 1);
 }
 
-export function compile(source: string, options?: { optimize?: boolean }): string {
+function collectLocalBindings(node: IRNode, locals: Set<string>) {
+	switch (node.type) {
+		case "assign":
+			if (node.place.type === "identifier") locals.add(node.place.name);
+			collectLocalBindings(node.place, locals);
+			collectLocalBindings(node.value, locals);
+			return;
+		case "program":
+			for (const part of node.body) collectLocalBindings(part, locals);
+			return;
+		case "group":
+			collectLocalBindings(node.expression, locals);
+			return;
+		case "array":
+			for (const item of node.items) collectLocalBindings(item, locals);
+			return;
+		case "object":
+			for (const entry of node.entries) {
+				collectLocalBindings(entry.key, locals);
+				collectLocalBindings(entry.value, locals);
+			}
+			return;
+		case "navigation":
+			collectLocalBindings(node.target, locals);
+			for (const segment of node.segments) {
+				if (segment.type === "dynamic") collectLocalBindings(segment.key, locals);
+			}
+			return;
+		case "call":
+			collectLocalBindings(node.callee, locals);
+			for (const arg of node.args) collectLocalBindings(arg, locals);
+			return;
+		case "unary":
+			collectLocalBindings(node.value, locals);
+			return;
+		case "binary":
+			collectLocalBindings(node.left, locals);
+			collectLocalBindings(node.right, locals);
+			return;
+		case "conditional":
+			collectLocalBindings(node.condition, locals);
+			for (const part of node.thenBlock) collectLocalBindings(part, locals);
+			if (node.elseBranch) collectLocalBindingsElse(node.elseBranch, locals);
+			return;
+		case "for":
+			collectLocalBindingFromBinding(node.binding, locals);
+			for (const part of node.body) collectLocalBindings(part, locals);
+			return;
+		case "arrayComprehension":
+			collectLocalBindingFromBinding(node.binding, locals);
+			collectLocalBindings(node.body, locals);
+			return;
+		case "objectComprehension":
+			collectLocalBindingFromBinding(node.binding, locals);
+			collectLocalBindings(node.key, locals);
+			collectLocalBindings(node.value, locals);
+			return;
+		default:
+			return;
+	}
+}
+
+function collectLocalBindingFromBinding(binding: IRBindingOrExpr, locals: Set<string>) {
+	if (binding.type === "binding:valueIn") {
+		locals.add(binding.value);
+		collectLocalBindings(binding.source, locals);
+		return;
+	}
+	if (binding.type === "binding:keyValueIn") {
+		locals.add(binding.key);
+		locals.add(binding.value);
+		collectLocalBindings(binding.source, locals);
+		return;
+	}
+	if (binding.type === "binding:keyOf") {
+		locals.add(binding.key);
+		collectLocalBindings(binding.source, locals);
+		return;
+	}
+	collectLocalBindings(binding.source, locals);
+}
+
+function collectLocalBindingsElse(elseBranch: IRConditionalElse, locals: Set<string>) {
+	if (elseBranch.type === "else") {
+		for (const part of elseBranch.block) collectLocalBindings(part, locals);
+		return;
+	}
+	collectLocalBindings(elseBranch.condition, locals);
+	for (const part of elseBranch.thenBlock) collectLocalBindings(part, locals);
+	if (elseBranch.elseBranch) collectLocalBindingsElse(elseBranch.elseBranch, locals);
+}
+
+function bumpNameFrequency(name: string, locals: Set<string>, frequencies: Map<string, number>, order: Map<string, number>, nextOrder: { value: number }) {
+	if (!locals.has(name)) return;
+	if (!order.has(name)) {
+		order.set(name, nextOrder.value);
+		nextOrder.value += 1;
+	}
+	frequencies.set(name, (frequencies.get(name) ?? 0) + 1);
+}
+
+function collectNameFrequencies(node: IRNode, locals: Set<string>, frequencies: Map<string, number>, order: Map<string, number>, nextOrder: { value: number }) {
+	switch (node.type) {
+		case "identifier":
+			bumpNameFrequency(node.name, locals, frequencies, order, nextOrder);
+			return;
+		case "assign":
+			if (node.place.type === "identifier") bumpNameFrequency(node.place.name, locals, frequencies, order, nextOrder);
+			collectNameFrequencies(node.place, locals, frequencies, order, nextOrder);
+			collectNameFrequencies(node.value, locals, frequencies, order, nextOrder);
+			return;
+		case "program":
+			for (const part of node.body) collectNameFrequencies(part, locals, frequencies, order, nextOrder);
+			return;
+		case "group":
+			collectNameFrequencies(node.expression, locals, frequencies, order, nextOrder);
+			return;
+		case "array":
+			for (const item of node.items) collectNameFrequencies(item, locals, frequencies, order, nextOrder);
+			return;
+		case "object":
+			for (const entry of node.entries) {
+				collectNameFrequencies(entry.key, locals, frequencies, order, nextOrder);
+				collectNameFrequencies(entry.value, locals, frequencies, order, nextOrder);
+			}
+			return;
+		case "navigation":
+			collectNameFrequencies(node.target, locals, frequencies, order, nextOrder);
+			for (const segment of node.segments) {
+				if (segment.type === "dynamic") collectNameFrequencies(segment.key, locals, frequencies, order, nextOrder);
+			}
+			return;
+		case "call":
+			collectNameFrequencies(node.callee, locals, frequencies, order, nextOrder);
+			for (const arg of node.args) collectNameFrequencies(arg, locals, frequencies, order, nextOrder);
+			return;
+		case "unary":
+			collectNameFrequencies(node.value, locals, frequencies, order, nextOrder);
+			return;
+		case "binary":
+			collectNameFrequencies(node.left, locals, frequencies, order, nextOrder);
+			collectNameFrequencies(node.right, locals, frequencies, order, nextOrder);
+			return;
+		case "conditional":
+			collectNameFrequencies(node.condition, locals, frequencies, order, nextOrder);
+			for (const part of node.thenBlock) collectNameFrequencies(part, locals, frequencies, order, nextOrder);
+			if (node.elseBranch) collectNameFrequenciesElse(node.elseBranch, locals, frequencies, order, nextOrder);
+			return;
+		case "for":
+			collectNameFrequenciesBinding(node.binding, locals, frequencies, order, nextOrder);
+			for (const part of node.body) collectNameFrequencies(part, locals, frequencies, order, nextOrder);
+			return;
+		case "arrayComprehension":
+			collectNameFrequenciesBinding(node.binding, locals, frequencies, order, nextOrder);
+			collectNameFrequencies(node.body, locals, frequencies, order, nextOrder);
+			return;
+		case "objectComprehension":
+			collectNameFrequenciesBinding(node.binding, locals, frequencies, order, nextOrder);
+			collectNameFrequencies(node.key, locals, frequencies, order, nextOrder);
+			collectNameFrequencies(node.value, locals, frequencies, order, nextOrder);
+			return;
+		default:
+			return;
+	}
+}
+
+function collectNameFrequenciesBinding(binding: IRBindingOrExpr, locals: Set<string>, frequencies: Map<string, number>, order: Map<string, number>, nextOrder: { value: number }) {
+	if (binding.type === "binding:valueIn") {
+		bumpNameFrequency(binding.value, locals, frequencies, order, nextOrder);
+		collectNameFrequencies(binding.source, locals, frequencies, order, nextOrder);
+		return;
+	}
+	if (binding.type === "binding:keyValueIn") {
+		bumpNameFrequency(binding.key, locals, frequencies, order, nextOrder);
+		bumpNameFrequency(binding.value, locals, frequencies, order, nextOrder);
+		collectNameFrequencies(binding.source, locals, frequencies, order, nextOrder);
+		return;
+	}
+	if (binding.type === "binding:keyOf") {
+		bumpNameFrequency(binding.key, locals, frequencies, order, nextOrder);
+		collectNameFrequencies(binding.source, locals, frequencies, order, nextOrder);
+		return;
+	}
+	collectNameFrequencies(binding.source, locals, frequencies, order, nextOrder);
+}
+
+function collectNameFrequenciesElse(elseBranch: IRConditionalElse, locals: Set<string>, frequencies: Map<string, number>, order: Map<string, number>, nextOrder: { value: number }) {
+	if (elseBranch.type === "else") {
+		for (const part of elseBranch.block) collectNameFrequencies(part, locals, frequencies, order, nextOrder);
+		return;
+	}
+	collectNameFrequencies(elseBranch.condition, locals, frequencies, order, nextOrder);
+	for (const part of elseBranch.thenBlock) collectNameFrequencies(part, locals, frequencies, order, nextOrder);
+	if (elseBranch.elseBranch) collectNameFrequenciesElse(elseBranch.elseBranch, locals, frequencies, order, nextOrder);
+}
+
+function renameLocalNames(node: IRNode, map: Map<string, string>): IRNode {
+	switch (node.type) {
+		case "identifier":
+			return map.has(node.name) ? ({ type: "identifier", name: map.get(node.name) as string } satisfies IRNode) : node;
+		case "program":
+			return { type: "program", body: node.body.map((part) => renameLocalNames(part, map)) } satisfies IRNode;
+		case "group":
+			return { type: "group", expression: renameLocalNames(node.expression, map) } satisfies IRNode;
+		case "array":
+			return { type: "array", items: node.items.map((item) => renameLocalNames(item, map)) } satisfies IRNode;
+		case "object":
+			return {
+				type: "object",
+				entries: node.entries.map((entry) => ({
+					key: renameLocalNames(entry.key, map),
+					value: renameLocalNames(entry.value, map),
+				})),
+			} satisfies IRNode;
+		case "navigation":
+			return {
+				type: "navigation",
+				target: renameLocalNames(node.target, map),
+				segments: node.segments.map((segment) => segment.type === "static"
+					? segment
+					: { type: "dynamic", key: renameLocalNames(segment.key, map) }),
+			} satisfies IRNode;
+		case "call":
+			return {
+				type: "call",
+				callee: renameLocalNames(node.callee, map),
+				args: node.args.map((arg) => renameLocalNames(arg, map)),
+			} satisfies IRNode;
+		case "unary":
+			return { type: "unary", op: node.op, value: renameLocalNames(node.value, map) } satisfies IRNode;
+		case "binary":
+			return {
+				type: "binary",
+				op: node.op,
+				left: renameLocalNames(node.left, map),
+				right: renameLocalNames(node.right, map),
+			} satisfies IRNode;
+		case "assign": {
+			const place = node.place.type === "identifier" && map.has(node.place.name)
+				? ({ type: "identifier", name: map.get(node.place.name) as string } satisfies IRNode)
+				: renameLocalNames(node.place, map);
+			return {
+				type: "assign",
+				op: node.op,
+				place,
+				value: renameLocalNames(node.value, map),
+			} satisfies IRNode;
+		}
+		case "conditional":
+			return {
+				type: "conditional",
+				head: node.head,
+				condition: renameLocalNames(node.condition, map),
+				thenBlock: node.thenBlock.map((part) => renameLocalNames(part, map)),
+				elseBranch: node.elseBranch ? renameLocalNamesElse(node.elseBranch, map) : undefined,
+			} satisfies IRNode;
+		case "for":
+			return {
+				type: "for",
+				binding: renameLocalNamesBinding(node.binding, map),
+				body: node.body.map((part) => renameLocalNames(part, map)),
+			} satisfies IRNode;
+		case "arrayComprehension":
+			return {
+				type: "arrayComprehension",
+				binding: renameLocalNamesBinding(node.binding, map),
+				body: renameLocalNames(node.body, map),
+			} satisfies IRNode;
+		case "objectComprehension":
+			return {
+				type: "objectComprehension",
+				binding: renameLocalNamesBinding(node.binding, map),
+				key: renameLocalNames(node.key, map),
+				value: renameLocalNames(node.value, map),
+			} satisfies IRNode;
+		default:
+			return node;
+	}
+}
+
+function renameLocalNamesBinding(binding: IRBindingOrExpr, map: Map<string, string>): IRBindingOrExpr {
+	if (binding.type === "binding:expr") {
+		return { type: "binding:expr", source: renameLocalNames(binding.source, map) } satisfies IRBindingOrExpr;
+	}
+	if (binding.type === "binding:valueIn") {
+		return {
+			type: "binding:valueIn",
+			value: map.get(binding.value) ?? binding.value,
+			source: renameLocalNames(binding.source, map),
+		} satisfies IRBinding;
+	}
+	if (binding.type === "binding:keyValueIn") {
+		return {
+			type: "binding:keyValueIn",
+			key: map.get(binding.key) ?? binding.key,
+			value: map.get(binding.value) ?? binding.value,
+			source: renameLocalNames(binding.source, map),
+		} satisfies IRBinding;
+	}
+	return {
+		type: "binding:keyOf",
+		key: map.get(binding.key) ?? binding.key,
+		source: renameLocalNames(binding.source, map),
+	} satisfies IRBinding;
+}
+
+function renameLocalNamesElse(elseBranch: IRConditionalElse, map: Map<string, string>): IRConditionalElse {
+	if (elseBranch.type === "else") {
+		return {
+			type: "else",
+			block: elseBranch.block.map((part) => renameLocalNames(part, map)),
+		} satisfies IRConditionalElse;
+	}
+	return {
+		type: "elseChain",
+		head: elseBranch.head,
+		condition: renameLocalNames(elseBranch.condition, map),
+		thenBlock: elseBranch.thenBlock.map((part) => renameLocalNames(part, map)),
+		elseBranch: elseBranch.elseBranch ? renameLocalNamesElse(elseBranch.elseBranch, map) : undefined,
+	} satisfies IRConditionalElse;
+}
+
+export function minifyLocalNamesIR(node: IRNode): IRNode {
+	const locals = new Set<string>();
+	collectLocalBindings(node, locals);
+	if (locals.size === 0) return node;
+
+	const frequencies = new Map<string, number>();
+	const order = new Map<string, number>();
+	collectNameFrequencies(node, locals, frequencies, order, { value: 0 });
+
+	const ranked = Array.from(locals)
+		.sort((a, b) => {
+			const freqA = frequencies.get(a) ?? 0;
+			const freqB = frequencies.get(b) ?? 0;
+			if (freqA !== freqB) return freqB - freqA;
+			const orderA = order.get(a) ?? Number.MAX_SAFE_INTEGER;
+			const orderB = order.get(b) ?? Number.MAX_SAFE_INTEGER;
+			if (orderA !== orderB) return orderA - orderB;
+			return a.localeCompare(b);
+		});
+
+	const renameMap = new Map<string, string>();
+	ranked.forEach((name, index) => {
+		renameMap.set(name, encodeUint(index));
+	});
+
+	return renameLocalNames(node, renameMap);
+}
+
+export function compile(source: string, options?: CompileOptions): string {
 	const ir = parseToIR(source);
-	const lowered = options?.optimize ? optimizeIR(ir) : ir;
-	return encodeIR(lowered);
+	let lowered = options?.optimize ? optimizeIR(ir) : ir;
+	if (options?.minifyNames) lowered = minifyLocalNamesIR(lowered);
+	return encodeIR(lowered, {
+		domainRefs: resolveDomainRefMap(options?.domainRefs),
+		dedupeValues: options?.dedupeValues,
+		dedupeMinBytes: options?.dedupeMinBytes,
+	});
 }
 
 type IRPostfixStep =
