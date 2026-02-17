@@ -145,4 +145,36 @@ end
 			value: 1,
 		});
 	});
+
+	test("inlines adjacent pure alias chains", () => {
+		expect(optimizeIR(parseToIR("x = headers.x-action y = x y"))).toEqual({
+			type: "navigation",
+			target: { type: "identifier", name: "headers" },
+			segments: [{ type: "static", key: "x-action" }],
+		});
+	});
+
+	test("does not inline across effectful boundaries", () => {
+		expect(optimizeIR(parseToIR("x = headers.x-action trace(x) x"))).toEqual({
+			type: "program",
+			body: [
+				{
+					type: "assign",
+					op: "=",
+					place: { type: "identifier", name: "x" },
+					value: {
+						type: "navigation",
+						target: { type: "identifier", name: "headers" },
+						segments: [{ type: "static", key: "x-action" }],
+					},
+				},
+				{
+					type: "call",
+					callee: { type: "identifier", name: "trace" },
+					args: [{ type: "identifier", name: "x" }],
+				},
+				{ type: "identifier", name: "x" },
+			],
+		});
+	});
 });
