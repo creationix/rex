@@ -18,6 +18,8 @@
 		"Programming Languages"
 	],
 	"activationEvents": [
+		"onLanguage:rex",
+		"onLanguage:rexc",
 		"onLanguage:markdown"
 	],
 	"contributes": {
@@ -55,6 +57,16 @@
 		},
 		"semanticTokenTypes": [
 			{
+				"id": "rexLocal",
+				"superType": "variable",
+				"description": "User-defined local symbol in Rex"
+			},
+			{
+				"id": "rexDomain",
+				"superType": "type",
+				"description": "Domain/platform-provided symbol in Rex"
+			},
+			{
 				"id": "objectKey",
 				"description": "Object key in rexc encoding"
 			},
@@ -71,6 +83,8 @@
 		"semanticTokenScopes": [
 			{
 				"scopes": {
+					"rexLocal": ["variable.other.rex"],
+					"rexDomain": ["support.class.rex"],
 					"objectKey": ["support.type.property-name"],
 					"indexData": ["entity.other.attribute-name"],
 					"annotation": ["entity.name.function.decorator"]
