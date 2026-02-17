@@ -5,31 +5,252 @@ Rex {
     = Expr*
 
   Expr
-    = bareWord "=" Expr       -- binding
-    | "(" Expr Any<Expr> ")"  -- call
-    | Atom                    -- atom
+    = AssignExpr
 
-  Atom
-    = String -- string
-    | Number -- number
-    | Boolean -- boolean
-    | Null -- null
-    | Undefined -- undefined
-    | Array -- array
-    | Object -- object
-    | bareWord -- symbol
+  AssignExpr
+    = Place AssignOp AssignExpr      -- assign
+    | ExistenceExpr                  -- value
+
+  ExistenceExpr
+    = ExistenceExpr andKw BitExpr    -- and
+    | ExistenceExpr orKw BitExpr     -- or
+    | BitExpr                        -- value
+
+  BitExpr
+    = BitExpr "&" CompareExpr        -- and
+    | BitExpr "^" CompareExpr        -- xor
+    | BitExpr "|" CompareExpr        -- or
+    | CompareExpr                    -- value
+
+  CompareExpr
+    = AddExpr CompareOp AddExpr      -- binary
+    | AddExpr                        -- value
+
+  AddExpr
+    = AddExpr "+" MulExpr            -- add
+    | AddExpr "-" MulExpr            -- sub
+    | MulExpr                        -- value
+
+  MulExpr
+    = MulExpr "*" UnaryExpr          -- mul
+    | MulExpr "/" UnaryExpr          -- div
+    | MulExpr "%" UnaryExpr          -- mod
+    | UnaryExpr                      -- value
+
+  UnaryExpr
+    = "-" UnaryExpr                  -- neg
+    | "~" UnaryExpr                  -- not
+    | deleteKw Place                 -- delete
+    | PostfixExpr                    -- value
+
+  PostfixExpr
+    = PrimaryExpr PostfixTail*       -- chain
+
+  PostfixTail
+    = "." KeyName                    -- navStatic
+    | ".(" Expr ")"                 -- navDynamic
+    | "(" ArgList? ")"              -- call
+
+  ArgList
+    = Any<Expr>
+
+  PrimaryExpr
+    = WhenExpr
+    | UnlessExpr
+    | ForExpr
+    | breakKw                        -- break
+    | continueKw                     -- continue
+    | Array
+    | Object
+    | String
+    | Number
+    | trueKw                         -- true
+    | falseKw                        -- false
+    | nullKw                         -- null
+    | undefinedKw                    -- undefined
+    | selfKw                         -- self
+    | Identifier                     -- identifier
+    | "(" Expr ")"                  -- group
+
+  Place
+    = PostfixExpr
+
+  WhenExpr
+    = whenKw Expr doKw Block ElsePart? endKw
+
+  UnlessExpr
+    = unlessKw Expr doKw Block ElsePart? endKw
+
+  ElsePart
+    = elseKw WhenExpr                -- elseWhen
+    | elseKw Block                   -- else
+
+  ForExpr
+    = forKw IterBinding doKw Block endKw
+
+  Block
+    = Expr*
 
   Array
-    = "[" Any<Expr> "]"
+    = "[" ArrayBody? "]"
+
+  ArrayBody
+    = IterBinding ";" Expr          -- comprehension
+    | Any<Expr>                      -- values
 
   Object
-    = "{" Any<Pair> "}"
+    = "{" ObjectBody? "}"
+
+  ObjectBody
+    = IterBinding ";" ObjKey ":" Expr  -- comprehension
+    | Any<Pair>                             -- pairs
+
+  IterBinding
+    = Identifier "," Identifier inKw Expr  -- keyValueIn
+    | Identifier inKw Expr                 -- valueIn
+    | Identifier ofKw Expr                 -- keyOf
+    | Expr                                 -- implicit
 
   Pair
-    = (bareWord | String | Number) ":" Expr
+    = ObjKey ":" Expr
+
+  ObjKey
+    = KeyName                        -- bare
+    | Number                         -- number
+    | String                         -- string
+    | "(" Expr ")"                  -- computed
+
+  KeyName
+    = nameHead nameTail*
+
+  CompareOp
+    = "=="
+    | "!="
+    | ">="
+    | ">"
+    | "<="
+    | "<"
+
+  AssignOp
+    = "="
+    | "+="
+    | "-="
+    | "*="
+    | "/="
+    | "%="
+    | "&="
+    | "|="
+    | "^="
 
   Any<item>
     = (item ","?)*
+
+  Identifier
+    = ~Reserved nameHead nameTail*
+
+  nameHead
+    = letter
+    | "_"
+
+  nameTail
+    = letter
+    | digit
+    | "_"
+    | "-"
+
+  Reserved
+    = trueKw
+    | falseKw
+    | nullKw
+    | undefinedKw
+    | selfKw
+    | whenKw
+    | unlessKw
+    | forKw
+    | inKw
+    | ofKw
+    | doKw
+    | elseKw
+    | endKw
+    | breakKw
+    | continueKw
+    | andKw
+    | orKw
+    | deleteKw
+    | stringKw
+    | numberKw
+    | objectKw
+    | arrayKw
+    | booleanKw
+
+  trueKw
+    = "true" ~nameTail
+
+  falseKw
+    = "false" ~nameTail
+
+  nullKw
+    = "null" ~nameTail
+
+  undefinedKw
+    = "undefined" ~nameTail
+
+  selfKw
+    = "self" ~nameTail
+
+  whenKw
+    = "when" ~nameTail
+
+  unlessKw
+    = "unless" ~nameTail
+
+  forKw
+    = "for" ~nameTail
+
+  inKw
+    = "in" ~nameTail
+
+  ofKw
+    = "of" ~nameTail
+
+  doKw
+    = "do" ~nameTail
+
+  elseKw
+    = "else" ~nameTail
+
+  endKw
+    = "end" ~nameTail
+
+  breakKw
+    = "break" ~nameTail
+
+  continueKw
+    = "continue" ~nameTail
+
+  andKw
+    = "and" ~nameTail
+
+  orKw
+    = "or" ~nameTail
+
+  deleteKw
+    = "delete" ~nameTail
+
+  stringKw
+    = "string" ~nameTail
+
+  numberKw
+    = "number" ~nameTail
+
+  objectKw
+    = "object" ~nameTail
+
+  arrayKw
+    = "array" ~nameTail
+
+  booleanKw
+    = "boolean" ~nameTail
 
   String
     = DQuotedString
@@ -50,7 +271,13 @@ Rex {
     | escape
 
   escape
-    = "\\" ("\"" | "'" | "\\" | "/" | "b" | "f" | "n" | "r" | "t" | unicodeEscape)
+    = "\\" (escapeChar | hexEscape | unicodeEscape)
+
+  escapeChar
+    = "\"" | "'" | "\\" | "/" | "b" | "f" | "n" | "r" | "t" | "0"
+
+  hexEscape
+    = "x" hex hex
 
   unicodeEscape
     = "u" hex hex hex hex
@@ -61,8 +288,8 @@ Rex {
     | "a".."f"
 
   Number
-    = hexNumber    
-    | binaryNumber 
+    = hexNumber
+    | binaryNumber
     | decimalNumber
 
   hexNumber
@@ -83,18 +310,6 @@ Rex {
 
   exponent
     = ("e" | "E") ("+" | "-")? digit+
-
-  bareWord
-    = letter (letter | digit | "." | "-" | "_")*
-
-  Boolean
-    = "true" | "false"
-
-  Null
-    = "null"
-
-  Undefined
-    = "undefined"
 
   nonZeroDigit
     = "1".."9"
