@@ -93,3 +93,15 @@ Or in Rex's compact encoding — a single UTF-8 string, 244 bytes vs 357 for the
 ```rexc
 (%=[0$]{create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profilecreate-order:d,orders/createprocess-payment:g,payments/processsend-notification:i,notifications/send}?(=[1$](0$(0@x-action:))i=[0@x-handler:](1$)))
 ```
+
+## Compiler Helper
+
+Use the built-in CLI helper to compile high-level Rex to compact encoding instead of deriving rexc by hand:
+
+```sh
+bun run rex:compile --expr "when x do y end"
+bun run rex:compile --file input.rex
+cat input.rex | bun run rex:compile
+```
+
+Use `--ir` to emit lowered IR JSON.
