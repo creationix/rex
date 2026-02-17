@@ -1,9 +1,9 @@
 /* Cache policy sample: read-through, write-through, etag, stale fallback */
 
-request-id = headers.x-request-id or trace-id()
-route-key = method + " " + path
-tenant-id = headers.x-tenant or "public"
-cache-key = tenant-id + ":" + route-key + ":" + query-cache-key(query)
+request-id = req.headers.x-request-id or trace-id()
+route-key = req.method + " " + req.path
+tenant-id = req.headers.x-tenant or "public"
+cache-key = tenant-id + ":" + route-key + ":" + query-cache-key(req.query)
 
 policies = {
   "GET /v1/catalog": {enabled: true, ttl-ms: 30000, stale-ms: 120000}
@@ -12,26 +12,26 @@ policies = {
 }
 
 policy = policies.(route-key) or {enabled: false}
-status = 200
-headers-out = {x-request-id: request-id}
+res.status = 200
+res.headers = {x-request-id: request-id}
 body-out = {ok: true}
 source = "upstream"
 
-etag-in = headers.if-none-match
+etag-in = req.headers.if-none-match
 cached = when policy.enabled do cache-read(cache-key) end
 
 when cached and cached.etag and etag-in == cached.etag do
-  status = 304
-  headers-out.etag = cached.etag
-  headers-out.x-cache = "NOT_MODIFIED"
+  res.status = 304
+  res.headers.etag = cached.etag
+  res.headers.x-cache = "NOT_MODIFIED"
   body-out = undefined
   source = "cache-not-modified"
 end
 
-when status == 200 and cached and cached.body do
-  status = cached.status or 200
-  headers-out.etag = cached.etag
-  headers-out.x-cache = "HIT"
+when res.status == 200 and cached and cached.body do
+  res.status = cached.status or 200
+  res.headers.etag = cached.etag
+  res.headers.x-cache = "HIT"
   body-out = cached.body
   source = "cache-hit"
 end
@@ -40,44 +40,44 @@ when source == "upstream" do
   upstream = fetch-resource(route-key, {
     request-id: request-id,
     tenant-id: tenant-id,
-    query: query,
-    headers: headers
+    query: req.query,
+    headers: req.headers
   })
 
   unless upstream do
-    status = 502
+    res.status = 502
     body-out = {ok: false, error: "upstream_unavailable"}
   end
 
   when upstream do
-    status = upstream.status or 200
+    res.status = upstream.status or 200
     body-out = upstream.body or {ok: true}
-    headers-out = merge-headers(headers-out, upstream.headers or {})
+    res.headers = merge-headers(res.headers, upstream.headers or {})
 
     generated-etag = etag-of(body-out)
-    headers-out.etag = generated-etag
+    res.headers.etag = generated-etag
 
-    when policy.enabled and status == 200 do
+    when policy.enabled and res.status == 200 do
       cache-write(cache-key, {
-        status: status,
+        status: res.status,
         body: body-out,
         etag: generated-etag,
         written-at: now-ms()
       }, policy.ttl-ms)
-      headers-out.x-cache = "MISS"
+      res.headers.x-cache = "MISS"
     end
   end
 end
 
 // stale-if-error fallback
-when status >= 500 and cached and cached.body and policy.stale-ms do
+when res.status >= 500 and cached and cached.body and policy.stale-ms do
   age-ms = now-ms() - (cached.written-at or 0)
   when age-ms < policy.stale-ms do
-    status = cached.status or 200
+    res.status = cached.status or 200
     body-out = cached.body
-    headers-out.x-cache = "STALE"
-    headers-out.warning = "110 - Response is stale"
+    res.headers.x-cache = "STALE"
+    res.headers.warning = "110 - Response is stale"
   end
 end
 
-{status: status, headers: headers-out, body: body-out}
+{status: res.status, headers: res.headers, body: body-out}

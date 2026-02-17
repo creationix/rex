@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { dirname, join } from "node:path";
 import { TOKEN_TYPES, tokenize, type Token } from "./rexc-tokenizer";
 import { getRexParseFailure } from "./rex-diagnostics";
 import {
@@ -94,15 +95,14 @@ class RexcSemanticTokenProvider
 class RexSemanticTokenProvider
 	implements vscode.DocumentSemanticTokensProvider
 {
-	constructor(private readonly readSchema: () => Promise<RexDomainSchema | null>) {}
+	constructor(private readonly readSchema: (document: vscode.TextDocument) => Promise<RexDomainSchema | null>) {}
 
 	async provideDocumentSemanticTokens(
 		document: vscode.TextDocument,
 	): Promise<vscode.SemanticTokens> {
 		const source = document.getText();
 		const analysis = analyzeRexSymbols(source);
-		const schema = await this.readSchema();
-		const globals = schema?.globals ?? {};
+		const schema = await this.readSchema(document);
 		const builder = new vscode.SemanticTokensBuilder(rexLegend);
 
 		for (const definition of analysis.definitions) {
@@ -130,7 +130,7 @@ class RexSemanticTokenProvider
 				continue;
 			}
 
-			if (globals[reference.name]) {
+			if (resolveDomainPath(schema ?? {}, [reference.name])) {
 				builder.push(
 					start.line,
 					start.character,
@@ -207,14 +207,43 @@ class RexReferenceProvider implements vscode.ReferenceProvider {
 }
 
 class RexCompletionProvider implements vscode.CompletionItemProvider {
-	constructor(private readonly readSchema: () => Promise<RexDomainSchema | null>) {}
+	constructor(private readonly readSchema: (document: vscode.TextDocument) => Promise<RexDomainSchema | null>) {}
 
 	async provideCompletionItems(
 		document: vscode.TextDocument,
 		position: vscode.Position,
 	): Promise<vscode.CompletionItem[]> {
-		const schema = await this.readSchema();
+		const schema = await this.readSchema(document);
 		if (!schema?.globals) return [];
+
+		const toCompletionItems = (
+			entries: Record<string, { aliases?: string[]; description?: string; type?: string; properties?: Record<string, unknown> }>,
+			kind: vscode.CompletionItemKind,
+		): vscode.CompletionItem[] => {
+			const items: vscode.CompletionItem[] = [];
+			const seen = new Set<string>();
+			for (const [name, entry] of Object.entries(entries)) {
+				if (!seen.has(name)) {
+					const item = new vscode.CompletionItem(name, kind);
+					item.detail = entryToDetail(entry);
+					item.documentation = entry.description;
+					item.sortText = `0_${name}`;
+					items.push(item);
+					seen.add(name);
+				}
+
+				for (const alias of entry.aliases ?? []) {
+					if (seen.has(alias)) continue;
+					const aliasItem = new vscode.CompletionItem(alias, kind);
+					aliasItem.detail = `${entryToDetail(entry)} (alias of ${name})`;
+					aliasItem.documentation = entry.description;
+					aliasItem.sortText = `1_${alias}`;
+					items.push(aliasItem);
+					seen.add(alias);
+				}
+			}
+			return items;
+		};
 
 		const line = document.lineAt(position.line).text;
 		const prefix = line.slice(0, position.character);
@@ -224,31 +253,21 @@ class RexCompletionProvider implements vscode.CompletionItemProvider {
 			const chain = chainMatch[1]?.split(".") ?? [];
 			const target = resolveDomainPath(schema, chain);
 			if (!target?.properties) return [];
-			return Object.entries(target.properties).map(([name, entry]) => {
-				const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Field);
-				item.detail = entryToDetail(entry);
-				item.documentation = entry.description;
-				return item;
-			});
+			return toCompletionItems(target.properties, vscode.CompletionItemKind.Field);
 		}
 
-		return Object.entries(schema.globals).map(([name, entry]) => {
-			const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Variable);
-			item.detail = entryToDetail(entry);
-			item.documentation = entry.description;
-			return item;
-		});
+		return toCompletionItems(schema.globals, vscode.CompletionItemKind.Variable);
 	}
 }
 
 class RexHoverProvider implements vscode.HoverProvider {
-	constructor(private readonly readSchema: () => Promise<RexDomainSchema | null>) {}
+	constructor(private readonly readSchema: (document: vscode.TextDocument) => Promise<RexDomainSchema | null>) {}
 
 	async provideHover(
 		document: vscode.TextDocument,
 		position: vscode.Position,
 	): Promise<vscode.Hover | null> {
-		const schema = await this.readSchema();
+		const schema = await this.readSchema(document);
 		if (!schema) return null;
 
 		const line = document.lineAt(position.line).text;
@@ -289,29 +308,54 @@ function updateAnnotationDecorations(editor: vscode.TextEditor) {
 export function activate(context: vscode.ExtensionContext) {
 	const rexDiagnostics = vscode.languages.createDiagnosticCollection("rex");
 	context.subscriptions.push(rexDiagnostics);
-	let cachedSchema: RexDomainSchema | null = null;
-	let cachedSchemaMtime = -1;
+	type CachedDomainSchema = { schema: RexDomainSchema | null; mtime: number };
+	const schemaCache = new Map<string, CachedDomainSchema>();
 
-	async function readDomainSchema(): Promise<RexDomainSchema | null> {
-		const files = await vscode.workspace.findFiles("rex-domain.json", "**/node_modules/**", 1);
-		const file = files[0];
-		if (!file) {
-			cachedSchema = null;
-			cachedSchemaMtime = -1;
-			return null;
+	async function findNearestDomainSchemaFile(document: vscode.TextDocument): Promise<vscode.Uri | null> {
+		if (document.uri.scheme === "file") {
+			const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+			const workspaceRoot = workspaceFolder?.uri.fsPath;
+			let current = dirname(document.uri.fsPath);
+			while (true) {
+				const candidate = vscode.Uri.file(join(current, "rex-domain.json"));
+				try {
+					await vscode.workspace.fs.stat(candidate);
+					return candidate;
+				} catch {
+					// Continue walking up
+				}
+
+				if (workspaceRoot) {
+					if (current === workspaceRoot) break;
+					if (!current.startsWith(workspaceRoot)) break;
+				}
+
+				const parent = dirname(current);
+				if (parent === current) break;
+				current = parent;
+			}
 		}
+
+		const files = await vscode.workspace.findFiles("rex-domain.json", "**/node_modules/**", 1);
+		return files[0] ?? null;
+	}
+
+	async function readDomainSchema(document: vscode.TextDocument): Promise<RexDomainSchema | null> {
+		const file = await findNearestDomainSchemaFile(document);
+		if (!file) return null;
 
 		try {
 			const stat = await vscode.workspace.fs.stat(file);
-			if (stat.mtime === cachedSchemaMtime && cachedSchema) return cachedSchema;
+			const cacheKey = file.toString();
+			const cached = schemaCache.get(cacheKey);
+			if (cached && cached.mtime === stat.mtime) return cached.schema;
+
 			const raw = await vscode.workspace.fs.readFile(file);
 			const parsed = parseDomainSchema(Buffer.from(raw).toString("utf8"));
-			cachedSchema = parsed;
-			cachedSchemaMtime = stat.mtime;
+			schemaCache.set(cacheKey, { schema: parsed, mtime: stat.mtime });
 			return parsed;
 		} catch {
-			cachedSchema = null;
-			cachedSchemaMtime = -1;
+			schemaCache.delete(file.toString());
 			return null;
 		}
 	}

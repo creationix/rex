@@ -5,22 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const compileScript = join(here, "rex-compile.ts");
+const compileScript = join(here, "rex-compile.js");
 const passthroughArgs = process.argv.slice(2);
-
-if (typeof Bun !== "undefined") {
-	await import("./rex-compile.ts");
-	process.exit(0);
-}
-
-const [majorText, minorText] = process.versions.node.split(".");
-const major = Number(majorText);
-const minor = Number(minorText);
-
-if (!Number.isFinite(major) || !Number.isFinite(minor) || major < 22 || (major === 22 && minor < 18)) {
-	console.error("rex: Node.js v22.18+ is required to run TypeScript natively, or use Bun.");
-	process.exit(1);
-}
 
 const child = spawn(process.execPath, [compileScript, ...passthroughArgs], {
 	stdio: "inherit",
@@ -29,7 +15,7 @@ const child = spawn(process.execPath, [compileScript, ...passthroughArgs], {
 child.on("error", (error) => {
 	const message = error instanceof Error ? error.message : String(error);
 	console.error("rex: failed to launch runtime.");
-	console.error("Use Node.js v22.18+ or Bun.");
+	console.error("Use Node.js or Bun.");
 	console.error(`Details: ${message}`);
 	process.exit(1);
 });
