@@ -1,5 +1,9 @@
 {
 	"private": true,
+	"scripts": {
+		"rex:compile": "bun run packages/rex-lang/rex-compile.ts",
+		"rex:verify-docs": "bun run packages/rex-lang/verify-doc-examples.ts"
+	},
 	"workspaces": [
 		"packages/*"
 	]

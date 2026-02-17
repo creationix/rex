@@ -1,111 +1,65 @@
 ---
-description: Use Bun instead of Node.js, npm, pnpm, or vite.
-globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
+description: Rex repo tooling and command conventions.
+globs: "*.ts, *.js, package.json"
 alwaysApply: false
 ---
 
-Default to using Bun instead of Node.js.
+Default to using Bun commands in this repo.
 
-- Use `bun <file>` instead of `node <file>` or `ts-node <file>`
-- Use `bun test` instead of `jest` or `vitest`
-- Use `bun build <file.html|file.ts|file.css>` instead of `webpack` or `esbuild`
-- Use `bun install` instead of `npm install` or `yarn install` or `pnpm install`
-- Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
-- Bun automatically loads .env, so don't use dotenv.
+- Use `bun run <script>` for package/workspace scripts.
+- Use `bun test` for tests.
 
-## APIs
+## Repo Tooling (Rex)
 
-- `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.
-- `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
-- `Bun.redis` for Redis. Don't use `ioredis`.
-- `Bun.sql` for Postgres. Don't use `pg` or `postgres.js`.
-- `WebSocket` is built-in. Don't use `ws`.
-- Prefer `Bun.file` over `node:fs`'s readFile/writeFile
-- Bun.$`ls` instead of execa.
-
-## Testing
-
-Use `bun test` to run tests.
-
-```ts#index.test.ts
-import { test, expect } from "bun:test";
-
-test("hello world", () => {
-  expect(1).toBe(1);
-});
-```
-
-## Frontend
-
-Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
-
-Server:
-
-```ts#index.ts
-import index from "./index.html"
-
-Bun.serve({
-  routes: {
-    "/": index,
-    "/api/users/:id": {
-      GET: (req) => {
-        return new Response(JSON.stringify({ id: req.params.id }));
-      },
-    },
-  },
-  // optional websocket support
-  websocket: {
-    open: (ws) => {
-      ws.send("Hello, world!");
-    },
-    message: (ws, message) => {
-      ws.send(message);
-    },
-    close: (ws) => {
-      // handle close
-    }
-  },
-  development: {
-    hmr: true,
-    console: true,
-  }
-})
-```
-
-HTML files can import .tsx, .jsx or .js files directly and Bun's bundler will transpile & bundle automatically. `<link>` tags can point to stylesheets and Bun's CSS bundler will bundle.
-
-```html#index.html
-<html>
-  <body>
-    <h1>Hello, world!</h1>
-    <script type="module" src="./frontend.tsx"></script>
-  </body>
-</html>
-```
-
-With the following `frontend.tsx`:
-
-```tsx#frontend.tsx
-import React from "react";
-
-// import .css files directly and it works
-import './index.css';
-
-import { createRoot } from "react-dom/client";
-
-const root = createRoot(document.body);
-
-export default function Frontend() {
-  return <h1>Hello, world!</h1>;
-}
-
-root.render(<Frontend />);
-```
-
-Then, run index.ts
+Use the dedicated compiler helper instead of mentally deriving compact encodings:
 
 ```sh
-bun --hot ./index.ts
+bun run rex:compile --expr "when x do y end"
+bun run rex:compile --file input.rex
+cat input.rex | bun run rex:compile
 ```
 
-For more information, read the Bun API docs in `node_modules/bun-types/docs/**.md`.
+Use `--ir` when you want lowered IR JSON instead of compact encoding.
+
+Use the doc verifier after grammar/encoding changes:
+
+```sh
+bun run rex:verify-docs
+```
+
+## Workspace Layout
+
+- `packages/rex-lang`: Rex grammar, IR lowering, encoder/compiler, and docs verifier.
+- `packages/vscode-rex`: VS Code extension (TextMate + semantic tokenization for `rex`/`rexc`).
+- Root scripts proxy into `packages/rex-lang` for compile and doc verification.
+
+## Common Commands
+
+From repo root:
+
+```sh
+bun run rex:compile --expr "when x do y end"
+bun run rex:verify-docs
+```
+
+From `packages/rex-lang`:
+
+```sh
+bun run build:grammar
+bun test
+```
+
+From `packages/vscode-rex`:
+
+```sh
+bun test
+bun run build
+bun run reinstall
+```
+
+## Change Checklist
+
+- After editing `packages/rex-lang/rex.ohm`, run `bun run build:grammar` in `packages/rex-lang`.
+- After parser/IR/encoding changes, run `bun test` in `packages/rex-lang`.
+- After docs examples change, run `bun run rex:verify-docs` from repo root.
+- After VS Code extension tokenizer/grammar changes, run `bun test` and `bun run build` in `packages/vscode-rex`.
