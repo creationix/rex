@@ -86,14 +86,20 @@ export type IRConditionalElse =
 			elseBranch?: IRConditionalElse;
 	  };
 
+type IRPostfixStep =
+	| { kind: "navStatic"; key: string }
+	| { kind: "navDynamic"; key: IRNode }
+	| { kind: "call"; args: IRNode[] };
+
 function parseNumber(raw: string) {
 	if (/^-?0x/i.test(raw)) return parseInt(raw, 16);
-	if (/^-?0b/i.test(raw)) return parseInt(raw, 2);
+	if (/^-?0b/i.test(raw)) {
+		const isNegative = raw.startsWith("-");
+		const digits = raw.replace(/^-?0b/i, "");
+		const value = parseInt(digits, 2);
+		return isNegative ? -value : value;
+	}
 	return Number(raw);
-}
-
-function unwrap(node: { toIR(): IRNode }): IRNode {
-	return node.toIR();
 }
 
 function collectStructured(value: unknown, out: Array<IRNode | { key: IRNode; value: IRNode }>) {
@@ -113,24 +119,50 @@ function normalizeList(value: unknown): Array<IRNode | { key: IRNode; value: IRN
 	return out;
 }
 
-function buildNavigation(base: IRNode, tailNodes: IRNode[]) {
-	const nav: Extract<IRNode, { type: "navigation" }> = {
-		type: "navigation",
-		target: base,
-		segments: [],
-	};
-	for (const tail of tailNodes) {
-		if (tail.type === "call") {
-			if (nav.segments.length === 0) {
-				return { type: "call", callee: nav.target, args: tail.args } satisfies IRNode;
-			}
-			return { type: "call", callee: nav, args: tail.args } satisfies IRNode;
-		}
-		if (tail.type === "navigation") {
-			nav.segments.push(...tail.segments);
-		}
+function collectPostfixSteps(value: unknown, out: IRPostfixStep[]) {
+	if (Array.isArray(value)) {
+		for (const part of value) collectPostfixSteps(part, out);
+		return;
 	}
-	return nav.segments.length === 0 ? base : nav;
+	if (!value || typeof value !== "object") return;
+	if ("kind" in value) out.push(value as IRPostfixStep);
+}
+
+function normalizePostfixSteps(value: unknown): IRPostfixStep[] {
+	const out: IRPostfixStep[] = [];
+	collectPostfixSteps(value, out);
+	return out;
+}
+
+function buildPostfix(base: IRNode, steps: IRPostfixStep[]) {
+	let current = base;
+	let pendingSegments: Extract<IRNode, { type: "navigation" }>["segments"] = [];
+
+	const flushSegments = () => {
+		if (pendingSegments.length === 0) return;
+		current = {
+			type: "navigation",
+			target: current,
+			segments: pendingSegments,
+		} satisfies IRNode;
+		pendingSegments = [];
+	};
+
+	for (const step of steps) {
+		if (step.kind === "navStatic") {
+			pendingSegments.push({ type: "static", key: step.key });
+			continue;
+		}
+		if (step.kind === "navDynamic") {
+			pendingSegments.push({ type: "dynamic", key: step.key });
+			continue;
+		}
+		flushSegments();
+		current = { type: "call", callee: current, args: step.args } satisfies IRNode;
+	}
+
+	flushSegments();
+	return current;
 }
 
 semantics.addOperation("toIR", {
@@ -141,7 +173,7 @@ semantics.addOperation("toIR", {
 		return this.sourceString;
 	},
 	_nonterminal(...children) {
-		if (children.length === 1) return children[0].toIR();
+		if (children.length === 1 && children[0]) return children[0].toIR();
 		return children.map((child) => child.toIR());
 	},
 
@@ -199,7 +231,9 @@ semantics.addOperation("toIR", {
 			"<": "lt",
 			"<=": "lte",
 		};
-		return { type: "binary", op: map[op.sourceString], left: left.toIR(), right: right.toIR() } satisfies IRNode;
+		const mapped = map[op.sourceString];
+		if (!mapped) throw new Error(`Unsupported compare op: ${op.sourceString}`);
+		return { type: "binary", op: mapped, left: left.toIR(), right: right.toIR() } satisfies IRNode;
 	},
 
 	AddExpr_add(left, _op, right) {
@@ -230,55 +264,51 @@ semantics.addOperation("toIR", {
 	},
 
 	PostfixExpr_chain(base, tails) {
-		return buildNavigation(base.toIR(), tails.children.map(unwrap));
+		return buildPostfix(base.toIR(), normalizePostfixSteps(tails.toIR()));
 	},
 	Place(base, tails) {
-		return buildNavigation(base.toIR(), tails.children.map(unwrap));
+		return buildPostfix(base.toIR(), normalizePostfixSteps(tails.toIR()));
+	},
+	PlaceTail_navStatic(_dot, key) {
+		return { kind: "navStatic", key: key.sourceString } satisfies IRPostfixStep;
+	},
+	PlaceTail_navDynamic(_dotOpen, key, _close) {
+		return { kind: "navDynamic", key: key.toIR() } satisfies IRPostfixStep;
 	},
 	PostfixTail_navStatic(_dot, key) {
-		return {
-			type: "navigation",
-			target: { type: "identifier", name: "$placeholder" },
-			segments: [{ type: "static", key: key.sourceString }],
-		} satisfies IRNode;
+		return { kind: "navStatic", key: key.sourceString } satisfies IRPostfixStep;
 	},
 	PostfixTail_navDynamic(_dotOpen, key, _close) {
-		return {
-			type: "navigation",
-			target: { type: "identifier", name: "$placeholder" },
-			segments: [{ type: "dynamic", key: key.toIR() }],
-		} satisfies IRNode;
+		return { kind: "navDynamic", key: key.toIR() } satisfies IRPostfixStep;
 	},
 	PostfixTail_callEmpty(_open, _close) {
-		return { type: "call", callee: { type: "identifier", name: "$placeholder" }, args: [] } satisfies IRNode;
+		return { kind: "call", args: [] } satisfies IRPostfixStep;
 	},
 	PostfixTail_call(_open, args, _close) {
-		return {
-			type: "call",
-			callee: { type: "identifier", name: "$placeholder" },
-			args: normalizeList(args.toIR()) as IRNode[],
-		} satisfies IRNode;
+		return { kind: "call", args: normalizeList(args.toIR()) as IRNode[] } satisfies IRPostfixStep;
 	},
 
 	ConditionalExpr(head, condition, _do, thenBlock, elseBranch, _end) {
+		const nextElse = elseBranch.children[0];
 		return {
 			type: "conditional",
 			head: head.toIR() as "when" | "unless",
 			condition: condition.toIR(),
 			thenBlock: thenBlock.toIR() as IRNode[],
-			elseBranch: elseBranch.children.length ? (elseBranch.children[0].toIR() as IRConditionalElse) : undefined,
+			elseBranch: nextElse ? (nextElse.toIR() as IRConditionalElse) : undefined,
 		} satisfies IRNode;
 	},
 	ConditionalHead(_kw) {
 		return this.sourceString as "when" | "unless";
 	},
 	ConditionalElse_elseChain(_else, head, condition, _do, thenBlock, elseBranch) {
+		const nextElse = elseBranch.children[0];
 		return {
 			type: "elseChain",
 			head: head.toIR() as "when" | "unless",
 			condition: condition.toIR(),
 			thenBlock: thenBlock.toIR() as IRNode[],
-			elseBranch: elseBranch.children.length ? (elseBranch.children[0].toIR() as IRConditionalElse) : undefined,
+			elseBranch: nextElse ? (nextElse.toIR() as IRConditionalElse) : undefined,
 		} satisfies IRConditionalElse;
 	},
 	ConditionalElse_else(_else, block) {
