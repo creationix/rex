@@ -12,17 +12,18 @@ Syntax highlighting for [Rex](https://github.com/creationix/rex) — programmabl
 
 ## What is Rex?
 
-Rex is a data format that extends JSON with logic. Any valid JSON is already valid Rex — you add `()` where you need computation. Source compiles to compact JSON bytecode that you can store, serialize, and diff like any other data.
+Rex is a data format that extends JSON with high-level infix logic. Any valid JSON is already valid Rex, and you can add conditionals, assignment, loops, and comprehensions directly in source. Rex compiles to compact `rexc` bytecode that you can store, serialize, and diff like any other data.
 
 ```rex
 actions = {
-  'create-user':       'users/create'
-  'delete-user':       'users/delete'
-  'update-profile':    'users/update-profile'
+  create-user: "users/create"
+  delete-user: "users/delete"
+  update-profile: "users/update-profile"
 }
 
-(when handler=(actions (headers 'x-action'))
-  (write headers 'x-handler' handler))
+when handler = actions.(headers.x-action) do
+  headers.x-handler = handler
+end
 ```
 
 Learn more at [github.com/creationix/rex](https://github.com/creationix/rex).
