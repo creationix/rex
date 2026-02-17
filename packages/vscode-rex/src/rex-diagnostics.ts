@@ -9,7 +9,7 @@ export interface RexParseFailure {
 }
 
 export function getRexParseFailure(source: string): RexParseFailure | null {
-	const match = grammar.match(source);
+	const match: any = grammar.match(source);
 	if (match.succeeded()) return null;
 
 	const startOffset = Math.max(0, match.getRightmostFailurePosition());
@@ -17,7 +17,7 @@ export function getRexParseFailure(source: string): RexParseFailure | null {
 	const { line, column } = offsetToLineColumn(source, startOffset);
 
 	return {
-		message: match.shortMessage,
+		message: String(match.shortMessage ?? match.message ?? "Parse failed"),
 		startOffset,
 		endOffset,
 		line,
