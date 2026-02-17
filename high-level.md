@@ -682,3 +682,22 @@ headers.x-handler = self
 status = 200
 method = "POST"
 ```
+
+## Identifier Resolution and Place Model
+
+Rex resolves unqualified names in a strict order:
+
+1. **Reserved words** (language keywords/literals)
+2. **Local bindings** created in the current lexical scope
+3. **Domain symbols** provided by extensions (`rex-domain.json` / compiler domain refs)
+4. **Error** if no match exists
+
+Local bindings intentionally shadow domain symbols with the same name.
+
+All navigable values use one unified **place model**:
+
+- Reading: `x`, `obj.key`, `self.name`, `headers.x-request-id`
+- Writing: `x = 1`, `obj.key = value`, `headers.content-type = "application/json"`
+- Deleting: `delete obj.key`
+
+This keeps read/write/delete semantics consistent across locals, `self`, and domain-provided symbols.

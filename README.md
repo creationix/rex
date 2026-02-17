@@ -179,7 +179,6 @@ bun run reinstall
 - `packages/vscode-rex` — VS Code grammar + tokenizer + extension
 - `high-level.md` — complete high-level language reference
 - `encoding.md` — `rexc` encoding format reference
-- `core-language.md` — historical/core language design notes
 
 ## Development Workflow
 
