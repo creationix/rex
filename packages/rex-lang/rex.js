@@ -33,38 +33,8 @@ var OPCODE_IDS = {
   mod: 20,
   neg: 21
 };
-var registeredDomainRefs = {};
-function registerDomainExtensionRef(name, refId = 0) {
-  if (!name)
-    throw new Error("Domain extension name cannot be empty");
-  if (!Number.isInteger(refId) || refId < 0)
-    throw new Error(`Invalid domain extension ref id for '${name}': ${refId}`);
-  registeredDomainRefs[name] = refId;
-}
-function registerDomainExtensionRefs(refs) {
-  for (const [name, refId] of Object.entries(refs)) {
-    registerDomainExtensionRef(name, refId);
-  }
-}
-function clearDomainExtensionRefs() {
-  for (const name of Object.keys(registeredDomainRefs))
-    delete registeredDomainRefs[name];
-}
-function getRegisteredDomainExtensionRefs() {
-  return { ...registeredDomainRefs };
-}
-function resolveDomainRefMap(overrides) {
-  if (!overrides || Object.keys(overrides).length === 0) {
-    return Object.keys(registeredDomainRefs).length > 0 ? { ...registeredDomainRefs } : undefined;
-  }
-  const merged = { ...registeredDomainRefs };
-  for (const [name, refId] of Object.entries(overrides)) {
-    if (!Number.isInteger(refId) || refId < 0)
-      throw new Error(`Invalid domain extension ref id for '${name}': ${refId}`);
-    merged[name] = refId;
-  }
-  return merged;
-}
+var FIRST_NON_RESERVED_REF = 5;
+var DOMAIN_DIGIT_INDEX = new Map(Array.from(DIGITS).map((char, index) => [char, index]));
 var BINARY_TO_OPCODE = {
   add: "add",
   sub: "sub",
@@ -549,6 +519,81 @@ ${indent}}`;
 }
 function parse(source) {
   return parseDataNode(parseToIR(source));
+}
+function domainRefsFromConfig(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("Domain config must be an object");
+  }
+  const refs = {};
+  for (const section of Object.values(config)) {
+    if (!section || typeof section !== "object" || Array.isArray(section))
+      continue;
+    mapConfigEntries(section, refs);
+  }
+  return refs;
+}
+function decodeDomainRefKey(refText) {
+  if (!refText)
+    throw new Error("Domain ref key cannot be empty");
+  if (!/^[0-9A-Za-z_-]+$/.test(refText)) {
+    throw new Error(`Invalid domain ref key '${refText}' (must use base64 alphabet 0-9a-zA-Z-_)`);
+  }
+  if (refText.length > 1 && refText[0] === "0") {
+    throw new Error(`Invalid domain ref key '${refText}' (leading zeroes are not allowed)`);
+  }
+  if (/^[1-9]$/.test(refText)) {
+    throw new Error(`Invalid domain ref key '${refText}' (reserved by core language)`);
+  }
+  let value = 0;
+  for (const char of refText) {
+    const digit = DOMAIN_DIGIT_INDEX.get(char);
+    if (digit === undefined)
+      throw new Error(`Invalid domain ref key '${refText}'`);
+    value = value * 64 + digit;
+    if (value > Number.MAX_SAFE_INTEGER) {
+      throw new Error(`Invalid domain ref key '${refText}' (must fit in 53 bits)`);
+    }
+  }
+  if (value < FIRST_NON_RESERVED_REF) {
+    throw new Error(`Invalid domain ref key '${refText}' (maps to reserved id ${value})`);
+  }
+  return value;
+}
+function mapConfigEntries(entries, refs) {
+  const sourceKindByRoot = new Map;
+  for (const root of Object.keys(refs)) {
+    sourceKindByRoot.set(root, "explicit");
+  }
+  for (const [refText, rawEntry] of Object.entries(entries)) {
+    const entry = rawEntry;
+    if (!entry || typeof entry !== "object")
+      continue;
+    if (!Array.isArray(entry.names))
+      continue;
+    const refId = decodeDomainRefKey(refText);
+    for (const rawName of entry.names) {
+      if (typeof rawName !== "string")
+        continue;
+      const root = rawName.split(".")[0];
+      if (!root)
+        continue;
+      const currentKind = rawName.includes(".") ? "implicit" : "explicit";
+      const existing = refs[root];
+      if (existing !== undefined) {
+        if (existing === refId)
+          continue;
+        const existingKind = sourceKindByRoot.get(root) ?? "explicit";
+        if (currentKind === "explicit") {
+          throw new Error(`Conflicting refs for '${root}': ${existing} vs ${refId}`);
+        }
+        if (existingKind === "explicit")
+          continue;
+        continue;
+      }
+      refs[root] = refId;
+      sourceKindByRoot.set(root, currentKind);
+    }
+  }
 }
 function stringify(value, options) {
   const indent = options?.indent ?? 2;
@@ -1927,8 +1972,9 @@ function compile(source, options) {
   let lowered = options?.optimize ? optimizeIR(ir) : ir;
   if (options?.minifyNames)
     lowered = minifyLocalNamesIR(lowered);
+  const domainRefs = options?.domainConfig ? domainRefsFromConfig(options.domainConfig) : undefined;
   return encodeIR(lowered, {
-    domainRefs: resolveDomainRefMap(options?.domainRefs),
+    domainRefs,
     dedupeValues: options?.dedupeValues,
     dedupeMinBytes: options?.dedupeMinBytes
   });
@@ -2304,16 +2350,13 @@ var rex_default = semantics;
 export {
   stringify,
   semantics,
-  registerDomainExtensionRefs,
-  registerDomainExtensionRef,
   parseToIR,
   parse,
   optimizeIR,
   minifyLocalNamesIR,
   grammar,
-  getRegisteredDomainExtensionRefs,
   encodeIR,
+  domainRefsFromConfig,
   rex_default as default,
-  compile,
-  clearDomainExtensionRefs
+  compile
 };

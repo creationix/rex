@@ -665,7 +665,7 @@ end
 
 ## Extension Points
 
-Domain extensions work the same as in the core language. Extensions register navigable places and opcodes that the compiler recognizes as keywords. For example, an HTTP routing domain might add:
+Domain extensions are defined in `.config.rex` and expose navigable places/opcodes that the compiler recognizes as keywords. For example, an HTTP routing domain might add:
 
 ```rex
 // Domain places — navigable with dot and .()
@@ -689,7 +689,7 @@ Rex resolves unqualified names in a strict order:
 
 1. **Reserved words** (language keywords/literals)
 2. **Local bindings** created in the current lexical scope
-3. **Domain symbols** provided by extensions (`rex-domain.json` / compiler domain refs)
+3. **Domain symbols** provided by `.config.rex`
 4. **Error** if no match exists
 
 Local bindings intentionally shadow domain symbols with the same name.
