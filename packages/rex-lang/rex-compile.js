@@ -33,19 +33,8 @@ var OPCODE_IDS = {
   mod: 20,
   neg: 21
 };
-var registeredDomainRefs = {};
-function resolveDomainRefMap(overrides) {
-  if (!overrides || Object.keys(overrides).length === 0) {
-    return Object.keys(registeredDomainRefs).length > 0 ? { ...registeredDomainRefs } : undefined;
-  }
-  const merged = { ...registeredDomainRefs };
-  for (const [name, refId] of Object.entries(overrides)) {
-    if (!Number.isInteger(refId) || refId < 0)
-      throw new Error(`Invalid domain extension ref id for '${name}': ${refId}`);
-    merged[name] = refId;
-  }
-  return merged;
-}
+var FIRST_NON_RESERVED_REF = 5;
+var DOMAIN_DIGIT_INDEX = new Map(Array.from(DIGITS).map((char, index) => [char, index]));
 var BINARY_TO_OPCODE = {
   add: "add",
   sub: "sub",
@@ -402,6 +391,126 @@ function parseToIR(source) {
     throw new Error(failure.message ?? "Parse failed");
   }
   return semantics(match).toIR();
+}
+function parseDataNode(node) {
+  switch (node.type) {
+    case "group":
+      return parseDataNode(node.expression);
+    case "program": {
+      if (node.body.length === 1)
+        return parseDataNode(node.body[0]);
+      if (node.body.length === 0)
+        return;
+      throw new Error("Rex parse() expects a single data expression");
+    }
+    case "undefined":
+      return;
+    case "null":
+      return null;
+    case "boolean":
+      return node.value;
+    case "number":
+      return node.value;
+    case "string":
+      return decodeStringLiteral(node.raw);
+    case "array":
+      return node.items.map((item) => parseDataNode(item));
+    case "object": {
+      const out = {};
+      for (const entry of node.entries) {
+        const keyNode = entry.key;
+        let key;
+        if (keyNode.type === "key")
+          key = keyNode.name;
+        else {
+          const keyValue = parseDataNode(keyNode);
+          key = String(keyValue);
+        }
+        out[key] = parseDataNode(entry.value);
+      }
+      return out;
+    }
+    default:
+      throw new Error(`Rex parse() only supports data expressions. Found: ${node.type}`);
+  }
+}
+function parse(source) {
+  return parseDataNode(parseToIR(source));
+}
+function domainRefsFromConfig(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("Domain config must be an object");
+  }
+  const refs = {};
+  for (const section of Object.values(config)) {
+    if (!section || typeof section !== "object" || Array.isArray(section))
+      continue;
+    mapConfigEntries(section, refs);
+  }
+  return refs;
+}
+function decodeDomainRefKey(refText) {
+  if (!refText)
+    throw new Error("Domain ref key cannot be empty");
+  if (!/^[0-9A-Za-z_-]+$/.test(refText)) {
+    throw new Error(`Invalid domain ref key '${refText}' (must use base64 alphabet 0-9a-zA-Z-_)`);
+  }
+  if (refText.length > 1 && refText[0] === "0") {
+    throw new Error(`Invalid domain ref key '${refText}' (leading zeroes are not allowed)`);
+  }
+  if (/^[1-9]$/.test(refText)) {
+    throw new Error(`Invalid domain ref key '${refText}' (reserved by core language)`);
+  }
+  let value = 0;
+  for (const char of refText) {
+    const digit = DOMAIN_DIGIT_INDEX.get(char);
+    if (digit === undefined)
+      throw new Error(`Invalid domain ref key '${refText}'`);
+    value = value * 64 + digit;
+    if (value > Number.MAX_SAFE_INTEGER) {
+      throw new Error(`Invalid domain ref key '${refText}' (must fit in 53 bits)`);
+    }
+  }
+  if (value < FIRST_NON_RESERVED_REF) {
+    throw new Error(`Invalid domain ref key '${refText}' (maps to reserved id ${value})`);
+  }
+  return value;
+}
+function mapConfigEntries(entries, refs) {
+  const sourceKindByRoot = new Map;
+  for (const root of Object.keys(refs)) {
+    sourceKindByRoot.set(root, "explicit");
+  }
+  for (const [refText, rawEntry] of Object.entries(entries)) {
+    const entry = rawEntry;
+    if (!entry || typeof entry !== "object")
+      continue;
+    if (!Array.isArray(entry.names))
+      continue;
+    const refId = decodeDomainRefKey(refText);
+    for (const rawName of entry.names) {
+      if (typeof rawName !== "string")
+        continue;
+      const root = rawName.split(".")[0];
+      if (!root)
+        continue;
+      const currentKind = rawName.includes(".") ? "implicit" : "explicit";
+      const existing = refs[root];
+      if (existing !== undefined) {
+        if (existing === refId)
+          continue;
+        const existingKind = sourceKindByRoot.get(root) ?? "explicit";
+        if (currentKind === "explicit") {
+          throw new Error(`Conflicting refs for '${root}': ${existing} vs ${refId}`);
+        }
+        if (existingKind === "explicit")
+          continue;
+        continue;
+      }
+      refs[root] = refId;
+      sourceKindByRoot.set(root, currentKind);
+    }
+  }
 }
 var DIGIT_SET = new Set(DIGITS.split(""));
 var DIGIT_INDEX = new Map(Array.from(DIGITS).map((char, index) => [char, index]));
@@ -1771,8 +1880,9 @@ function compile(source, options) {
   let lowered = options?.optimize ? optimizeIR(ir) : ir;
   if (options?.minifyNames)
     lowered = minifyLocalNamesIR(lowered);
+  const domainRefs = options?.domainConfig ? domainRefsFromConfig(options.domainConfig) : undefined;
   return encodeIR(lowered, {
-    domainRefs: resolveDomainRefMap(options?.domainRefs),
+    domainRefs,
     dedupeValues: options?.dedupeValues,
     dedupeMinBytes: options?.dedupeMinBytes
   });
@@ -2148,13 +2258,11 @@ semantics.addOperation("toIR", {
 // rex-compile.ts
 import { dirname, resolve } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
-var FIRST_NON_RESERVED_REF = 5;
 function parseArgs(argv) {
   const options = {
     ir: false,
     minifyNames: false,
     dedupeValues: false,
-    domainRefs: {},
     help: false
   };
   for (let index = 0;index < argv.length; index += 1) {
@@ -2185,31 +2293,6 @@ function parseArgs(argv) {
       if (!Number.isInteger(parsed) || parsed < 1)
         throw new Error("--dedupe-min-bytes must be a positive integer");
       options.dedupeMinBytes = parsed;
-      index += 1;
-      continue;
-    }
-    if (arg === "--domain-extension") {
-      const value = argv[index + 1];
-      if (!value)
-        throw new Error("Missing value for --domain-extension");
-      options.domainRefs[value] = 0;
-      index += 1;
-      continue;
-    }
-    if (arg === "--domain-ref") {
-      const value = argv[index + 1];
-      if (!value)
-        throw new Error("Missing value for --domain-ref");
-      const separator = value.indexOf("=");
-      if (separator < 1 || separator === value.length - 1) {
-        throw new Error("--domain-ref expects NAME=ID (for example: headers=0)");
-      }
-      const name = value.slice(0, separator);
-      const idText = value.slice(separator + 1);
-      const id = Number(idText);
-      if (!Number.isInteger(id) || id < 0)
-        throw new Error(`Invalid domain ref id in --domain-ref '${value}'`);
-      options.domainRefs[name] = id;
       index += 1;
       continue;
     }
@@ -2260,8 +2343,6 @@ function usage() {
     "  -m, --minify-names    Minify local variable names in compiled output",
     "      --dedupe-values   Deduplicate large repeated values using forward pointers",
     "      --dedupe-min-bytes <n>  Minimum encoded value bytes for pointer dedupe (default: 4)",
-    "      --domain-extension <name>  Map domain symbol name to ref 0 (apostrophe)",
-    "      --domain-ref <name=id>    Map domain symbol name to a specific ref id",
     "  -h, --help            Show this message"
   ].join(`
 `);
@@ -2287,45 +2368,19 @@ async function resolveSource(options) {
   }
   throw new Error("No input provided. Use --expr, --file, or pipe source via stdin.");
 }
-async function loadDomainRefsFromFolder(folderPath) {
-  const schemaPath = resolve(folderPath, "rex-domain.json");
-  let parsed;
+async function loadDomainConfigFromFolder(folderPath) {
+  const configPath = resolve(folderPath, ".config.rex");
   try {
-    parsed = JSON.parse(await readFile(schemaPath, "utf8"));
+    return parse(await readFile(configPath, "utf8"));
   } catch (error) {
     if (error.code === "ENOENT")
-      return {};
+      return;
     throw error;
   }
-  if (!parsed || typeof parsed !== "object" || !parsed.globals || typeof parsed.globals !== "object") {
-    throw new Error(`Invalid rex-domain.json at ${schemaPath}: expected { globals: { ... } }`);
-  }
-  const refs = {};
-  const seenRefIds = new Map;
-  for (const [name, entry] of Object.entries(parsed.globals)) {
-    if (!entry || typeof entry !== "object") {
-      throw new Error(`Invalid rex-domain.json at ${schemaPath}: globals.${name} must be an object with a numeric ref`);
-    }
-    const ref = entry.ref;
-    if (!Number.isInteger(ref)) {
-      throw new Error(`Invalid rex-domain.json at ${schemaPath}: globals.${name}.ref must be an integer`);
-    }
-    if (ref < FIRST_NON_RESERVED_REF) {
-      throw new Error(`Invalid rex-domain.json at ${schemaPath}: globals.${name}.ref must be >= ${FIRST_NON_RESERVED_REF} (0-4 are reserved built-ins)`);
-    }
-    const existing = seenRefIds.get(ref);
-    if (existing) {
-      throw new Error(`Invalid rex-domain.json at ${schemaPath}: duplicate ref ${ref} for globals.${existing} and globals.${name}`);
-    }
-    seenRefIds.set(ref, name);
-    refs[name] = ref;
-  }
-  return refs;
 }
-async function resolveDomainRefs(options) {
+async function resolveDomainConfig(options) {
   const baseFolder = options.file ? dirname(resolve(options.file)) : process.cwd();
-  const autoRefs = await loadDomainRefsFromFolder(baseFolder);
-  return { ...autoRefs, ...options.domainRefs };
+  return loadDomainConfigFromFolder(baseFolder);
 }
 async function main() {
   const options = parseArgs(process.argv.slice(2));
@@ -2334,12 +2389,12 @@ async function main() {
     return;
   }
   const source = await resolveSource(options);
-  const domainRefs = await resolveDomainRefs(options);
+  const domainConfig = await resolveDomainConfig(options);
   const output = options.ir ? JSON.stringify(parseToIR(source), null, 2) : compile(source, {
     minifyNames: options.minifyNames,
     dedupeValues: options.dedupeValues,
     dedupeMinBytes: options.dedupeMinBytes,
-    domainRefs
+    domainConfig
   });
   if (options.out) {
     await writeFile(options.out, `${output}

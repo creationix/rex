@@ -1,1 +1,1 @@
-(%=$2r({b,GET /healthn{3L^b,health/read}d,GET /v1/usersm{3d^a,users/list}e,POST /v1/userso{2H^c,users/create}}(1%(1%(1'method:)1, )(1'path:)))=(2'1b^)6g+=1$b($1z^)=2$s|((1'headers:x-tenant:)public:)!($e=(2'h^)cE+){9^9(2'status:)route:route-key$operation:1$error:4'tenant:2$})
+(%=$2v({b,GET /healthn{3X^b,health/read}d,GET /v1/usersm{3p^a,users/list}e,POST /v1/userso{2T^c,users/create}}(1%(1%(req$method:)1, )(req$path:)))=(res$1h^)6g+=1$b($1F^)=2$u|((req$headers:x-tenant:)public:)!($g=(res$j^)cE+){b^b(res$status:)route:route-key$operation:1$error:4'tenant:2$})
