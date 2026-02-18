@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
-	clearDomainExtensionRefs,
 	compile,
+	encodeIR,
 	minifyLocalNamesIR,
 	optimizeIR,
 	parseToIR,
-	registerDomainExtensionRef,
 } from "./rex.ts";
 
 describe("Rex IR optimizer", () => {
@@ -221,17 +220,20 @@ end
 	});
 
 	test("compile maps configured domain symbols to apostrophe refs", () => {
-		const encoded = compile("headers.x-tenant", { domainRefs: { headers: 0 } });
-		expect(encoded).toBe("('x-tenant:)");
+		const encoded = encodeIR(parseToIR("headers.x-tenant"), { domainRefs: { headers: 6 } });
+		expect(encoded).toBe("(6'x-tenant:)");
 	});
 
-	test("registered domain extension refs are used by compile", () => {
-		registerDomainExtensionRef("headers", 0);
-		registerDomainExtensionRef("edge-config", 12);
-		const encoded = compile("headers.x-request-id or edge-config.routing");
-		expect(encoded).toContain("('x-request-id:)");
-		expect(encoded).toContain("c'routing:");
-		clearDomainExtensionRefs();
+	test("compile accepts pre-parsed domain config object", () => {
+		const domainConfig = {
+			data: {
+				H: {
+					names: ["headers"],
+				},
+			},
+		};
+		const encoded = compile("headers.x-tenant", { domainConfig });
+			expect(encoded).toBe("(H'x-tenant:)");
 	});
 
 	test("compile deduplicates repeated large literals with pointers", () => {

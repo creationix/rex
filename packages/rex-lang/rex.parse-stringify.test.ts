@@ -26,6 +26,10 @@ describe("rex parse/stringify", () => {
 		expect(() => parse("x = 1")).toThrow("only supports data expressions");
 	});
 
+	test("parse does not auto-load domain extensions", () => {
+		expect(() => parse("headers")).toThrow("only supports data expressions");
+	});
+
 	test("stringify uses bare keys, no commas, and inline tiny structures", () => {
 		const value = {
 			name: "rex",

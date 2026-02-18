@@ -1,45 +1,29 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join, extname, basename } from "node:path";
-import { compile } from "../../packages/rex-lang/rex.ts";
+import { compile, parse } from "../../packages/rex-lang/rex.ts";
 
 const samplesDir = fileURLToPath(new URL(".", import.meta.url));
 
-type DomainSchema = {
-	globals?: Record<string, unknown>;
-};
-
-async function loadDomainRefs(dirPath: string): Promise<Record<string, number>> {
-	const schemaPath = join(dirPath, "rex-domain.json");
+async function loadDomainConfig(dirPath: string): Promise<unknown | undefined> {
+	const configPath = join(dirPath, ".config.rex");
 	try {
-		const raw = await readFile(schemaPath, "utf8");
-		const parsed = JSON.parse(raw) as DomainSchema;
-		if (!parsed || typeof parsed !== "object" || !parsed.globals || typeof parsed.globals !== "object") {
-			throw new Error("Expected { globals: { ... } }");
-		}
-
-		const refs: Record<string, number> = {};
-		let nextRef = 0;
-		for (const name of Object.keys(parsed.globals)) {
-			refs[name] = nextRef;
-			nextRef += 1;
-		}
-		return refs;
+		return parse(await readFile(configPath, "utf8"));
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-		throw new Error(`Failed to load rex-domain.json in ${dirPath}: ${(error as Error).message}`);
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw new Error(`Failed to load .config.rex in ${dirPath}: ${(error as Error).message}`);
 	}
 }
 
 async function main() {
-	const domainRefs = await loadDomainRefs(samplesDir);
+	const domainConfig = await loadDomainConfig(samplesDir);
 	const files = await collectRexFiles(samplesDir);
 	let compiled = 0;
 
 	for (const filePath of files) {
 		const source = await readFile(filePath, "utf8");
-		const debugOut = compile(source, { domainRefs });
-		const optimizedOut = compile(source, { optimize: true, minifyNames: true, dedupeValues: true, domainRefs });
+		const debugOut = compile(source, { domainConfig });
+		const optimizedOut = compile(source, { optimize: true, minifyNames: true, dedupeValues: true, domainConfig });
 
 		const outBase = filePath.slice(0, -extname(filePath).length);
 		await writeFile(`${outBase}.rexc`, `${debugOut}\n`, "utf8");

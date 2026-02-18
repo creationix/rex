@@ -11,21 +11,21 @@ Syntax highlighting for [Rex](https://github.com/creationix/rex) — programmabl
 - Rex tagged template literals in TypeScript and JavaScript
 - Parser-backed diagnostics for `.rex`
 - Outline, Go to Definition, and Find References for local Rex symbols
-- Optional domain-aware completion and hover via `rex-domain.json` at workspace root
+- Optional domain-aware completion and hover via `.config.rex` at workspace root
 
-## Domain Schema (`rex-domain.json`)
+## Domain Schema (`.config.rex`)
 
-To provide domain API completions/hover without imports, add `rex-domain.json` in your repo root:
+To provide domain API completions/hover without imports, add `.config.rex` in your repo root:
 
-```json
+- The extension reads only the current `.config.rex` format (`data` / `functions` entries with `names`, `type`, `desc`, optional `args`/`returns`).
+
+```rex
 {
-  "globals": {
-    "headers": {
-      "type": "object",
-      "description": "Inbound request headers",
-      "properties": {
-        "x-action": { "type": "string", "description": "Action key" }
-      }
+  data: {
+    H: {
+      names: ['headers']
+      type: 'object'
+      desc: 'Inbound request headers'
     }
   }
 }

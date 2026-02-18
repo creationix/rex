@@ -131,44 +131,17 @@ type EncodeOptions = {
 type CompileOptions = {
 	optimize?: boolean;
 	minifyNames?: boolean;
-	domainRefs?: Record<string, number>;
 	dedupeValues?: boolean;
 	dedupeMinBytes?: number;
+	domainConfig?: unknown;
 };
 
-const registeredDomainRefs: Record<string, number> = {};
+type RexDomainConfigEntry = {
+	names?: unknown;
+};
 
-export function registerDomainExtensionRef(name: string, refId = 0) {
-	if (!name) throw new Error("Domain extension name cannot be empty");
-	if (!Number.isInteger(refId) || refId < 0) throw new Error(`Invalid domain extension ref id for '${name}': ${refId}`);
-	registeredDomainRefs[name] = refId;
-}
-
-export function registerDomainExtensionRefs(refs: Record<string, number>) {
-	for (const [name, refId] of Object.entries(refs)) {
-		registerDomainExtensionRef(name, refId);
-	}
-}
-
-export function clearDomainExtensionRefs() {
-	for (const name of Object.keys(registeredDomainRefs)) delete registeredDomainRefs[name];
-}
-
-export function getRegisteredDomainExtensionRefs(): Record<string, number> {
-	return { ...registeredDomainRefs };
-}
-
-function resolveDomainRefMap(overrides?: Record<string, number>): Record<string, number> | undefined {
-	if (!overrides || Object.keys(overrides).length === 0) {
-		return Object.keys(registeredDomainRefs).length > 0 ? { ...registeredDomainRefs } : undefined;
-	}
-	const merged = { ...registeredDomainRefs };
-	for (const [name, refId] of Object.entries(overrides)) {
-		if (!Number.isInteger(refId) || refId < 0) throw new Error(`Invalid domain extension ref id for '${name}': ${refId}`);
-		merged[name] = refId;
-	}
-	return merged;
-}
+const FIRST_NON_RESERVED_REF = 5;
+const DOMAIN_DIGIT_INDEX = new Map<string, number>(Array.from(DIGITS).map((char, index) => [char, index]));
 
 const BINARY_TO_OPCODE: Record<Extract<IRNode, { type: "binary" }> ["op"], OpcodeName> = {
 	add: "add",
@@ -644,6 +617,80 @@ function stringifyPretty(value: unknown, depth: number, indentSize: number, maxW
 
 export function parse(source: string): unknown {
 	return parseDataNode(parseToIR(source));
+}
+
+export function domainRefsFromConfig(config: unknown): Record<string, number> {
+	if (!config || typeof config !== "object" || Array.isArray(config)) {
+		throw new Error("Domain config must be an object");
+	}
+	const refs: Record<string, number> = {};
+	for (const section of Object.values(config)) {
+		if (!section || typeof section !== "object" || Array.isArray(section)) continue;
+		mapConfigEntries(section as Record<string, unknown>, refs);
+	}
+	return refs;
+}
+
+function decodeDomainRefKey(refText: string): number {
+	if (!refText) throw new Error("Domain ref key cannot be empty");
+	if (!/^[0-9A-Za-z_-]+$/.test(refText)) {
+		throw new Error(`Invalid domain ref key '${refText}' (must use base64 alphabet 0-9a-zA-Z-_)`);
+	}
+	if (refText.length > 1 && refText[0] === "0") {
+		throw new Error(`Invalid domain ref key '${refText}' (leading zeroes are not allowed)`);
+	}
+	if (/^[1-9]$/.test(refText)) {
+		throw new Error(`Invalid domain ref key '${refText}' (reserved by core language)`);
+	}
+
+	let value = 0;
+	for (const char of refText) {
+		const digit = DOMAIN_DIGIT_INDEX.get(char);
+		if (digit === undefined) throw new Error(`Invalid domain ref key '${refText}'`);
+		value = value * 64 + digit;
+		if (value > Number.MAX_SAFE_INTEGER) {
+			throw new Error(`Invalid domain ref key '${refText}' (must fit in 53 bits)`);
+		}
+	}
+
+	if (value < FIRST_NON_RESERVED_REF) {
+		throw new Error(`Invalid domain ref key '${refText}' (maps to reserved id ${value})`);
+	}
+
+	return value;
+}
+
+function mapConfigEntries(entries: Record<string, unknown>, refs: Record<string, number>) {
+	const sourceKindByRoot = new Map<string, "explicit" | "implicit">();
+	for (const root of Object.keys(refs)) {
+		sourceKindByRoot.set(root, "explicit");
+	}
+
+	for (const [refText, rawEntry] of Object.entries(entries)) {
+		const entry = rawEntry as RexDomainConfigEntry;
+		if (!entry || typeof entry !== "object") continue;
+		if (!Array.isArray(entry.names)) continue;
+
+		const refId = decodeDomainRefKey(refText);
+		for (const rawName of entry.names) {
+			if (typeof rawName !== "string") continue;
+			const root = rawName.split(".")[0];
+			if (!root) continue;
+			const currentKind: "explicit" | "implicit" = rawName.includes(".") ? "implicit" : "explicit";
+			const existing = refs[root];
+			if (existing !== undefined) {
+				if (existing === refId) continue;
+				const existingKind = sourceKindByRoot.get(root) ?? "explicit";
+				if (currentKind === "explicit") {
+					throw new Error(`Conflicting refs for '${root}': ${existing} vs ${refId}`);
+				}
+				if (existingKind === "explicit") continue;
+				continue;
+			}
+			refs[root] = refId;
+			sourceKindByRoot.set(root, currentKind);
+		}
+	}
 }
 
 export function stringify(value: unknown, options?: { indent?: number; maxWidth?: number }): string {
@@ -2018,8 +2065,9 @@ export function compile(source: string, options?: CompileOptions): string {
 	const ir = parseToIR(source);
 	let lowered = options?.optimize ? optimizeIR(ir) : ir;
 	if (options?.minifyNames) lowered = minifyLocalNamesIR(lowered);
+	const domainRefs = options?.domainConfig ? domainRefsFromConfig(options.domainConfig) : undefined;
 	return encodeIR(lowered, {
-		domainRefs: resolveDomainRefMap(options?.domainRefs),
+		domainRefs,
 		dedupeValues: options?.dedupeValues,
 		dedupeMinBytes: options?.dedupeMinBytes,
 	});

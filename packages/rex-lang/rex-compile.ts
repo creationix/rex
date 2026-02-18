@@ -1,4 +1,4 @@
-import { compile, parseToIR } from "./rex.ts";
+import { compile, parse, parseToIR } from "./rex.ts";
 import { dirname, resolve } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -10,22 +10,14 @@ type CliOptions = {
 	minifyNames: boolean;
 	dedupeValues: boolean;
 	dedupeMinBytes?: number;
-	domainRefs: Record<string, number>;
 	help: boolean;
 };
-
-type DomainSchema = {
-	globals?: Record<string, { ref?: unknown }>;
-};
-
-const FIRST_NON_RESERVED_REF = 5;
 
 function parseArgs(argv: string[]): CliOptions {
 	const options: CliOptions = {
 		ir: false,
 		minifyNames: false,
 		dedupeValues: false,
-		domainRefs: {},
 		help: false,
 	};
 	for (let index = 0; index < argv.length; index += 1) {
@@ -53,28 +45,6 @@ function parseArgs(argv: string[]): CliOptions {
 			const parsed = Number(value);
 			if (!Number.isInteger(parsed) || parsed < 1) throw new Error("--dedupe-min-bytes must be a positive integer");
 			options.dedupeMinBytes = parsed;
-			index += 1;
-			continue;
-		}
-		if (arg === "--domain-extension") {
-			const value = argv[index + 1];
-			if (!value) throw new Error("Missing value for --domain-extension");
-			options.domainRefs[value] = 0;
-			index += 1;
-			continue;
-		}
-		if (arg === "--domain-ref") {
-			const value = argv[index + 1];
-			if (!value) throw new Error("Missing value for --domain-ref");
-			const separator = value.indexOf("=");
-			if (separator < 1 || separator === value.length - 1) {
-				throw new Error("--domain-ref expects NAME=ID (for example: headers=0)");
-			}
-			const name = value.slice(0, separator);
-			const idText = value.slice(separator + 1);
-			const id = Number(idText);
-			if (!Number.isInteger(id) || id < 0) throw new Error(`Invalid domain ref id in --domain-ref '${value}'`);
-			options.domainRefs[name] = id;
 			index += 1;
 			continue;
 		}
@@ -123,11 +93,10 @@ function usage() {
 		"  -m, --minify-names    Minify local variable names in compiled output",
 		"      --dedupe-values   Deduplicate large repeated values using forward pointers",
 		"      --dedupe-min-bytes <n>  Minimum encoded value bytes for pointer dedupe (default: 4)",
-		"      --domain-extension <name>  Map domain symbol name to ref 0 (apostrophe)",
-		"      --domain-ref <name=id>    Map domain symbol name to a specific ref id",
 		"  -h, --help            Show this message",
 	].join("\n");
 }
+
 
 async function readStdin(): Promise<string> {
 	const chunks: Buffer[] = [];
@@ -148,48 +117,19 @@ async function resolveSource(options: CliOptions): Promise<string> {
 	throw new Error("No input provided. Use --expr, --file, or pipe source via stdin.");
 }
 
-async function loadDomainRefsFromFolder(folderPath: string): Promise<Record<string, number>> {
-	const schemaPath = resolve(folderPath, "rex-domain.json");
-	let parsed: DomainSchema;
+async function loadDomainConfigFromFolder(folderPath: string): Promise<unknown | undefined> {
+	const configPath = resolve(folderPath, ".config.rex");
 	try {
-		parsed = JSON.parse(await readFile(schemaPath, "utf8")) as DomainSchema;
+		return parse(await readFile(configPath, "utf8"));
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw error;
 	}
-	if (!parsed || typeof parsed !== "object" || !parsed.globals || typeof parsed.globals !== "object") {
-		throw new Error(`Invalid rex-domain.json at ${schemaPath}: expected { globals: { ... } }`);
-	}
-
-	const refs: Record<string, number> = {};
-	const seenRefIds = new Map<number, string>();
-	for (const [name, entry] of Object.entries(parsed.globals)) {
-		if (!entry || typeof entry !== "object") {
-			throw new Error(`Invalid rex-domain.json at ${schemaPath}: globals.${name} must be an object with a numeric ref`);
-		}
-		const ref = entry.ref;
-		if (!Number.isInteger(ref)) {
-			throw new Error(`Invalid rex-domain.json at ${schemaPath}: globals.${name}.ref must be an integer`);
-		}
-		if (ref < FIRST_NON_RESERVED_REF) {
-			throw new Error(
-				`Invalid rex-domain.json at ${schemaPath}: globals.${name}.ref must be >= ${FIRST_NON_RESERVED_REF} (0-4 are reserved built-ins)`,
-			);
-		}
-		const existing = seenRefIds.get(ref);
-		if (existing) {
-			throw new Error(`Invalid rex-domain.json at ${schemaPath}: duplicate ref ${ref} for globals.${existing} and globals.${name}`);
-		}
-		seenRefIds.set(ref, name);
-		refs[name] = ref;
-	}
-	return refs;
 }
 
-async function resolveDomainRefs(options: CliOptions): Promise<Record<string, number>> {
+async function resolveDomainConfig(options: CliOptions): Promise<unknown | undefined> {
 	const baseFolder = options.file ? dirname(resolve(options.file)) : process.cwd();
-	const autoRefs = await loadDomainRefsFromFolder(baseFolder);
-	return { ...autoRefs, ...options.domainRefs };
+	return loadDomainConfigFromFolder(baseFolder);
 }
 
 async function main() {
@@ -200,14 +140,14 @@ async function main() {
 	}
 
 	const source = await resolveSource(options);
-	const domainRefs = await resolveDomainRefs(options);
+	const domainConfig = await resolveDomainConfig(options);
 	const output = options.ir
 		? JSON.stringify(parseToIR(source), null, 2)
 		: compile(source, {
 			minifyNames: options.minifyNames,
 			dedupeValues: options.dedupeValues,
 			dedupeMinBytes: options.dedupeMinBytes,
-			domainRefs,
+			domainConfig,
 		});
 
 	if (options.out) {

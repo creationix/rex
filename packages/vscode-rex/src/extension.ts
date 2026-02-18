@@ -6,6 +6,7 @@ import {
 	type RexDomainSchema,
 	entryToDetail,
 	parseDomainSchema,
+	resolveDomainPrefixMatches,
 	resolveDomainPath,
 } from "./rex-domain";
 import {
@@ -217,30 +218,16 @@ class RexCompletionProvider implements vscode.CompletionItemProvider {
 		if (!schema?.globals) return [];
 
 		const toCompletionItems = (
-			entries: Record<string, { aliases?: string[]; description?: string; type?: string; properties?: Record<string, unknown> }>,
+			entries: Record<string, { description?: string; type?: string; properties?: Record<string, unknown> }>,
 			kind: vscode.CompletionItemKind,
 		): vscode.CompletionItem[] => {
 			const items: vscode.CompletionItem[] = [];
-			const seen = new Set<string>();
 			for (const [name, entry] of Object.entries(entries)) {
-				if (!seen.has(name)) {
-					const item = new vscode.CompletionItem(name, kind);
-					item.detail = entryToDetail(entry);
-					item.documentation = entry.description;
-					item.sortText = `0_${name}`;
-					items.push(item);
-					seen.add(name);
-				}
-
-				for (const alias of entry.aliases ?? []) {
-					if (seen.has(alias)) continue;
-					const aliasItem = new vscode.CompletionItem(alias, kind);
-					aliasItem.detail = `${entryToDetail(entry)} (alias of ${name})`;
-					aliasItem.documentation = entry.description;
-					aliasItem.sortText = `1_${alias}`;
-					items.push(aliasItem);
-					seen.add(alias);
-				}
+				const item = new vscode.CompletionItem(name, kind);
+				item.detail = entryToDetail(entry);
+				item.documentation = entry.description;
+				item.sortText = `0_${name}`;
+				items.push(item);
 			}
 			return items;
 		};
@@ -252,8 +239,15 @@ class RexCompletionProvider implements vscode.CompletionItemProvider {
 		if (chainMatch) {
 			const chain = chainMatch[1]?.split(".") ?? [];
 			const target = resolveDomainPath(schema, chain);
-			if (!target?.properties) return [];
-			return toCompletionItems(target.properties, vscode.CompletionItemKind.Field);
+			if (target?.properties) {
+				return toCompletionItems(target.properties, vscode.CompletionItemKind.Field);
+			}
+			const prefix = chain.join(".");
+			const matches = resolveDomainPrefixMatches(schema, prefix);
+			if (Object.keys(matches).length > 0) {
+				return toCompletionItems(matches, vscode.CompletionItemKind.Field);
+			}
+			return [];
 		}
 
 		return toCompletionItems(schema.globals, vscode.CompletionItemKind.Variable);
@@ -317,7 +311,7 @@ export function activate(context: vscode.ExtensionContext) {
 			const workspaceRoot = workspaceFolder?.uri.fsPath;
 			let current = dirname(document.uri.fsPath);
 			while (true) {
-				const candidate = vscode.Uri.file(join(current, "rex-domain.json"));
+				const candidate = vscode.Uri.file(join(current, ".config.rex"));
 				try {
 					await vscode.workspace.fs.stat(candidate);
 					return candidate;
@@ -336,7 +330,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 		}
 
-		const files = await vscode.workspace.findFiles("rex-domain.json", "**/node_modules/**", 1);
+		const files = await vscode.workspace.findFiles(".config.rex", "**/node_modules/**", 1);
 		return files[0] ?? null;
 	}
 
