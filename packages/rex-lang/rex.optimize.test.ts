@@ -228,12 +228,14 @@ end
 		const domainConfig = {
 			data: {
 				H: {
-					names: ["headers"],
+					names: ["req.headers", "headers"],
 				},
 			},
 		};
+		expect(compile("req.headers", { domainConfig })).toBe("H'");
 		const encoded = compile("headers.x-tenant", { domainConfig });
-			expect(encoded).toBe("(H'x-tenant:)");
+		expect(encoded).toBe("(H'x-tenant:)");
+		expect(compile("req.headers.x-tenant", { domainConfig })).toBe("(H'x-tenant:)");
 	});
 
 	test("compile deduplicates repeated large literals with pointers", () => {
