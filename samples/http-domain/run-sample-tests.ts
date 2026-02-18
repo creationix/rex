@@ -2,7 +2,8 @@ import { readFile, readdir } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { evaluateSource } from "../../packages/rex-lang/rexc-interpreter.ts";
+import { compile, parse } from "../../packages/rex-lang/rex.ts";
+import { evaluateRexc } from "../../packages/rex-lang/rexc-interpreter.ts";
 
 type TestCase = {
 	name?: string;
@@ -28,6 +29,7 @@ const samplesDir = fileURLToPath(new URL(".", import.meta.url));
 
 async function main() {
 	const testFiles = await collectTestFiles(samplesDir);
+	const domainConfig = await loadDomainConfig(samplesDir);
 	if (testFiles.length === 0) {
 		console.log("No .test.rex files found.");
 		return;
@@ -40,10 +42,22 @@ async function main() {
 		const relName = testFile.slice(samplesDir.length).replace(/^[/\\]/, "");
 		const { programPath, cases } = await loadTestDoc(testFile);
 		const programSource = await readFile(programPath, "utf8");
+		const programRexc = compile(programSource, { domainConfig });
 
 		for (let index = 0; index < cases.length; index += 1) {
 			const testCase = cases[index] ?? {};
 			const label = testCase.name ?? `case-${index + 1}`;
+			const hasAssertions = !!(
+				testCase.expect
+				&& (
+					"value" in testCase.expect
+					|| (testCase.expect.vars && Object.keys(testCase.expect.vars).length > 0)
+					|| (testCase.expect.refs && Object.keys(testCase.expect.refs).length > 0)
+				)
+			);
+			if (!hasAssertions) {
+				throw new Error(`Test case '${label}' in ${relName} has no assertions (expect.value/vars/refs required)`);
+			}
 			const ctx = {
 				vars: testCase.input?.vars ?? {},
 				refs: normalizeRefs(testCase.input?.refs ?? {}),
@@ -51,11 +65,11 @@ async function main() {
 				selfStack: testCase.input?.selfStack,
 			};
 
-			const { value, state } = evaluateSource(programSource, ctx);
+			const { value, state } = evaluateRexc(programRexc, ctx);
 
 			const checks: string[] = [];
 			if (testCase.expect && "value" in testCase.expect) {
-				if (!isDeepStrictEqual(value, testCase.expect.value)) {
+				if (!isDeepStrictEqual(normalizeComparable(value), normalizeComparable(testCase.expect.value))) {
 					checks.push(
 						`value mismatch expected=${formatValue(testCase.expect.value)} actual=${formatValue(value)}`,
 					);
@@ -65,7 +79,7 @@ async function main() {
 			if (testCase.expect?.vars) {
 				for (const [key, expected] of Object.entries(testCase.expect.vars)) {
 					const actual = state.vars[key];
-					if (!isDeepStrictEqual(actual, expected)) {
+					if (!isDeepStrictEqual(normalizeComparable(actual), normalizeComparable(expected))) {
 						checks.push(
 							`vars.${key} mismatch expected=${formatValue(expected)} actual=${formatValue(actual)}`,
 						);
@@ -76,7 +90,7 @@ async function main() {
 			if (testCase.expect?.refs) {
 				for (const [key, expected] of Object.entries(testCase.expect.refs)) {
 					const actual = state.refs[key];
-					if (!isDeepStrictEqual(actual, expected)) {
+					if (!isDeepStrictEqual(normalizeComparable(actual), normalizeComparable(expected))) {
 						checks.push(
 							`refs.${key} mismatch expected=${formatValue(expected)} actual=${formatValue(actual)}`,
 						);
@@ -101,7 +115,7 @@ async function main() {
 
 async function loadTestDoc(testFilePath: string): Promise<{ programPath: string; cases: TestCase[] }> {
 	const raw = await readFile(testFilePath, "utf8");
-	const doc = evaluateSource(raw).value as TestDoc;
+	const doc = evaluateRexc(compile(raw)).value as TestDoc;
 	if (!doc || typeof doc !== "object") {
 		throw new Error(`Test doc ${testFilePath} did not evaluate to an object`);
 	}
@@ -115,6 +129,12 @@ async function loadTestDoc(testFilePath: string): Promise<{ programPath: string;
 	}
 
 	return { programPath, cases };
+}
+
+async function loadDomainConfig(dirPath: string): Promise<unknown> {
+	const configPath = resolve(dirPath, ".config.rex");
+	const raw = await readFile(configPath, "utf8");
+	return parse(raw);
 }
 
 function normalizeRefs(refs: Record<string, unknown>): Record<number, unknown> {
@@ -151,6 +171,21 @@ function formatValue(value: unknown): string {
 	} catch {
 		return String(value);
 	}
+}
+
+function normalizeComparable(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map((item) => normalizeComparable(item));
+	}
+	if (value && typeof value === "object") {
+		const out: Record<string, unknown> = {};
+		for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+			const normalized = normalizeComparable(item);
+			if (normalized !== undefined) out[key] = normalized;
+		}
+		return out;
+	}
+	return value;
 }
 
 main().catch((error) => {
