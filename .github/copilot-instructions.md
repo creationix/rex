@@ -24,7 +24,7 @@
 ## VS Code extension boundaries
 - `packages/vscode-rex/src/extension.ts` wires diagnostics, symbols, definition/reference, completion/hover, and semantic tokens.
 - TextMate grammars live in `packages/vscode-rex/syntaxes/*.tmLanguage.json` (rex, rexc, markdown fences, TS/JS template injections).
-- Domain-aware completion/hover uses `rex-domain.json` at workspace root via `src/rex-domain.ts`.
+- Domain-aware completion/hover uses `.config.rex` at workspace root via `src/rex-domain.ts`.
 - `.rexc` editor defaults (word wrap, separators) are in `packages/vscode-rex/package.json` under `contributes.configurationDefaults`.
 
 ## Samples + harness workflow
