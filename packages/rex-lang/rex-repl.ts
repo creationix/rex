@@ -24,7 +24,7 @@ const C = {
 // ── Syntax highlighting ───────────────────────────────────────
 
 const TOKEN_RE =
-	/(?<blockComment>\/\*[\s\S]*?(?:\*\/|$))|(?<lineComment>\/\/[^\n]*)|(?<dstring>"(?:[^"\\]|\\.)*"?)|(?<sstring>'(?:[^'\\]|\\.)*'?)|(?<keyword>\b(?:when|unless|while|for|do|end|in|of|and|or|else|break|continue|delete|self)(?![a-zA-Z0-9_-]))|(?<literal>\b(?:true|false|null|undefined)(?![a-zA-Z0-9_-]))|(?<typePred>\b(?:string|number|object|array|boolean)(?![a-zA-Z0-9_-]))|(?<num>\b(?:0x[0-9a-fA-F]+|0b[01]+|(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)/g;
+	/(?<blockComment>\/\*[\s\S]*?(?:\*\/|$))|(?<lineComment>\/\/[^\n]*)|(?<dstring>"(?:[^"\\]|\\.)*"?)|(?<sstring>'(?:[^'\\]|\\.)*'?)|(?<keyword>\b(?:when|unless|while|for|do|end|in|of|and|or|else|break|continue|delete|self)(?![a-zA-Z0-9_-]))|(?<literal>\b(?:true|false|null|undefined|nan)(?![a-zA-Z0-9_-])|-?\binf\b)|(?<typePred>\b(?:string|number|object|array|boolean)(?![a-zA-Z0-9_-]))|(?<num>\b(?:0x[0-9a-fA-F]+|0b[01]+|(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)/g;
 
 export function highlightLine(line: string): string {
 	let result = "";
@@ -180,6 +180,39 @@ export function highlightRexc(text: string): string {
 	return out;
 }
 
+// ── JSON IR highlighting ─────────────────────────────────────
+
+const JSON_TOKEN_RE =
+	/(?<key>"(?:[^"\\]|\\.)*")\s*:|(?<string>"(?:[^"\\]|\\.)*")|(?<number>-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|(?<bool>true|false)|(?<null>null)|(?<brace>[{}[\]])|(?<punct>[:,])/g;
+
+export function highlightJSON(json: string): string {
+	let result = "";
+	let lastIndex = 0;
+	JSON_TOKEN_RE.lastIndex = 0;
+
+	for (const m of json.matchAll(JSON_TOKEN_RE)) {
+		result += json.slice(lastIndex, m.index);
+		const text = m[0];
+		const g = m.groups!;
+		if (g.key) {
+			result += C.cyan + g.key + C.reset + ":";
+		} else if (g.string) {
+			result += C.green + text + C.reset;
+		} else if (g.number) {
+			result += C.yellow + text + C.reset;
+		} else if (g.bool) {
+			result += C.yellow + text + C.reset;
+		} else if (g.null) {
+			result += C.dim + text + C.reset;
+		} else {
+			result += text;
+		}
+		lastIndex = m.index! + text.length;
+	}
+	result += json.slice(lastIndex);
+	return result;
+}
+
 // ── Multi-line detection ──────────────────────────────────────
 
 /** Strip string literals and comments, replacing them with spaces. */
@@ -277,7 +310,7 @@ export function formatVarState(vars: Record<string, unknown>): string {
 const KEYWORDS = [
 	"when", "unless", "while", "for", "do", "end", "in", "of",
 	"and", "or", "else", "break", "continue", "delete",
-	"self", "true", "false", "null", "undefined",
+	"self", "true", "false", "null", "undefined", "nan", "inf",
 	"string", "number", "object", "array", "boolean",
 ];
 
@@ -504,7 +537,7 @@ export async function startRepl(): Promise<void> {
 			const lowered = state.optimize ? optimizeIR(ir) : ir;
 
 			if (state.showIR) {
-				console.log(`${C.dim}  IR: ${JSON.stringify(lowered)}${C.reset}`);
+				console.log(`${C.dim}  IR:${C.reset} ${highlightJSON(JSON.stringify(lowered))}`);
 			}
 
 			const rexc = compile(source, { optimize: state.optimize });

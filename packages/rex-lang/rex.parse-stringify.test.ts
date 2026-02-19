@@ -80,4 +80,46 @@ describe("rex parse/stringify", () => {
 		};
 		expect(parse(stringify(value))).toEqual(value);
 	});
+
+	test("parse preserves integer keys", () => {
+		const input = '{404: "Not Found", 200: "OK"}';
+		const result = parse(input);
+		expect(result).toEqual({ "404": "Not Found", "200": "OK" });
+	});
+
+	test("stringify emits integer keys without quotes", () => {
+		const value = { "404": "Not Found", "200": "OK" };
+		const out = stringify(value);
+		expect(out).toContain("404:");
+		expect(out).toContain("200:");
+		expect(out).not.toContain('"404"');
+		expect(out).not.toContain('"200"');
+	});
+
+	test("integer keys round-trip through parse/stringify", () => {
+		const input = '{404: "Not Found", 200: "OK", name: "status"}';
+		const parsed = parse(input);
+		const output = stringify(parsed);
+		expect(parse(output)).toEqual(parsed);
+		// Ensure integer keys stay unquoted after round-trip
+		expect(output).toContain("404:");
+		expect(output).not.toContain('"404"');
+	});
+
+	test("stringify handles mixed bare, integer, and quoted keys", () => {
+		const value = {
+			name: "test",
+			"404": "Not Found",
+			"not valid": "needs quotes",
+			"0": "zero",
+		};
+		const out = stringify(value);
+		expect(out).toContain("name:");
+		expect(out).toContain("404:");
+		expect(out).toContain("0:");
+		expect(out).toContain('"not valid":');
+		expect(out).not.toContain('"404"');
+		expect(out).not.toContain('"0"');
+		expect(parse(out)).toEqual(value);
+	});
 });

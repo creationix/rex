@@ -59,6 +59,8 @@ const KEYWORDS = new Set([
 	"false",
 	"null",
 	"undefined",
+	"nan",
+	"inf",
 	"self",
 ]);
 

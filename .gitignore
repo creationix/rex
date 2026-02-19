@@ -7,6 +7,14 @@ dist
 *.tgz
 *.vsix
 
+# generated JS bundles (rebuilt by `bun run build` / prepublishOnly)
+packages/rex-lang/rex.js
+packages/rex-lang/rex-cli.js
+packages/rex-lang/rex-repl.js
+packages/rex-lang/rex.ohm-bundle.js
+packages/rex-lang/rex.ohm-bundle.cjs
+packages/rex-lang/rex.ohm-bundle.d.ts
+
 # code coverage
 coverage
 *.lcov

@@ -141,7 +141,7 @@ type RexDomainConfigEntry = {
 	names?: unknown;
 };
 
-const FIRST_NON_RESERVED_REF = 5;
+const FIRST_NON_RESERVED_REF = 8;
 const DOMAIN_DIGIT_INDEX = new Map<string, number>(Array.from(DIGITS).map((char, index) => [char, index]));
 
 const BINARY_TO_OPCODE: Record<Extract<IRNode, { type: "binary" }> ["op"], OpcodeName> = {
@@ -250,10 +250,32 @@ function encodeBareOrLengthString(value: string): string {
 	return `${encodeUint(byteLength(value))},${value}`;
 }
 
+const DEC_PARTS = /^(-?\d)(?:\.(\d+))?e([+-]\d+)$/;
+
+function splitDecimal(num: number): { base: number; exp: number } {
+	const match = num.toExponential().match(DEC_PARTS);
+	if (!match) throw new Error(`Failed to split decimal for ${num}`);
+	const [, b1, b2 = "", e1] = match as RegExpMatchArray;
+	const base = Number.parseInt(b1 + b2, 10);
+	const exp = Number.parseInt(e1!, 10) - b2.length;
+	return { base, exp };
+}
+
+function encodeDecimal(significand: number, power: number): string {
+	return `${encodeZigzag(power)}*${encodeInt(significand)}`;
+}
+
 function encodeNumberNode(node: Extract<IRNode, { type: "number" }>): string {
 	const numberValue = node.value;
-	if (!Number.isFinite(numberValue)) throw new Error(`Cannot encode non-finite number: ${node.raw}`);
-	if (Number.isInteger(numberValue)) return encodeInt(numberValue);
+	if (Number.isNaN(numberValue)) return "5'";
+	if (numberValue === Infinity) return "6'";
+	if (numberValue === -Infinity) return "7'";
+
+	if (Number.isInteger(numberValue)) {
+		const { base, exp } = splitDecimal(numberValue);
+		if (exp >= 0 && exp <= 4) return encodeInt(numberValue);
+		return encodeDecimal(base, exp);
+	}
 
 	const raw = node.raw.toLowerCase();
 	const sign = raw.startsWith("-") ? -1 : 1;
@@ -276,7 +298,7 @@ function encodeNumberNode(node: Extract<IRNode, { type: "number" }>): string {
 		significand /= 10;
 		power += 1;
 	}
-	return `${encodeZigzag(power)}*${encodeInt(significand)}`;
+	return encodeDecimal(significand, power);
 }
 
 function encodeOpcode(opcode: OpcodeName): string {
@@ -587,6 +609,17 @@ function isBareKeyName(key: string): boolean {
 	return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(key);
 }
 
+function isNumericKey(key: string): boolean {
+	if (key === "") return false;
+	return String(Number(key)) === key && Number.isFinite(Number(key));
+}
+
+function stringifyKey(key: string): string {
+	if (isBareKeyName(key)) return key;
+	if (isNumericKey(key)) return key;
+	return stringifyString(key);
+}
+
 function stringifyString(value: string): string {
 	return JSON.stringify(value);
 }
@@ -596,7 +629,9 @@ function stringifyInline(value: unknown): string {
 	if (value === null) return "null";
 	if (typeof value === "boolean") return value ? "true" : "false";
 	if (typeof value === "number") {
-		if (!Number.isFinite(value)) throw new Error("Rex stringify() cannot encode non-finite numbers");
+		if (Number.isNaN(value)) return "nan";
+		if (value === Infinity) return "inf";
+		if (value === -Infinity) return "-inf";
 		return String(value);
 	}
 	if (typeof value === "string") return stringifyString(value);
@@ -608,7 +643,7 @@ function stringifyInline(value: unknown): string {
 		const entries = Object.entries(value);
 		if (entries.length === 0) return "{}";
 		const body = entries
-			.map(([key, item]) => `${isBareKeyName(key) ? key : stringifyString(key)}: ${stringifyInline(item)}`)
+			.map(([key, item]) => `${stringifyKey(key)}: ${stringifyInline(item)}`)
 			.join(" ");
 		return `{${body}}`;
 	}
@@ -641,7 +676,7 @@ function stringifyPretty(value: unknown, depth: number, indentSize: number, maxW
 		const entries = Object.entries(value);
 		if (entries.length === 0) return "{}";
 		const lines = entries.map(([key, item]) => {
-			const keyText = isBareKeyName(key) ? key : stringifyString(key);
+			const keyText = stringifyKey(key);
 			const rendered = stringifyPretty(item, depth + 1, indentSize, maxWidth);
 			return `${childIndent}${keyText}: ${rendered}`;
 		});
@@ -1308,7 +1343,12 @@ function inlineAdjacentPureAssignments(block: IRNode[]): IRNode[] {
 }
 
 function toNumberNode(value: number): IRNode {
-	return { type: "number", raw: String(value), value } satisfies IRNode;
+	let raw: string;
+	if (Number.isNaN(value)) raw = "nan";
+	else if (value === Infinity) raw = "inf";
+	else if (value === -Infinity) raw = "-inf";
+	else raw = String(value);
+	return { type: "number", raw, value } satisfies IRNode;
 }
 
 function toStringNode(value: string): IRNode {
@@ -1319,7 +1359,7 @@ function toLiteralNode(value: unknown): IRNode | undefined {
 	if (value === undefined) return { type: "undefined" } satisfies IRNode;
 	if (value === null) return { type: "null" } satisfies IRNode;
 	if (typeof value === "boolean") return { type: "boolean", value } satisfies IRNode;
-	if (typeof value === "number" && Number.isFinite(value)) return toNumberNode(value);
+	if (typeof value === "number") return toNumberNode(value);
 	if (typeof value === "string") return toStringNode(value);
 	if (Array.isArray(value)) {
 		const items: IRNode[] = [];
@@ -2137,6 +2177,9 @@ type IRPostfixStep =
 	| { kind: "call"; args: IRNode[] };
 
 function parseNumber(raw: string) {
+	if (raw === "nan") return NaN;
+	if (raw === "inf") return Infinity;
+	if (raw === "-inf") return -Infinity;
 	if (/^-?0x/i.test(raw)) return parseInt(raw, 16);
 	if (/^-?0b/i.test(raw)) {
 		const isNegative = raw.startsWith("-");
