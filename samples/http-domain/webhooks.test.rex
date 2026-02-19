@@ -1,15 +1,26 @@
 {
+  defaults: {
+    refs: {
+      H: {}
+      D: "localhost"
+      M: "GET"
+      P: "/"
+      Q: {}
+      C: {}
+      B: ""
+    }
+  }
   cases: [
     {
       name: "provider missing"
       input: {
         refs: {
-          "43": {}
-          "48": "POST"
-          "51": "/v1/webhooks/provider"
-          "52": {}
-          "38": {}
-          "37": "{}"
+          H: {}
+          M: "POST"
+          P: "/v1/webhooks/provider"
+          Q: {}
+          C: {}
+          B: "{}"
         }
       }
       expect: {
@@ -27,12 +38,12 @@
       name: "provider only"
       input: {
         refs: {
-          "43": {x-provider: "acme"}
-          "48": "POST"
-          "51": "/v1/webhooks/provider"
-          "52": {}
-          "38": {}
-          "37": "{}"
+          H: {x-provider: "acme"}
+          M: "POST"
+          P: "/v1/webhooks/provider"
+          Q: {}
+          C: {}
+          B: "{}"
         }
       }
       expect: {
@@ -50,17 +61,17 @@
       name: "full signature headers"
       input: {
         refs: {
-          "43": {
+          H: {
             x-provider: "acme"
             x-event-id: "e1"
             x-signature: "sig"
             x-signature-ts: "1"
           }
-          "48": "POST"
-          "51": "/v1/webhooks/provider"
-          "52": {}
-          "38": {}
-          "37": "{}"
+          M: "POST"
+          P: "/v1/webhooks/provider"
+          Q: {}
+          C: {}
+          B: "{}"
         }
       }
       expect: {

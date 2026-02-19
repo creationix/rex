@@ -4,12 +4,12 @@
       name: "unknown operation"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/x"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/x"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -28,12 +28,12 @@
       name: "users operation header"
       input: {
         refs: {
-          "43": {x-operation: "users/list"}
-          "48": "GET"
-          "51": "/x"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {x-operation: "users/list"}
+          M: "GET"
+          P: "/x"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -52,12 +52,12 @@
       name: "payments operation header"
       input: {
         refs: {
-          "43": {x-operation: "payments/charge"}
-          "48": "POST"
-          "51": "/x"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {x-operation: "payments/charge"}
+          M: "POST"
+          P: "/x"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {

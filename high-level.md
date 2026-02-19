@@ -315,7 +315,7 @@ end
 
 ```rex
 // Implicit — self is each value
-for [1, 2, 3] do
+for in [1, 2, 3] do
   process(self)
 end
 
@@ -368,44 +368,44 @@ end
 
 ### Comprehensions
 
-Comprehensions build new collections using `;` to separate the iteration clause from the body expression. The iteration clause uses the same `in`/`of` forms as `for`, or just an expression for implicit `self`.
+Comprehensions build new collections. The body expression comes first, followed by `for` with a binding clause (using the same `in`/`of` forms as `for` loops), or just `in`/`of` with an expression for implicit `self`.
 
 #### Array Comprehensions
 
 ```rex
 // Implicit self
-[100 ; self % 2 > 0 and self % 3 > 0 and self % 5 > 0]
+[self % 2 > 0 and self % 3 > 0 and self % 5 > 0 in 100]
 // → [1, 7, 11, 13, 17, 19, 23, 29, 31, ...]
 
 // Named value
-[v in [1, 2, 3] ; v * 2]
+[v * 2 for v in [1, 2, 3]]
 // → [2, 4, 6]
 
 // Key and value
-[k, v in [10, 20, 30] ; v + k]
+[v + k for k, v in [10, 20, 30]]
 // → [10, 21, 32]
 
 // Keys only
-[k of {name: "Rex", age: 65} ; k]
+[k for k of {name: "Rex", age: 65}]
 // → ["name", "age"]
 ```
 
 #### Object Comprehensions
 
-Object comprehensions use `key: value` after `;` with the same key rules as object literals: bare identifier-like keys are literal strings, and computed keys use parentheses.
+Object comprehensions use the same `{key: value for binding}` form, with the same key rules as object literals: bare identifier-like keys are literal strings, and computed keys use parentheses.
 
 ```rex
-{k, v in {a: 1, b: 2} ; (k): v * 10}
+{(k): v * 10 for k, v in {a: 1, b: 2}}
 // → {a: 10, b: 20}
 
-{v in ["x", "y", "z"] ; (v): true}
+{(v): true for v in ["x", "y", "z"]}
 // → {x: true, y: true, z: true}
 
-{k, v in scores ; ("player-" + k): v * 100}
+{("player-" + k): v * 100 for k, v in scores}
 // → {"player-alice": 9500, "player-bob": 8700}
 
 // Implicit self
-{users ; (self.name): self.score}
+{(self.name): self.score in users}
 // → {Alice: 95, Bob: 87}
 ```
 
@@ -415,11 +415,11 @@ Return `undefined` to exclude an element from the result:
 
 ```rex
 // Even numbers only
-[v in [1, 2, 3, 4, 5] ; v % 2 == 0 and v]
+[v % 2 == 0 and v for v in [1, 2, 3, 4, 5]]
 // → [2, 4]
 
 // Remove null values from an object
-{k, v in data ; (k): v != null and v}
+{(k): v != null and v for k, v in data}
 // → new object without null values
 ```
 
@@ -559,7 +559,7 @@ end
 
 ```rex
 total = 0
-for [10, 20, 30] do
+for in [10, 20, 30] do
   total += self
 end
 // total is 60
@@ -569,7 +569,7 @@ end
 
 ```rex
 users = [{name: "Alice", id: 1}, {name: "Bob", id: 2}]
-lookup = {v in users ; (v.name): v}
+lookup = {(v.name): v for v in users}
 // → {Alice: {name: "Alice", id: 1}, Bob: {name: "Bob", id: 2}}
 ```
 
@@ -579,11 +579,11 @@ lookup = {v in users ; (v.name): v}
 scores = {alice: 95, bob: 42, carol: 78}
 
 // Students who passed (score >= 50)
-passed = {k, v in scores ; (k): v >= 50 and v}
+passed = {(k): v >= 50 and v for k, v in scores}
 // → {alice: 95, carol: 78}
 
 // Just the names
-passed-names = [k, v in scores ; v >= 50 and k]
+passed-names = [v >= 50 and k for k, v in scores]
 // → ["alice", "carol"]
 ```
 

@@ -4,12 +4,12 @@
       name: "public tenant health"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/v1/health"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/v1/health"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -27,12 +27,12 @@
       name: "acme exports feature check"
       input: {
         refs: {
-          "43": {x-tenant: "acme"}
-          "48": "GET"
-          "51": "/v1/exports"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {x-tenant: "acme"}
+          M: "GET"
+          P: "/v1/exports"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -51,12 +51,12 @@
       name: "unknown tenant"
       input: {
         refs: {
-          "43": {x-tenant: "nope"}
-          "48": "GET"
-          "51": "/v1/health"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {x-tenant: "nope"}
+          M: "GET"
+          P: "/v1/health"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {

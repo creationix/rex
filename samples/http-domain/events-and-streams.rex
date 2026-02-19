@@ -53,7 +53,7 @@ when res.status == 200 and route.mode == "ingest" do
     res.status = 202
   else
     res.status = 422
-    res.body = {ok: false, error: "invalid_events_payload"}
+    body-out = {ok: false, error: "invalid_events_payload"}
   end
 end
 

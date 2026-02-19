@@ -4,12 +4,12 @@
       name: "health route upstream unavailable"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/health"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/health"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -27,12 +27,12 @@
       name: "users route unauthorized"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/v1/users"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/v1/users"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -50,12 +50,12 @@
       name: "unknown route"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/unknown"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/unknown"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {

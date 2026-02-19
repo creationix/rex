@@ -32,7 +32,7 @@ describe("Rex IR optimizer", () => {
 	});
 
 	test("supports compile with optimize option", () => {
-		expect(compile("1 + 2")).toBe("(1%2+4+)");
+		expect(compile("1 + 2")).toBe("(ad%2+4+)");
 		expect(compile("1 + 2", { optimize: true })).toBe("6+");
 	});
 
@@ -46,11 +46,11 @@ x
 	});
 
 	test("rewrites captured self to depth-aware self in nested loop body", () => {
-		const optimized = optimizeIR(parseToIR("x = self for [1] do x end"));
+		const optimized = optimizeIR(parseToIR("x = self for in [1] do x end"));
 		expect(optimized).toEqual({
 			type: "for",
 			binding: {
-				type: "binding:expr",
+				type: "binding:bareIn",
 				source: {
 					type: "array",
 					items: [{ type: "number", raw: "1", value: 1 }],
@@ -119,7 +119,7 @@ end
 	});
 
 	test("keeps unresolved explicit selfDepth captures as named vars", () => {
-		const optimized = optimizeIR(parseToIR("x = self@2 for [1] do x end"));
+		const optimized = optimizeIR(parseToIR("x = self@2 for in [1] do x end"));
 		expect(optimized).toEqual({
 			type: "program",
 			body: [
@@ -132,7 +132,7 @@ end
 				{
 					type: "for",
 					binding: {
-						type: "binding:expr",
+						type: "binding:bareIn",
 						source: {
 							type: "array",
 							items: [{ type: "number", raw: "1", value: 1 }],
@@ -220,8 +220,13 @@ end
 	});
 
 	test("compile maps configured domain symbols to apostrophe refs", () => {
-		const encoded = encodeIR(parseToIR("headers.x-tenant"), { domainRefs: { headers: 6 } });
-		expect(encoded).toBe("(6'x-tenant:)");
+		const encoded = encodeIR(parseToIR("headers.x-tenant"), { domainRefs: { headers: "H" } });
+		expect(encoded).toBe("(H'x-tenant:)");
+	});
+
+	test("compile maps domain functions to opcode calls", () => {
+		const encoded = encodeIR(parseToIR("json.parse(x)"), { domainOpcodes: { "json.parse": "jp" } });
+		expect(encoded).toBe("(jp%x$)");
 	});
 
 	test("compile accepts pre-parsed domain config object", () => {
@@ -231,11 +236,17 @@ end
 					names: ["req.headers", "headers"],
 				},
 			},
+			functions: {
+				jp: {
+					names: ["json.parse"],
+				},
+			},
 		};
 		expect(compile("req.headers", { domainConfig })).toBe("H'");
 		const encoded = compile("headers.x-tenant", { domainConfig });
 		expect(encoded).toBe("(H'x-tenant:)");
 		expect(compile("req.headers.x-tenant", { domainConfig })).toBe("(H'x-tenant:)");
+		expect(compile("json.parse(body)", { domainConfig })).toBe("(jp%body$)");
 	});
 
 	test("compile deduplicates repeated large literals with pointers", () => {
