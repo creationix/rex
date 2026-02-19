@@ -18,7 +18,4 @@ while n * n <= max do
 end
 
 // Collect primes with an array comprehension
-[max - 1 ; do
-  n = self + 1
-  unless composites.(n) do n end
-end]
+[unless composites.(n=self+1) do n end in max - 1]

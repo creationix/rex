@@ -4,12 +4,12 @@
       name: "ingest with empty body"
       input: {
         refs: {
-          "43": {}
-          "48": "POST"
-          "51": "/v1/events/ingest"
-          "52": {}
-          "38": {}
-          "37": "{}"
+          H: {}
+          M: "POST"
+          P: "/v1/events/ingest"
+          Q: {}
+          C: {}
+          B: "{}"
         }
       }
       expect: {
@@ -29,12 +29,12 @@
       name: "stream route"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/v1/events/stream"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/v1/events/stream"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -54,12 +54,12 @@
       name: "unknown route"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/v1/events/other"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/v1/events/other"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {

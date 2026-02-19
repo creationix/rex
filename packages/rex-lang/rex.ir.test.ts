@@ -214,10 +214,19 @@ describe("Rex IR (handwritten)", () => {
 			body: [{ type: "identifier", name: "k" }],
 		});
 
-		expectIR("for users do self end", {
+		expectIR("for in users do self end", {
 			type: "for",
 			binding: {
-				type: "binding:expr",
+				type: "binding:bareIn",
+				source: { type: "identifier", name: "users" },
+			},
+			body: [{ type: "self" }],
+		});
+
+		expectIR("for of users do self end", {
+			type: "for",
+			binding: {
+				type: "binding:bareOf",
 				source: { type: "identifier", name: "users" },
 			},
 			body: [{ type: "self" }],
@@ -258,7 +267,7 @@ describe("Rex IR (handwritten)", () => {
 	});
 
 	test("array comprehension lowering", () => {
-		expectIR("[v in [1, 2] ; v * 2]", {
+		expectIR("[v * 2 for v in [1, 2]]", {
 			type: "arrayComprehension",
 			binding: {
 				type: "binding:valueIn",
@@ -279,7 +288,7 @@ describe("Rex IR (handwritten)", () => {
 			},
 		});
 
-		expectIR('{k, v in scores ; (k): v * 100}', {
+		expectIR('{(k): v * 100 for k, v in scores}', {
 			type: "objectComprehension",
 			binding: {
 				type: "binding:keyValueIn",
@@ -348,25 +357,23 @@ total`,
 		);
 	});
 
-	test("standalone do-expression lowers to sequence semantics", () => {
-		expectIR("do x = 10 x + 2 end", {
-			type: "program",
-			body: [
-				{
-					type: "assign",
-					op: "=",
-					place: { type: "identifier", name: "x" },
-					value: { type: "number", raw: "10", value: 10 },
-				},
-				{
-					type: "binary",
-					op: "add",
-					left: { type: "identifier", name: "x" },
-					right: { type: "number", raw: "2", value: 2 },
-				},
-			],
+	test("bare in/of comprehension lowering", () => {
+		expectIR("[self in items]", {
+			type: "arrayComprehension",
+			binding: {
+				type: "binding:bareIn",
+				source: { type: "identifier", name: "items" },
+			},
+			body: { type: "self" },
 		});
 
-		expectIR("do end", { type: "undefined" });
+		expectIR("[self of items]", {
+			type: "arrayComprehension",
+			binding: {
+				type: "binding:bareOf",
+				source: { type: "identifier", name: "items" },
+			},
+			body: { type: "self" },
+		});
 	});
 });

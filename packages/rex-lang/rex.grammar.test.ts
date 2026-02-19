@@ -83,16 +83,15 @@ describe("Rex grammar", () => {
 		expectParses("when authorized == true do proceed() else deny() end");
 		expectParses("when string(value) do a() else when number(value) do b() else c() end");
 		expectParses("when a do x() else unless b do y() else z() end");
-		expectParses("do x = 1 x + 2 end");
-		expectParses("value = do n = 10 n * 2 end");
 	});
 
 	test("parses for loops", () => {
-		expectParses("for [1, 2, 3] do process(self) end");
-		expectParses("for 5 do process(self) end");
+		expectParses("for in [1, 2, 3] do process(self) end");
+		expectParses("for in 5 do process(self) end");
 		expectParses("for v in [1, 2, 3] do process(v) end");
 		expectParses("for k, v in [1, 2, 3] do process(k, v) end");
 		expectParses("for k of {a: 1, b: 2} do log(k) end");
+		expectParses("for of items do log(self) end");
 		expectParses("for v in [1,2,3,4,5] do when v == 4 do break end when v % 2 != 0 do continue end process(v) end");
 	});
 
@@ -109,23 +108,24 @@ describe("Rex grammar", () => {
 	});
 
 	test("parses array comprehensions", () => {
-		expectParses("[100 ; self % 2 > 0 and self % 3 > 0 and self % 5 > 0]");
-		expectParses("[v in [1, 2, 3] ; v * 2]");
-		expectParses("[k, v in [10, 20, 30] ; v + k]");
-		expectParses("[k of {name: \"Rex\", age: 65} ; k]");
+		expectParses("[self % 2 > 0 and self % 3 > 0 and self % 5 > 0 in 100]");
+		expectParses("[v * 2 for v in [1, 2, 3]]");
+		expectParses("[v + k for k, v in [10, 20, 30]]");
+		expectParses("[k for k of {name: \"Rex\", age: 65}]");
+		expectParses("[self of items]");
 	});
 
 	test("parses object comprehensions", () => {
-		expectParses("{k, v in {a: 1, b: 2} ; (k): v * 10}");
-		expectParses('{v in ["x", "y", "z"] ; (v): true}');
-		expectParses('{k, v in scores ; ("player-" + k): v * 100}');
-		expectParses("{users ; (self.name): self.score}");
-		expectParses("{k, v in data ; (k): v != null and v}");
+		expectParses("{(k): v * 10 for k, v in {a: 1, b: 2}}");
+		expectParses('{(v): true for v in ["x", "y", "z"]}');
+		expectParses('{("player-" + k): v * 100 for k, v in scores}');
+		expectParses("{(self.name): self.score in users}");
+		expectParses("{(k): v != null and v for k, v in data}");
 	});
 
 	test("parses multi-expression program", () => {
 		expectParses(`total = 0
-for [10, 20, 30] do
+for in [10, 20, 30] do
   total += self
 end
 total`);

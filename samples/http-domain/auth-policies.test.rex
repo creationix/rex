@@ -4,12 +4,12 @@
       name: "session route without cookie"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/v1/me"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/v1/me"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -23,12 +23,12 @@
       name: "api-key route without auth"
       input: {
         refs: {
-          "43": {}
-          "48": "POST"
-          "51": "/v1/internal/reindex"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "POST"
+          P: "/v1/internal/reindex"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -42,12 +42,12 @@
       name: "signature route without signature"
       input: {
         refs: {
-          "43": {}
-          "48": "POST"
-          "51": "/v1/webhooks/provider"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "POST"
+          P: "/v1/webhooks/provider"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
