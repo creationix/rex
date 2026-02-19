@@ -56,6 +56,130 @@ export function highlightLine(line: string): string {
 	return result;
 }
 
+// ── Rexc highlighting ────────────────────────────────────────
+
+const REXC_DIGITS = new Set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_");
+
+export function highlightRexc(text: string): string {
+	let out = "";
+	let i = 0;
+
+	function readPrefix(): string {
+		const start = i;
+		while (i < text.length && REXC_DIGITS.has(text[i]!)) i++;
+		return text.slice(start, i);
+	}
+
+	while (i < text.length) {
+		const ch = text[i]!;
+
+		// Whitespace — pass through
+		if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+			out += ch;
+			i++;
+			continue;
+		}
+
+		// Line comments
+		if (ch === "/" && text[i + 1] === "/") {
+			const start = i;
+			i += 2;
+			while (i < text.length && text[i] !== "\n") i++;
+			out += C.gray + text.slice(start, i) + C.reset;
+			continue;
+		}
+
+		// Block comments
+		if (ch === "/" && text[i + 1] === "*") {
+			const start = i;
+			i += 2;
+			while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+			if (i < text.length) i += 2;
+			out += C.gray + text.slice(start, i) + C.reset;
+			continue;
+		}
+
+		// Prefix digits
+		const prefix = readPrefix();
+		if (i >= text.length) {
+			out += prefix;
+			break;
+		}
+		const tag = text[i]!;
+
+		switch (tag) {
+			case "+": // integer
+			case "*": // decimal (significand follows)
+				out += C.cyan + prefix + tag + C.reset;
+				i++;
+				break;
+			case ":": // symbol/key
+				out += C.dim + prefix + tag + C.reset;
+				i++;
+				break;
+			case "%": // opcode
+				out += C.boldBlue + prefix + tag + C.reset;
+				i++;
+				break;
+			case "$": // variable
+				out += C.yellow + prefix + tag + C.reset;
+				i++;
+				break;
+			case "@": // self
+				out += C.yellow + prefix + tag + C.reset;
+				i++;
+				break;
+			case "'": // ref
+				out += C.dim + prefix + tag + C.reset;
+				i++;
+				break;
+			case ",": { // string container
+				i++;
+				let len = 0;
+				for (const ch of prefix) len = len * 64 + (REXC_DIGITS.has(ch) ? "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_".indexOf(ch) : 0);
+				const content = text.slice(i, i + len);
+				i += len;
+				out += C.green + prefix + "," + content + C.reset;
+				break;
+			}
+			case "=": // assignment
+			case "~": // delete
+				out += C.red + prefix + tag + C.reset;
+				i++;
+				break;
+			case "?": // when
+			case "!": // unless
+			case "|": // or-chain
+			case "&": // and-chain
+			case ">": // for
+			case "<": // for-keys
+			case "#": // while
+				out += C.boldBlue + prefix + tag + C.reset;
+				i++;
+				break;
+			case ";": // break/continue
+				out += C.boldBlue + prefix + tag + C.reset;
+				i++;
+				break;
+			case "^": // pointer
+				out += C.dim + prefix + tag + C.reset;
+				i++;
+				break;
+			case "(": case ")":
+			case "[": case "]":
+			case "{": case "}":
+				out += C.dim + prefix + C.reset + tag;
+				i++;
+				break;
+			default:
+				out += prefix + tag;
+				i++;
+				break;
+		}
+	}
+	return out;
+}
+
 // ── Multi-line detection ──────────────────────────────────────
 
 /** Strip string literals and comments, replacing them with spaces. */
@@ -386,7 +510,7 @@ export async function startRepl(): Promise<void> {
 			const rexc = compile(source, { optimize: state.optimize });
 
 			if (state.showRexc) {
-				console.log(`${C.dim}  rexc: ${rexc}${C.reset}`);
+				console.log(`${C.dim}  rexc:${C.reset} ${highlightRexc(rexc)}`);
 			}
 
 			const result = evaluateRexc(rexc, {

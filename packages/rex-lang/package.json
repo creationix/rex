@@ -1,6 +1,6 @@
 {
 	"name": "@creationix/rex",
-	"version": "0.1.4",
+	"version": "0.3.0",
 	"description": "Compiler and parser for the Rex language",
 	"keywords": [
 		"rex",
