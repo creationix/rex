@@ -1483,12 +1483,12 @@ function optimizeNode(node, env, currentDepth, asPlace = false) {
       if (conditionValue !== undefined || condition.type === "undefined") {
         const passes = node.head === "when" ? isDefinedValue(conditionValue) : !isDefinedValue(conditionValue);
         if (passes) {
-          const thenBlock = optimizeBlock(node.thenBlock, thenEnv, currentDepth);
-          if (thenBlock.length === 0)
+          const thenBlock2 = optimizeBlock(node.thenBlock, thenEnv, currentDepth);
+          if (thenBlock2.length === 0)
             return { type: "undefined" };
-          if (thenBlock.length === 1)
-            return thenBlock[0];
-          return { type: "program", body: thenBlock };
+          if (thenBlock2.length === 1)
+            return thenBlock2[0];
+          return { type: "program", body: thenBlock2 };
         }
         if (!node.elseBranch)
           return { type: "undefined" };
@@ -1510,12 +1510,26 @@ function optimizeNode(node, env, currentDepth, asPlace = false) {
           elseBranch: loweredElse.elseBranch
         };
       }
+      const thenBlock = optimizeBlock(node.thenBlock, thenEnv, currentDepth);
+      const elseBranch = optimizeElse(node.elseBranch, cloneOptimizeEnv(env), currentDepth);
+      let finalCondition = condition;
+      if (condition.type === "assign" && condition.op === "=" && condition.place.type === "identifier") {
+        const name = condition.place.name;
+        const reads = new Set;
+        for (const part of thenBlock)
+          collectReads(part, reads);
+        if (elseBranch)
+          collectReadsElse(elseBranch, reads);
+        if (!reads.has(name)) {
+          finalCondition = condition.value;
+        }
+      }
       return {
         type: "conditional",
         head: node.head,
-        condition,
-        thenBlock: optimizeBlock(node.thenBlock, thenEnv, currentDepth),
-        elseBranch: optimizeElse(node.elseBranch, cloneOptimizeEnv(env), currentDepth)
+        condition: finalCondition,
+        thenBlock,
+        elseBranch
       };
     }
     case "for": {
@@ -2403,6 +2417,13 @@ class CursorInterpreter {
   selfStack;
   opcodeMarkers;
   pointerCache = new Map;
+  gasLimit;
+  gas = 0;
+  tick() {
+    if (this.gasLimit && ++this.gas > this.gasLimit) {
+      throw new Error("Gas limit exceeded (too many loop iterations)");
+    }
+  }
   constructor(text, ctx = {}) {
     const initialSelf = ctx.selfStack && ctx.selfStack.length > 0 ? ctx.selfStack[ctx.selfStack.length - 1] : ctx.self;
     this.text = text;
@@ -2417,6 +2438,7 @@ class CursorInterpreter {
       }
     };
     this.selfStack = ctx.selfStack && ctx.selfStack.length > 0 ? [...ctx.selfStack] : [initialSelf];
+    this.gasLimit = ctx.gasLimit ?? 0;
     this.opcodeMarkers = Array.from({ length: 256 }, (_, id) => ({ __opcode: id }));
     for (const [idText, value] of Object.entries(ctx.refs ?? {})) {
       const id = Number(idText);
@@ -2677,7 +2699,9 @@ class CursorInterpreter {
     if (tag === "?") {
       const cond = this.evalValue();
       if (isDefined(cond)) {
+        this.selfStack.push(cond);
         const thenValue = this.evalValue();
+        this.selfStack.pop();
         if (this.hasMoreBefore(")"))
           this.skipValue();
         this.ensure(")");
@@ -2701,8 +2725,11 @@ class CursorInterpreter {
       }
       this.skipValue();
       let elseValue = undefined;
-      if (this.hasMoreBefore(")"))
+      if (this.hasMoreBefore(")")) {
+        this.selfStack.push(cond);
         elseValue = this.evalValue();
+        this.selfStack.pop();
+      }
       this.ensure(")");
       return elseValue;
     }
@@ -2838,6 +2865,7 @@ class CursorInterpreter {
     const items = this.iterate(iterable, keysOnly);
     let last = undefined;
     for (const item of items) {
+      this.tick();
       const currentSelf = keysOnly ? item.key : item.value;
       this.selfStack.push(currentSelf);
       if (varA && varB) {
@@ -2878,6 +2906,7 @@ class CursorInterpreter {
     let last = undefined;
     let currentCond = condValue;
     while (isDefined(currentCond)) {
+      this.tick();
       this.selfStack.push(currentCond);
       last = this.evalBodySlice(bodyStart, bodyEnd);
       this.selfStack.pop();
@@ -2898,6 +2927,7 @@ class CursorInterpreter {
     const items = this.iterate(iterable, keysOnly);
     const out = [];
     for (const item of items) {
+      this.tick();
       const currentSelf = keysOnly ? item.key : item.value;
       this.selfStack.push(currentSelf);
       if (varA && varB) {
@@ -2925,6 +2955,7 @@ class CursorInterpreter {
     const items = this.iterate(iterable, keysOnly);
     const out = {};
     for (const item of items) {
+      this.tick();
       const currentSelf = keysOnly ? item.key : item.value;
       this.selfStack.push(currentSelf);
       if (varA && varB) {
@@ -3211,9 +3242,6 @@ function evaluateRexc(text, ctx = {}) {
   const value = interpreter.evaluateTopLevel();
   return { value, state: interpreter.runtimeState };
 }
-function evaluateSource(source, ctx = {}) {
-  return evaluateRexc(compile(source), ctx);
-}
 
 // rex-repl.ts
 var req = createRequire2(import.meta.url);
@@ -3230,7 +3258,7 @@ var C = {
   gray: "\x1B[90m",
   boldBlue: "\x1B[1;34m"
 };
-var TOKEN_RE = /(?<blockComment>\/\*[\s\S]*?(?:\*\/|$))|(?<lineComment>\/\/[^\n]*)|(?<dstring>"(?:[^"\\]|\\.)*"?)|(?<sstring>'(?:[^'\\]|\\.)*'?)|(?<keyword>\b(?:when|unless|while|for|do|end|in|of|and|or|else|break|continue|delete|self)\b)|(?<literal>\b(?:true|false|null|undefined)\b)|(?<typePred>\b(?:string|number|object|array|boolean)\b)|(?<num>\b(?:0x[0-9a-fA-F]+|0b[01]+|(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)/g;
+var TOKEN_RE = /(?<blockComment>\/\*[\s\S]*?(?:\*\/|$))|(?<lineComment>\/\/[^\n]*)|(?<dstring>"(?:[^"\\]|\\.)*"?)|(?<sstring>'(?:[^'\\]|\\.)*'?)|(?<keyword>\b(?:when|unless|while|for|do|end|in|of|and|or|else|break|continue|delete|self)(?![a-zA-Z0-9_-]))|(?<literal>\b(?:true|false|null|undefined)(?![a-zA-Z0-9_-]))|(?<typePred>\b(?:string|number|object|array|boolean)(?![a-zA-Z0-9_-]))|(?<num>\b(?:0x[0-9a-fA-F]+|0b[01]+|(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)/g;
 function highlightLine(line) {
   let result = "";
   let lastIndex = 0;
@@ -3259,11 +3287,130 @@ function highlightLine(line) {
   result += line.slice(lastIndex);
   return result;
 }
+var REXC_DIGITS = new Set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_");
+function highlightRexc(text) {
+  let out = "";
+  let i = 0;
+  function readPrefix() {
+    const start = i;
+    while (i < text.length && REXC_DIGITS.has(text[i]))
+      i++;
+    return text.slice(start, i);
+  }
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === " " || ch === "\t" || ch === `
+` || ch === "\r") {
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "/") {
+      const start = i;
+      i += 2;
+      while (i < text.length && text[i] !== `
+`)
+        i++;
+      out += C.gray + text.slice(start, i) + C.reset;
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "*") {
+      const start = i;
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/"))
+        i++;
+      if (i < text.length)
+        i += 2;
+      out += C.gray + text.slice(start, i) + C.reset;
+      continue;
+    }
+    const prefix = readPrefix();
+    if (i >= text.length) {
+      out += prefix;
+      break;
+    }
+    const tag = text[i];
+    switch (tag) {
+      case "+":
+      case "*":
+        out += C.cyan + prefix + tag + C.reset;
+        i++;
+        break;
+      case ":":
+        out += C.dim + prefix + tag + C.reset;
+        i++;
+        break;
+      case "%":
+        out += C.boldBlue + prefix + tag + C.reset;
+        i++;
+        break;
+      case "$":
+        out += C.yellow + prefix + tag + C.reset;
+        i++;
+        break;
+      case "@":
+        out += C.yellow + prefix + tag + C.reset;
+        i++;
+        break;
+      case "'":
+        out += C.dim + prefix + tag + C.reset;
+        i++;
+        break;
+      case ",": {
+        i++;
+        let len = 0;
+        for (const ch2 of prefix)
+          len = len * 64 + (REXC_DIGITS.has(ch2) ? "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_".indexOf(ch2) : 0);
+        const content = text.slice(i, i + len);
+        i += len;
+        out += C.green + prefix + "," + content + C.reset;
+        break;
+      }
+      case "=":
+      case "~":
+        out += C.red + prefix + tag + C.reset;
+        i++;
+        break;
+      case "?":
+      case "!":
+      case "|":
+      case "&":
+      case ">":
+      case "<":
+      case "#":
+        out += C.boldBlue + prefix + tag + C.reset;
+        i++;
+        break;
+      case ";":
+        out += C.boldBlue + prefix + tag + C.reset;
+        i++;
+        break;
+      case "^":
+        out += C.dim + prefix + tag + C.reset;
+        i++;
+        break;
+      case "(":
+      case ")":
+      case "[":
+      case "]":
+      case "{":
+      case "}":
+        out += C.dim + prefix + C.reset + tag;
+        i++;
+        break;
+      default:
+        out += prefix + tag;
+        i++;
+        break;
+    }
+  }
+  return out;
+}
 function stripStringsAndComments(source) {
   return source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, (m) => " ".repeat(m.length));
 }
 function countWord(text, word) {
-  const re = new RegExp(`\\b${word}\\b`, "g");
+  const re = new RegExp(`\\b${word}(?![a-zA-Z0-9_-])`, "g");
   return (text.match(re) || []).length;
 }
 function isIncomplete(buffer) {
@@ -3376,6 +3523,9 @@ function completer(state) {
   };
 }
 function handleDotCommand(cmd, state, rl) {
+  function toggleLabel(on) {
+    return on ? `${C.green}on${C.reset}` : `${C.dim}off${C.reset}`;
+  }
   switch (cmd) {
     case ".help":
       console.log([
@@ -3383,13 +3533,29 @@ function handleDotCommand(cmd, state, rl) {
         "  .help   Show this help message",
         "  .vars   Show all current variables",
         "  .clear  Clear all variables",
+        "  .ir     Toggle showing IR JSON after parsing",
+        "  .rexc   Toggle showing compiled rexc before execution",
+        "  .opt    Toggle IR optimizations",
         "  .exit   Exit the REPL",
         "",
         "Enter Rex expressions to evaluate them.",
         "Multi-line: open brackets or do/end blocks continue on the next line.",
-        "Ctrl-C cancels multi-line input. Ctrl-D exits."
+        "Ctrl-C cancels multi-line input.",
+        "Ctrl-D exits."
       ].join(`
 `));
+      return true;
+    case ".ir":
+      state.showIR = !state.showIR;
+      console.log(`${C.dim}  IR display: ${toggleLabel(state.showIR)}${C.reset}`);
+      return true;
+    case ".rexc":
+      state.showRexc = !state.showRexc;
+      console.log(`${C.dim}  Rexc display: ${toggleLabel(state.showRexc)}${C.reset}`);
+      return true;
+    case ".opt":
+      state.optimize = !state.optimize;
+      console.log(`${C.dim}  Optimizations: ${toggleLabel(state.optimize)}${C.reset}`);
       return true;
     case ".vars": {
       const entries = Object.entries(state.vars);
@@ -3424,8 +3590,9 @@ function handleDotCommand(cmd, state, rl) {
       return false;
   }
 }
+var GAS_LIMIT = 1e7;
 async function startRepl() {
-  const state = { vars: {}, refs: {} };
+  const state = { vars: {}, refs: {}, showIR: false, showRexc: false, optimize: false };
   let multiLineBuffer = "";
   const PRIMARY_PROMPT = "rex> ";
   const CONT_PROMPT = "...  ";
@@ -3452,6 +3619,13 @@ async function startRepl() {
       readline.cursorTo(process.stdout, currentPrompt.length + rl.cursor);
     });
   });
+  process.stdin.on("keypress", (_ch, key) => {
+    if (key?.ctrl && key.name === "l") {
+      readline.cursorTo(process.stdout, 0, 0);
+      readline.clearScreenDown(process.stdout);
+      rl.prompt();
+    }
+  });
   rl.on("SIGINT", () => {
     if (multiLineBuffer) {
       multiLineBuffer = "";
@@ -3466,6 +3640,12 @@ async function startRepl() {
       rl.close();
     }
   });
+  function resetPrompt() {
+    currentPrompt = PRIMARY_PROMPT;
+    styledPrompt = STYLED_PRIMARY;
+    rl.setPrompt(PRIMARY_PROMPT);
+    rl.prompt();
+  }
   rl.on("line", (line) => {
     const trimmed = line.trim();
     if (!multiLineBuffer && trimmed.startsWith(".")) {
@@ -3490,31 +3670,42 @@ async function startRepl() {
     }
     const source = multiLineBuffer;
     multiLineBuffer = "";
+    const match = grammar.match(source);
+    if (!match.succeeded()) {
+      console.log(`${C.red}  ${match.message}${C.reset}`);
+      resetPrompt();
+      return;
+    }
     try {
-      const match = grammar.match(source);
-      if (match.succeeded()) {
-        const ctx = {
-          vars: { ...state.vars },
-          refs: { ...state.refs }
-        };
-        const result = evaluateSource(source, ctx);
-        state.vars = result.state.vars;
-        state.refs = result.state.refs;
-        console.log(formatResult(result.value));
-        const varLine = formatVarState(state.vars);
-        if (varLine)
-          console.log(varLine);
-      } else {
-        console.log(`${C.red}  ${match.message}${C.reset}`);
+      const ir = parseToIR(source);
+      const lowered = state.optimize ? optimizeIR(ir) : ir;
+      if (state.showIR) {
+        console.log(`${C.dim}  IR: ${JSON.stringify(lowered)}${C.reset}`);
       }
+      const rexc = compile(source, { optimize: state.optimize });
+      if (state.showRexc) {
+        console.log(`${C.dim}  rexc:${C.reset} ${highlightRexc(rexc)}`);
+      }
+      const result = evaluateRexc(rexc, {
+        vars: { ...state.vars },
+        refs: { ...state.refs },
+        gasLimit: GAS_LIMIT
+      });
+      state.vars = result.state.vars;
+      state.refs = result.state.refs;
+      console.log(formatResult(result.value));
+      const varLine = formatVarState(state.vars);
+      if (varLine)
+        console.log(varLine);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.log(`${C.red}  Error: ${message}${C.reset}`);
+      if (message.includes("Gas limit exceeded")) {
+        console.log(`${C.yellow}  ${message}${C.reset}`);
+      } else {
+        console.log(`${C.red}  Error: ${message}${C.reset}`);
+      }
     }
-    currentPrompt = PRIMARY_PROMPT;
-    styledPrompt = STYLED_PRIMARY;
-    rl.setPrompt(PRIMARY_PROMPT);
-    rl.prompt();
+    resetPrompt();
   });
   rl.on("close", () => {
     process.exit(0);
@@ -3524,6 +3715,7 @@ async function startRepl() {
 export {
   startRepl,
   isIncomplete,
+  highlightRexc,
   highlightLine,
   formatVarState
 };

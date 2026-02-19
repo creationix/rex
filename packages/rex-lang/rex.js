@@ -1524,12 +1524,12 @@ function optimizeNode(node, env, currentDepth, asPlace = false) {
       if (conditionValue !== undefined || condition.type === "undefined") {
         const passes = node.head === "when" ? isDefinedValue(conditionValue) : !isDefinedValue(conditionValue);
         if (passes) {
-          const thenBlock = optimizeBlock(node.thenBlock, thenEnv, currentDepth);
-          if (thenBlock.length === 0)
+          const thenBlock2 = optimizeBlock(node.thenBlock, thenEnv, currentDepth);
+          if (thenBlock2.length === 0)
             return { type: "undefined" };
-          if (thenBlock.length === 1)
-            return thenBlock[0];
-          return { type: "program", body: thenBlock };
+          if (thenBlock2.length === 1)
+            return thenBlock2[0];
+          return { type: "program", body: thenBlock2 };
         }
         if (!node.elseBranch)
           return { type: "undefined" };
@@ -1551,12 +1551,26 @@ function optimizeNode(node, env, currentDepth, asPlace = false) {
           elseBranch: loweredElse.elseBranch
         };
       }
+      const thenBlock = optimizeBlock(node.thenBlock, thenEnv, currentDepth);
+      const elseBranch = optimizeElse(node.elseBranch, cloneOptimizeEnv(env), currentDepth);
+      let finalCondition = condition;
+      if (condition.type === "assign" && condition.op === "=" && condition.place.type === "identifier") {
+        const name = condition.place.name;
+        const reads = new Set;
+        for (const part of thenBlock)
+          collectReads(part, reads);
+        if (elseBranch)
+          collectReadsElse(elseBranch, reads);
+        if (!reads.has(name)) {
+          finalCondition = condition.value;
+        }
+      }
       return {
         type: "conditional",
         head: node.head,
-        condition,
-        thenBlock: optimizeBlock(node.thenBlock, thenEnv, currentDepth),
-        elseBranch: optimizeElse(node.elseBranch, cloneOptimizeEnv(env), currentDepth)
+        condition: finalCondition,
+        thenBlock,
+        elseBranch
       };
     }
     case "for": {
