@@ -1640,12 +1640,28 @@ function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number, asPl
 				} satisfies IRNode;
 			}
 
+			const thenBlock = optimizeBlock(node.thenBlock, thenEnv, currentDepth);
+			const elseBranch = optimizeElse(node.elseBranch, cloneOptimizeEnv(env), currentDepth);
+
+			// Strip dead assignment from condition: when x=expr do ... end
+			// If x is no longer read in the optimized body/else, unwrap to just the value.
+			let finalCondition = condition;
+			if (condition.type === "assign" && condition.op === "=" && condition.place.type === "identifier") {
+				const name = condition.place.name;
+				const reads = new Set<string>();
+				for (const part of thenBlock) collectReads(part, reads);
+				if (elseBranch) collectReadsElse(elseBranch, reads);
+				if (!reads.has(name)) {
+					finalCondition = condition.value;
+				}
+			}
+
 			return {
 				type: "conditional",
 				head: node.head,
-				condition,
-				thenBlock: optimizeBlock(node.thenBlock, thenEnv, currentDepth),
-				elseBranch: optimizeElse(node.elseBranch, cloneOptimizeEnv(env), currentDepth),
+				condition: finalCondition,
+				thenBlock,
+				elseBranch,
 			} satisfies IRNode;
 		}
 		case "for": {
