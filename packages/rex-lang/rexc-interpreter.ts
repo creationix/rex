@@ -34,6 +34,8 @@ export type RexcContext = {
 	self?: unknown;
 	selfStack?: unknown[];
 	opcodes?: Partial<Record<number, (args: unknown[], state: RexcRuntimeState) => unknown>>;
+	/** Maximum loop iterations before the interpreter throws. */
+	gasLimit?: number;
 };
 
 export type RexcRuntimeState = {
@@ -76,6 +78,15 @@ class CursorInterpreter {
 	private readonly selfStack: unknown[];
 	private readonly opcodeMarkers: OpcodeMarker[];
 	private readonly pointerCache = new Map<number, unknown>();
+	private readonly gasLimit: number;
+	private gas = 0;
+
+	/** Burn one unit of gas. Throws when the budget is exhausted. */
+	private tick() {
+		if (this.gasLimit && ++this.gas > this.gasLimit) {
+			throw new Error("Gas limit exceeded (too many loop iterations)");
+		}
+	}
 
 	constructor(text: string, ctx: RexcContext = {}) {
 		const initialSelf = ctx.selfStack && ctx.selfStack.length > 0
@@ -93,6 +104,7 @@ class CursorInterpreter {
 			},
 		};
 		this.selfStack = ctx.selfStack && ctx.selfStack.length > 0 ? [...ctx.selfStack] : [initialSelf];
+		this.gasLimit = ctx.gasLimit ?? 0;
 		this.opcodeMarkers = Array.from({ length: 256 }, (_, id) => ({ __opcode: id }));
 		for (const [idText, value] of Object.entries(ctx.refs ?? {})) {
 			const id = Number(idText);
@@ -272,6 +284,8 @@ class CursorInterpreter {
 			case ">":
 			case "<":
 				return this.evalLoopLike(tag);
+			case "#":
+				return this.evalWhileLoop();
 			default:
 				throw new Error(`Unexpected tag '${tag}' at ${this.pos}`);
 		}
@@ -350,7 +364,9 @@ class CursorInterpreter {
 		if (tag === "?") {
 			const cond = this.evalValue();
 			if (isDefined(cond)) {
+				this.selfStack.push(cond);
 				const thenValue = this.evalValue();
+				this.selfStack.pop();
 				if (this.hasMoreBefore(")")) this.skipValue();
 				this.ensure(")");
 				return thenValue;
@@ -371,7 +387,11 @@ class CursorInterpreter {
 			}
 			this.skipValue();
 			let elseValue: unknown = undefined;
-			if (this.hasMoreBefore(")")) elseValue = this.evalValue();
+			if (this.hasMoreBefore(")")) {
+				this.selfStack.push(cond);
+				elseValue = this.evalValue();
+				this.selfStack.pop();
+			}
 			this.ensure(")");
 			return elseValue;
 		}
@@ -506,6 +526,7 @@ class CursorInterpreter {
 		const items = this.iterate(iterable, keysOnly);
 		let last: unknown = undefined;
 		for (const item of items) {
+			this.tick();
 			const currentSelf = keysOnly ? item.key : item.value;
 			this.selfStack.push(currentSelf);
 			if (varA && varB) {
@@ -527,10 +548,56 @@ class CursorInterpreter {
 		return last;
 	}
 
+	private evalWhileLoop(): unknown {
+		this.pos += 1; // skip '#'
+		this.ensure("(");
+
+		const condStart = this.pos;
+
+		// First pass: evaluate condition to find body boundaries
+		const condValue = this.evalValue();
+		const bodyStart = this.pos;
+
+		// Skip past the body to find the closing paren
+		const bodyValueCount = 1;
+		let cursor = bodyStart;
+		for (let index = 0; index < bodyValueCount; index += 1) {
+			cursor = this.skipValueFrom(cursor);
+		}
+		const bodyEnd = cursor;
+		this.pos = bodyEnd;
+		this.ensure(")");
+		const afterClose = this.pos;
+
+		// Now iterate
+		let last: unknown = undefined;
+		let currentCond = condValue;
+		while (isDefined(currentCond)) {
+			this.tick();
+			this.selfStack.push(currentCond);
+			last = this.evalBodySlice(bodyStart, bodyEnd);
+			this.selfStack.pop();
+
+			const control = this.handleLoopControl(last);
+			if (control) {
+				if (control.depth > 1) return { kind: control.kind, depth: control.depth - 1 } satisfies LoopControl;
+				if (control.kind === "break") return undefined;
+				last = undefined;
+			}
+
+			// Re-evaluate condition
+			currentCond = this.evalBodySlice(condStart, bodyStart);
+		}
+
+		this.pos = afterClose;
+		return last;
+	}
+
 	private evalArrayComprehension(iterable: unknown, varA: string | undefined, varB: string | undefined, bodyStart: number, bodyEnd: number, keysOnly: boolean): unknown[] | LoopControl {
 		const items = this.iterate(iterable, keysOnly);
 		const out: unknown[] = [];
 		for (const item of items) {
+			this.tick();
 			const currentSelf = keysOnly ? item.key : item.value;
 			this.selfStack.push(currentSelf);
 			if (varA && varB) {
@@ -557,6 +624,7 @@ class CursorInterpreter {
 		const items = this.iterate(iterable, keysOnly);
 		const out: Record<string, unknown> = {};
 		for (const item of items) {
+			this.tick();
 			const currentSelf = keysOnly ? item.key : item.value;
 			this.selfStack.push(currentSelf);
 			if (varA && varB) {
@@ -807,7 +875,7 @@ class CursorInterpreter {
 			this.pos = save;
 			return end;
 		}
-		if (tag === "?" || tag === "!" || tag === "|" || tag === "&" || tag === ">" || tag === "<") {
+		if (tag === "?" || tag === "!" || tag === "|" || tag === "&" || tag === ">" || tag === "<" || tag === "#") {
 			this.pos += 1;
 		}
 		const opener = this.text[this.pos];

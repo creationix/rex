@@ -1,4 +1,5 @@
 import { compile, parse, parseToIR } from "./rex.ts";
+import { evaluateSource } from "./rexc-interpreter.ts";
 import { dirname, resolve } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -6,6 +7,7 @@ type CliOptions = {
 	expr?: string;
 	file?: string;
 	out?: string;
+	compile: boolean;
 	ir: boolean;
 	minifyNames: boolean;
 	dedupeValues: boolean;
@@ -15,6 +17,7 @@ type CliOptions = {
 
 function parseArgs(argv: string[]): CliOptions {
 	const options: CliOptions = {
+		compile: false,
 		ir: false,
 		minifyNames: false,
 		dedupeValues: false,
@@ -25,6 +28,10 @@ function parseArgs(argv: string[]): CliOptions {
 		if (!arg) continue;
 		if (arg === "--help" || arg === "-h") {
 			options.help = true;
+			continue;
+		}
+		if (arg === "--compile" || arg === "-c") {
+			options.compile = true;
 			continue;
 		}
 		if (arg === "--ir") {
@@ -69,6 +76,12 @@ function parseArgs(argv: string[]): CliOptions {
 			index += 1;
 			continue;
 		}
+		// Positional argument = file path
+		if (!arg.startsWith("-")) {
+			if (options.file) throw new Error("Multiple file arguments provided");
+			options.file = arg;
+			continue;
+		}
 		throw new Error(`Unknown option: ${arg}`);
 	}
 	return options;
@@ -76,27 +89,35 @@ function parseArgs(argv: string[]): CliOptions {
 
 function usage() {
 	return [
-		"Compile high-level Rex to compact encoding (rexc).",
+		"Rex expression language CLI.",
 		"",
 		"Usage:",
-		"  rex --expr \"when x do y end\"",
-		"  rex --file input.rex",
-		"  cat input.rex | rex",
+		"  rex                            Start interactive REPL",
+		"  rex input.rex                  Evaluate a Rex script (JSON output)",
+		"  rex --expr '1 + 2'             Evaluate an inline expression",
+		"  cat input.rex | rex            Evaluate from stdin",
+		"  rex -c input.rex               Compile to rexc bytecode",
 		"",
-		"(Repo script alternative: bun run rex:compile --expr \"when x do y end\")",
+		"Input:",
+		"  <file>                Evaluate/compile a Rex source file",
+		"  -e, --expr <source>   Evaluate/compile an inline expression",
+		"  -f, --file <path>     Evaluate/compile source from a file",
 		"",
-		"Options:",
-		"  -e, --expr <source>   Compile an inline expression/program",
-		"  -f, --file <path>     Compile source from a file",
+		"Output mode:",
+		"  (default)             Evaluate and output result as JSON",
+		"  -c, --compile         Compile to rexc bytecode",
+		"      --ir              Output lowered IR as JSON",
+		"",
+		"Compile options:",
+		"  -m, --minify-names    Minify local variable names",
+		"      --dedupe-values   Deduplicate large repeated values",
+		"      --dedupe-min-bytes <n>  Minimum bytes for dedupe (default: 4)",
+		"",
+		"General:",
 		"  -o, --out <path>      Write output to file instead of stdout",
-		"      --ir              Output lowered IR JSON instead of compact encoding",
-		"  -m, --minify-names    Minify local variable names in compiled output",
-		"      --dedupe-values   Deduplicate large repeated values using forward pointers",
-		"      --dedupe-min-bytes <n>  Minimum encoded value bytes for pointer dedupe (default: 4)",
 		"  -h, --help            Show this message",
 	].join("\n");
 }
-
 
 async function readStdin(): Promise<string> {
 	const chunks: Buffer[] = [];
@@ -107,14 +128,14 @@ async function readStdin(): Promise<string> {
 }
 
 async function resolveSource(options: CliOptions): Promise<string> {
-	if (options.expr && options.file) throw new Error("Use only one of --expr or --file");
+	if (options.expr && options.file) throw new Error("Use only one of --expr, --file, or a positional file path");
 	if (options.expr) return options.expr;
 	if (options.file) return readFile(options.file, "utf8");
 	if (!process.stdin.isTTY) {
 		const piped = await readStdin();
 		if (piped.trim().length > 0) return piped;
 	}
-	throw new Error("No input provided. Use --expr, --file, or pipe source via stdin.");
+	throw new Error("No input provided. Use a file path, --expr, or pipe source via stdin.");
 }
 
 async function loadDomainConfigFromFolder(folderPath: string): Promise<unknown | undefined> {
@@ -139,16 +160,31 @@ async function main() {
 		return;
 	}
 
+	// No source provided on a TTY → launch interactive REPL
+	const hasSource = options.expr || options.file || !process.stdin.isTTY;
+	if (!hasSource && !options.compile && !options.ir) {
+		const { startRepl } = await import("./rex-repl.ts");
+		await startRepl();
+		return;
+	}
+
 	const source = await resolveSource(options);
-	const domainConfig = await resolveDomainConfig(options);
-	const output = options.ir
-		? JSON.stringify(parseToIR(source), null, 2)
-		: compile(source, {
+
+	let output: string;
+	if (options.ir) {
+		output = JSON.stringify(parseToIR(source), null, 2);
+	} else if (options.compile) {
+		const domainConfig = await resolveDomainConfig(options);
+		output = compile(source, {
 			minifyNames: options.minifyNames,
 			dedupeValues: options.dedupeValues,
 			dedupeMinBytes: options.dedupeMinBytes,
 			domainConfig,
 		});
+	} else {
+		const { value } = evaluateSource(source);
+		output = JSON.stringify(value, null, 2);
+	}
 
 	if (options.out) {
 		await writeFile(options.out, `${output}\n`, "utf8");

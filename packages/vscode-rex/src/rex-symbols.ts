@@ -45,6 +45,7 @@ const KEYWORDS = new Set([
 	"when",
 	"unless",
 	"else",
+	"while",
 	"for",
 	"in",
 	"of",
