@@ -137,13 +137,8 @@ async function loadDomainConfig(dirPath: string): Promise<unknown> {
 	return parse(raw);
 }
 
-function normalizeRefs(refs: Record<string, unknown>): Record<number, unknown> {
-	const out: Record<number, unknown> = {};
-	for (const [key, value] of Object.entries(refs)) {
-		const numeric = Number(key);
-		if (Number.isFinite(numeric)) out[numeric] = value;
-	}
-	return out;
+function normalizeRefs(refs: Record<string, unknown>): Record<string, unknown> {
+	return { ...refs };
 }
 
 async function collectTestFiles(dirPath: string): Promise<string[]> {

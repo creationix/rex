@@ -7,8 +7,8 @@ describe("Rex encoding backend", () => {
 	});
 
 	test("encodes arithmetic through opcode calls", () => {
-		expect(compile("1 + 2")).toBe("(1%2+4+)");
-		expect(compile("a & b")).toBe("(b%a$b$)");
+		expect(compile("1 + 2")).toBe("(ad%2+4+)");
+		expect(compile("a & b")).toBe("(an%a$b$)");
 	});
 
 	test("encodes arrays and objects", () => {
@@ -17,7 +17,7 @@ describe("Rex encoding backend", () => {
 	});
 
 	test("encodes conditionals with prefixed skip branches", () => {
-		expect(compile("when x > 10 do x + 1 end")).toBe("?((9%x$k+)6(1%x$2+))");
+		expect(compile("when x > 10 do x + 1 end")).toBe("?((gt%x$k+)7(ad%x$2+))");
 		expect(compile("unless x do y else z end")).toBe("!(x$y$z$)");
 	});
 
@@ -27,25 +27,21 @@ describe("Rex encoding backend", () => {
 	});
 
 	test("encodes compound assignments for identifiers and navigations", () => {
-		expect(compile("x += 2")).toBe("=x$6(1%x$4+)");
-		expect(compile("x -= 2")).toBe("=x$6(2%x$4+)");
-		expect(compile("x *= 2")).toBe("=x$6(3%x$4+)");
-		expect(compile("x /= 2")).toBe("=x$6(4%x$4+)");
-		expect(compile("x %= 2")).toBe("=x$6(k%x$4+)");
-		expect(compile("x &= y")).toBe("=x$6(b%x$y$)");
-		expect(compile("x |= y")).toBe("=x$6(c%x$y$)");
-		expect(compile("x ^= y")).toBe("=x$6(d%x$y$)");
-		expect(compile("obj.count += 1")).toBe("=(obj$count:)g(1%(obj$count:)2+)");
-		expect(compile("table.(k) *= 3")).toBe("=(table$k$)e(3%(table$k$)6+)");
+		expect(compile("x += 2")).toBe("=x$7(ad%x$4+)");
+		expect(compile("x -= 2")).toBe("=x$7(sb%x$4+)");
+		expect(compile("x *= 2")).toBe("=x$7(ml%x$4+)");
+		expect(compile("x /= 2")).toBe("=x$7(dv%x$4+)");
+		expect(compile("x %= 2")).toBe("=x$7(md%x$4+)");
+		expect(compile("x &= y")).toBe("=x$7(an%x$y$)");
+		expect(compile("x |= y")).toBe("=x$7(or%x$y$)");
+		expect(compile("x ^= y")).toBe("=x$7(xr%x$y$)");
+		expect(compile("obj.count += 1")).toBe("=(obj$count:)h(ad%(obj$count:)2+)");
+		expect(compile("table.(k) *= 3")).toBe("=(table$k$)f(ml%(table$k$)6+)");
 	});
 
 	test("exposes parseToIR and encodeIR", () => {
-		const ir = parseToIR("[v in [1, 2] ; v * 2]");
-		expect(encodeIR(ir)).toBe(">[[2+4+]v$6(3%v$4+)]");
-	});
-
-	test("encodes standalone do-expression", () => {
-		expect(compile("do x = 10 20 end")).toBe("(%=x$k+E+)");
+		const ir = parseToIR("[v * 2 for v in [1, 2]]");
+		expect(encodeIR(ir)).toBe(">[[2+4+]v$7(ml%v$4+)]");
 	});
 
 	test("encodes depth-aware self from high-level form", () => {
@@ -53,10 +49,10 @@ describe("Rex encoding backend", () => {
 	});
 
 	test("encodes built-in scalar references and self", () => {
-		expect(compile("true")).toBe("1'");
-		expect(compile("false")).toBe("2'");
-		expect(compile("null")).toBe("3'");
-		expect(compile("undefined")).toBe("4'");
+		expect(compile("true")).toBe("tr'");
+		expect(compile("false")).toBe("fl'");
+		expect(compile("null")).toBe("nl'");
+		expect(compile("undefined")).toBe("un'");
 		expect(compile("self")).toBe("@");
 		expect(compile("self@3")).toBe("2@");
 	});
@@ -103,12 +99,18 @@ describe("Rex encoding backend", () => {
 		expect(compile("for v in [1, 2] do v end")).toBe(">([2+4+]v$v$)");
 		expect(compile("for k, v in table do v end")).toBe(">(table$k$v$v$)");
 		expect(compile("for k of record do k end")).toBe("<(record$k$k$)");
-		expect(compile("for users do self end")).toBe(">(users$@)");
-		expect(compile("{k, v in scores ; (k): v * 100}")).toBe(">{scores$k$v$k$7(3%v$38+)}");
+		expect(compile("for in users do self end")).toBe(">(users$@)");
+		expect(compile("for of users do self end")).toBe("<(users$@)");
+		expect(compile("{(k): v * 100 for k, v in scores}")).toBe(">{scores$k$v$k$8(ml%v$38+)}");
+		expect(compile("[k for k of record]")).toBe("<[record$k$k$]");
+		expect(compile("{(k): k for k of record}")).toBe("<{record$k$k$k$}");
+		expect(compile("[self in items]")).toBe(">[items$@]");
+		expect(compile("[self of items]")).toBe("<[items$@]");
+		expect(compile("{(self): true in items}")).toBe(">{items$@tr'}");
 	});
 
 	test("encodes while loops", () => {
 		expect(compile("while x do self end")).toBe("#(x$@)");
-		expect(compile("while x > 0 do x -= 1 end")).toBe("#((9%x$+)b=x$6(2%x$2+))");
+		expect(compile("while x > 0 do x -= 1 end")).toBe("#((gt%x$+)c=x$7(sb%x$2+))");
 	});
 });

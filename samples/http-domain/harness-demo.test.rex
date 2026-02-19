@@ -4,12 +4,12 @@
       name: "health route"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/health"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/health"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -25,12 +25,12 @@
       name: "users route with tenant header"
       input: {
         refs: {
-          "43": {x-tenant: "acme"}
-          "48": "GET"
-          "51": "/v1/users"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {x-tenant: "acme"}
+          M: "GET"
+          P: "/v1/users"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -46,12 +46,12 @@
       name: "unknown route"
       input: {
         refs: {
-          "43": {}
-          "48": "PATCH"
-          "51": "/missing"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "PATCH"
+          P: "/missing"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {

@@ -4,48 +4,48 @@ const DIGITS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_
 const digitMap = new Map<string, number>(Array.from(DIGITS).map((char, index) => [char, index]));
 
 const OPCODES = {
-	do: 0,
-	add: 1,
-	sub: 2,
-	mul: 3,
-	div: 4,
-	eq: 5,
-	neq: 6,
-	lt: 7,
-	lte: 8,
-	gt: 9,
-	gte: 10,
-	and: 11,
-	or: 12,
-	xor: 13,
-	not: 14,
-	boolean: 15,
-	number: 16,
-	string: 17,
-	array: 18,
-	object: 19,
-	mod: 20,
-	neg: 21,
+	do: "",
+	add: "ad",
+	sub: "sb",
+	mul: "ml",
+	div: "dv",
+	eq: "eq",
+	neq: "nq",
+	lt: "lt",
+	lte: "le",
+	gt: "gt",
+	gte: "ge",
+	and: "an",
+	or: "or",
+	xor: "xr",
+	not: "nt",
+	boolean: "bt",
+	number: "nm",
+	string: "st",
+	array: "ar",
+	object: "ob",
+	mod: "md",
+	neg: "ng",
 } as const;
 
 export type RexcContext = {
 	vars?: Record<string, unknown>;
-	refs?: Partial<Record<number, unknown>>;
+	refs?: Record<string, unknown>;
 	self?: unknown;
 	selfStack?: unknown[];
-	opcodes?: Partial<Record<number, (args: unknown[], state: RexcRuntimeState) => unknown>>;
+	opcodes?: Record<string, (args: unknown[], state: RexcRuntimeState) => unknown>;
 	/** Maximum loop iterations before the interpreter throws. */
 	gasLimit?: number;
 };
 
 export type RexcRuntimeState = {
 	vars: Record<string, unknown>;
-	refs: Record<number, unknown>;
+	refs: Record<string, unknown>;
 };
 
 type LoopControl = { kind: "break" | "continue"; depth: number };
 
-type OpcodeMarker = { __opcode: number };
+type OpcodeMarker = { __opcode: string };
 
 function decodePrefix(text: string, start: number, end: number): number {
 	let value = 0;
@@ -76,7 +76,6 @@ class CursorInterpreter {
 	private pos = 0;
 	private readonly state: RexcRuntimeState;
 	private readonly selfStack: unknown[];
-	private readonly opcodeMarkers: OpcodeMarker[];
 	private readonly pointerCache = new Map<number, unknown>();
 	private readonly gasLimit: number;
 	private gas = 0;
@@ -96,31 +95,26 @@ class CursorInterpreter {
 		this.state = {
 			vars: ctx.vars ?? {},
 			refs: {
-				0: ctx.refs?.[0],
-				1: ctx.refs?.[1] ?? true,
-				2: ctx.refs?.[2] ?? false,
-				3: ctx.refs?.[3] ?? null,
-				4: ctx.refs?.[4] ?? undefined,
-				5: ctx.refs?.[5] ?? NaN,
-				6: ctx.refs?.[6] ?? Infinity,
-				7: ctx.refs?.[7] ?? -Infinity,
+				tr: true,
+				fl: false,
+				nl: null,
+				un: undefined,
+				nan: NaN,
+				inf: Infinity,
+				nif: -Infinity,
+				...ctx.refs,
 			},
 		};
 		this.selfStack = ctx.selfStack && ctx.selfStack.length > 0 ? [...ctx.selfStack] : [initialSelf];
 		this.gasLimit = ctx.gasLimit ?? 0;
-		this.opcodeMarkers = Array.from({ length: 256 }, (_, id) => ({ __opcode: id }));
-		for (const [idText, value] of Object.entries(ctx.refs ?? {})) {
-			const id = Number(idText);
-			if (Number.isInteger(id)) this.state.refs[id] = value;
-		}
 		if (ctx.opcodes) {
-			for (const [idText, op] of Object.entries(ctx.opcodes)) {
-				if (op) this.customOpcodes.set(Number(idText), op);
+			for (const [key, op] of Object.entries(ctx.opcodes)) {
+				if (op) this.customOpcodes.set(key, op);
 			}
 		}
 	}
 
-	private readonly customOpcodes = new Map<number, (args: unknown[], state: RexcRuntimeState) => unknown>();
+	private readonly customOpcodes = new Map<string, (args: unknown[], state: RexcRuntimeState) => unknown>();
 
 	private readSelf(depthPrefix: number): unknown {
 		const depth = depthPrefix + 1;
@@ -224,13 +218,13 @@ class CursorInterpreter {
 				return prefix.raw;
 			case "%":
 				this.pos += 1;
-				return this.opcodeMarkers[prefix.value] ?? { __opcode: prefix.value };
+				return { __opcode: prefix.raw } satisfies OpcodeMarker;
 			case "@":
 				this.pos += 1;
 				return this.readSelf(prefix.value);
 			case "'":
 				this.pos += 1;
-				return this.state.refs[prefix.value];
+				return this.state.refs[prefix.raw];
 			case "$":
 				this.pos += 1;
 				return this.state.vars[prefix.raw];
@@ -311,7 +305,7 @@ class CursorInterpreter {
 		this.ensure(")");
 
 		if (typeof callee === "object" && callee && "__opcode" in callee) {
-			return this.applyOpcode((callee as OpcodeMarker).__opcode, args);
+			return this.applyOpcode((callee as OpcodeMarker).__opcode as string, args);
 		}
 		return this.navigate(callee, args);
 	}
@@ -654,7 +648,7 @@ class CursorInterpreter {
 		return out;
 	}
 
-	private applyOpcode(id: number, args: unknown[]): unknown {
+	private applyOpcode(id: string, args: unknown[]): unknown {
 		const custom = this.customOpcodes.get(id);
 		if (custom) return custom(args, this.state);
 		switch (id) {
@@ -738,7 +732,7 @@ class CursorInterpreter {
 		return current;
 	}
 
-	private readPlace(): { root: string | number; keys: unknown[]; isRef: boolean } {
+	private readPlace(): { root: string; keys: unknown[]; isRef: boolean } {
 		this.skipNonCode();
 		const direct = this.readRootVarOrRefIfPresent();
 		if (direct) {
@@ -784,7 +778,7 @@ class CursorInterpreter {
 		throw new Error(`Invalid place at ${this.pos}`);
 	}
 
-	private readRootVarOrRefIfPresent(): { root: string | number; isRef: boolean } | undefined {
+	private readRootVarOrRefIfPresent(): { root: string; isRef: boolean } | undefined {
 		const save = this.pos;
 		const prefix = this.readPrefix();
 		const tag = this.text[this.pos];
@@ -794,14 +788,14 @@ class CursorInterpreter {
 		}
 		this.pos += 1;
 		return {
-			root: tag === "$" ? prefix.raw : prefix.value,
+			root: prefix.raw,
 			isRef: tag === "'",
 		};
 	}
 
-	private writePlace(place: { root: string | number; keys: unknown[]; isRef: boolean }, value: unknown) {
+	private writePlace(place: { root: string; keys: unknown[]; isRef: boolean }, value: unknown) {
 		const rootTable = place.isRef ? this.state.refs : this.state.vars;
-		const rootKey = String(place.root);
+		const rootKey = place.root;
 		if (place.keys.length === 0) {
 			rootTable[rootKey] = value;
 			return;
@@ -820,9 +814,9 @@ class CursorInterpreter {
 		(target as Record<string, unknown>)[String(place.keys[place.keys.length - 1])] = value;
 	}
 
-	private deletePlace(place: { root: string | number; keys: unknown[]; isRef: boolean }) {
+	private deletePlace(place: { root: string; keys: unknown[]; isRef: boolean }) {
 		const rootTable = place.isRef ? this.state.refs : this.state.vars;
-		const rootKey = String(place.root);
+		const rootKey = place.root;
 		if (place.keys.length === 0) {
 			delete rootTable[rootKey];
 			return;
