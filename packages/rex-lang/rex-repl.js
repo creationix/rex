@@ -1,21 +1,72 @@
-#!/usr/bin/env node
-var __defProp = Object.defineProperty;
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, {
-      get: all[name],
-      enumerable: true,
-      configurable: true,
-      set: (newValue) => all[name] = () => newValue
-    });
-};
-var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
+// rex-repl.ts
+import * as readline from "node:readline";
+import { createRequire as createRequire2 } from "node:module";
 
 // rex.ts
 import { createRequire } from "node:module";
+var require2 = createRequire(import.meta.url);
+var rexGrammarModule = require2("./rex.ohm-bundle.cjs");
+var rexGrammar = rexGrammarModule?.default ?? rexGrammarModule;
+var grammar = rexGrammar;
+var semantics = rexGrammar.createSemantics();
+var DIGITS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
 function byteLength(value) {
   return Buffer.byteLength(value, "utf8");
 }
+var OPCODE_IDS = {
+  do: 0,
+  add: 1,
+  sub: 2,
+  mul: 3,
+  div: 4,
+  eq: 5,
+  neq: 6,
+  lt: 7,
+  lte: 8,
+  gt: 9,
+  gte: 10,
+  and: 11,
+  or: 12,
+  xor: 13,
+  not: 14,
+  boolean: 15,
+  number: 16,
+  string: 17,
+  array: 18,
+  object: 19,
+  mod: 20,
+  neg: 21
+};
+var FIRST_NON_RESERVED_REF = 5;
+var DOMAIN_DIGIT_INDEX = new Map(Array.from(DIGITS).map((char, index) => [char, index]));
+var BINARY_TO_OPCODE = {
+  add: "add",
+  sub: "sub",
+  mul: "mul",
+  div: "div",
+  mod: "mod",
+  bitAnd: "and",
+  bitOr: "or",
+  bitXor: "xor",
+  and: "and",
+  or: "or",
+  eq: "eq",
+  neq: "neq",
+  gt: "gt",
+  gte: "gte",
+  lt: "lt",
+  lte: "lte"
+};
+var ASSIGN_COMPOUND_TO_OPCODE = {
+  "+=": "add",
+  "-=": "sub",
+  "*=": "mul",
+  "/=": "div",
+  "%=": "mod",
+  "&=": "and",
+  "|=": "or",
+  "^=": "xor"
+};
 function encodeUint(value) {
   if (!Number.isInteger(value) || value < 0)
     throw new Error(`Cannot encode non-uint value: ${value}`);
@@ -258,6 +309,7 @@ function encodeObjectComprehension(node) {
   }
   return `>{${encodeNode(node.binding.source)}${node.binding.key}$${key}${value}}`;
 }
+var activeEncodeOptions;
 function encodeNode(node) {
   switch (node.type) {
     case "program":
@@ -378,48 +430,6 @@ function parseToIR(source) {
   }
   return semantics(match).toIR();
 }
-function parseDataNode(node) {
-  switch (node.type) {
-    case "group":
-      return parseDataNode(node.expression);
-    case "program": {
-      if (node.body.length === 1)
-        return parseDataNode(node.body[0]);
-      if (node.body.length === 0)
-        return;
-      throw new Error("Rex parse() expects a single data expression");
-    }
-    case "undefined":
-      return;
-    case "null":
-      return null;
-    case "boolean":
-      return node.value;
-    case "number":
-      return node.value;
-    case "string":
-      return decodeStringLiteral(node.raw);
-    case "array":
-      return node.items.map((item) => parseDataNode(item));
-    case "object": {
-      const out = {};
-      for (const entry of node.entries) {
-        const keyNode = entry.key;
-        let key;
-        if (keyNode.type === "key")
-          key = keyNode.name;
-        else {
-          const keyValue = parseDataNode(keyNode);
-          key = String(keyValue);
-        }
-        out[key] = parseDataNode(entry.value);
-      }
-      return out;
-    }
-    default:
-      throw new Error(`Rex parse() only supports data expressions. Found: ${node.type}`);
-  }
-}
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     return false;
@@ -502,9 +512,6 @@ ${lines.join(`
 ${indent}}`;
   }
   return inline;
-}
-function parse(source) {
-  return parseDataNode(parseToIR(source));
 }
 function domainRefsFromConfig(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)) {
@@ -595,6 +602,8 @@ function stringify(value, options) {
     throw new Error("Rex stringify() maxWidth must be an integer >= 20");
   return stringifyPretty(value, 0, indent, maxWidth);
 }
+var DIGIT_SET = new Set(DIGITS.split(""));
+var DIGIT_INDEX = new Map(Array.from(DIGITS).map((char, index) => [char, index]));
 function readPrefixAt(text, start) {
   let index = start;
   while (index < text.length && DIGIT_SET.has(text[index]))
@@ -2040,373 +2049,336 @@ function buildPostfix(base, steps) {
   flushSegments();
   return current;
 }
-var require2, rexGrammarModule, rexGrammar, grammar, semantics, DIGITS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_", OPCODE_IDS, FIRST_NON_RESERVED_REF = 5, DOMAIN_DIGIT_INDEX, BINARY_TO_OPCODE, ASSIGN_COMPOUND_TO_OPCODE, activeEncodeOptions, DIGIT_SET, DIGIT_INDEX;
-var init_rex = __esm(() => {
-  require2 = createRequire(import.meta.url);
-  rexGrammarModule = require2("./rex.ohm-bundle.cjs");
-  rexGrammar = rexGrammarModule?.default ?? rexGrammarModule;
-  grammar = rexGrammar;
-  semantics = rexGrammar.createSemantics();
-  OPCODE_IDS = {
-    do: 0,
-    add: 1,
-    sub: 2,
-    mul: 3,
-    div: 4,
-    eq: 5,
-    neq: 6,
-    lt: 7,
-    lte: 8,
-    gt: 9,
-    gte: 10,
-    and: 11,
-    or: 12,
-    xor: 13,
-    not: 14,
-    boolean: 15,
-    number: 16,
-    string: 17,
-    array: 18,
-    object: 19,
-    mod: 20,
-    neg: 21
-  };
-  DOMAIN_DIGIT_INDEX = new Map(Array.from(DIGITS).map((char, index) => [char, index]));
-  BINARY_TO_OPCODE = {
-    add: "add",
-    sub: "sub",
-    mul: "mul",
-    div: "div",
-    mod: "mod",
-    bitAnd: "and",
-    bitOr: "or",
-    bitXor: "xor",
-    and: "and",
-    or: "or",
-    eq: "eq",
-    neq: "neq",
-    gt: "gt",
-    gte: "gte",
-    lt: "lt",
-    lte: "lte"
-  };
-  ASSIGN_COMPOUND_TO_OPCODE = {
-    "+=": "add",
-    "-=": "sub",
-    "*=": "mul",
-    "/=": "div",
-    "%=": "mod",
-    "&=": "and",
-    "|=": "or",
-    "^=": "xor"
-  };
-  DIGIT_SET = new Set(DIGITS.split(""));
-  DIGIT_INDEX = new Map(Array.from(DIGITS).map((char, index) => [char, index]));
-  semantics.addOperation("toIR", {
-    _iter(...children) {
-      return children.map((child) => child.toIR());
-    },
-    _terminal() {
-      return this.sourceString;
-    },
-    _nonterminal(...children) {
-      if (children.length === 1 && children[0])
-        return children[0].toIR();
-      return children.map((child) => child.toIR());
-    },
-    Program(expressions) {
-      const body = normalizeList(expressions.toIR());
-      if (body.length === 1)
-        return body[0];
-      return { type: "program", body };
-    },
-    Block(expressions) {
-      return normalizeList(expressions.toIR());
-    },
-    Elements(first, separatorsAndItems, maybeTrailingComma, maybeEmpty) {
-      return normalizeList([
-        first.toIR(),
-        separatorsAndItems.toIR(),
-        maybeTrailingComma.toIR(),
-        maybeEmpty.toIR()
-      ]);
-    },
-    AssignExpr_assign(place, op, value) {
-      return {
-        type: "assign",
-        op: op.sourceString,
-        place: place.toIR(),
-        value: value.toIR()
-      };
-    },
-    ExistenceExpr_and(left, _and, right) {
-      return { type: "binary", op: "and", left: left.toIR(), right: right.toIR() };
-    },
-    ExistenceExpr_or(left, _or, right) {
-      return { type: "binary", op: "or", left: left.toIR(), right: right.toIR() };
-    },
-    BitExpr_and(left, _op, right) {
-      return { type: "binary", op: "bitAnd", left: left.toIR(), right: right.toIR() };
-    },
-    BitExpr_xor(left, _op, right) {
-      return { type: "binary", op: "bitXor", left: left.toIR(), right: right.toIR() };
-    },
-    BitExpr_or(left, _op, right) {
-      return { type: "binary", op: "bitOr", left: left.toIR(), right: right.toIR() };
-    },
-    CompareExpr_binary(left, op, right) {
-      const map = {
-        "==": "eq",
-        "!=": "neq",
-        ">": "gt",
-        ">=": "gte",
-        "<": "lt",
-        "<=": "lte"
-      };
-      const mapped = map[op.sourceString];
-      if (!mapped)
-        throw new Error(`Unsupported compare op: ${op.sourceString}`);
-      return { type: "binary", op: mapped, left: left.toIR(), right: right.toIR() };
-    },
-    AddExpr_add(left, _op, right) {
-      return { type: "binary", op: "add", left: left.toIR(), right: right.toIR() };
-    },
-    AddExpr_sub(left, _op, right) {
-      return { type: "binary", op: "sub", left: left.toIR(), right: right.toIR() };
-    },
-    MulExpr_mul(left, _op, right) {
-      return { type: "binary", op: "mul", left: left.toIR(), right: right.toIR() };
-    },
-    MulExpr_div(left, _op, right) {
-      return { type: "binary", op: "div", left: left.toIR(), right: right.toIR() };
-    },
-    MulExpr_mod(left, _op, right) {
-      return { type: "binary", op: "mod", left: left.toIR(), right: right.toIR() };
-    },
-    UnaryExpr_neg(_op, value) {
-      const lowered = value.toIR();
-      if (lowered.type === "number") {
-        const raw = lowered.raw.startsWith("-") ? lowered.raw.slice(1) : `-${lowered.raw}`;
-        return { type: "number", raw, value: -lowered.value };
-      }
-      return { type: "unary", op: "neg", value: lowered };
-    },
-    UnaryExpr_not(_op, value) {
-      return { type: "unary", op: "not", value: value.toIR() };
-    },
-    UnaryExpr_delete(_del, place) {
-      return { type: "unary", op: "delete", value: place.toIR() };
-    },
-    PostfixExpr_chain(base, tails) {
-      return buildPostfix(base.toIR(), normalizePostfixSteps(tails.toIR()));
-    },
-    Place(base, tails) {
-      return buildPostfix(base.toIR(), normalizePostfixSteps(tails.toIR()));
-    },
-    PlaceTail_navStatic(_dot, key) {
-      return { kind: "navStatic", key: key.sourceString };
-    },
-    PlaceTail_navDynamic(_dotOpen, key, _close) {
-      return { kind: "navDynamic", key: key.toIR() };
-    },
-    PostfixTail_navStatic(_dot, key) {
-      return { kind: "navStatic", key: key.sourceString };
-    },
-    PostfixTail_navDynamic(_dotOpen, key, _close) {
-      return { kind: "navDynamic", key: key.toIR() };
-    },
-    PostfixTail_callEmpty(_open, _close) {
-      return { kind: "call", args: [] };
-    },
-    PostfixTail_call(_open, args, _close) {
-      return { kind: "call", args: normalizeList(args.toIR()) };
-    },
-    ConditionalExpr(head, condition, _do, thenBlock, elseBranch, _end) {
-      const nextElse = elseBranch.children[0];
-      return {
-        type: "conditional",
-        head: head.toIR(),
-        condition: condition.toIR(),
-        thenBlock: thenBlock.toIR(),
-        elseBranch: nextElse ? nextElse.toIR() : undefined
-      };
-    },
-    ConditionalHead(_kw) {
-      return this.sourceString;
-    },
-    ConditionalElse_elseChain(_else, head, condition, _do, thenBlock, elseBranch) {
-      const nextElse = elseBranch.children[0];
-      return {
-        type: "elseChain",
-        head: head.toIR(),
-        condition: condition.toIR(),
-        thenBlock: thenBlock.toIR(),
-        elseBranch: nextElse ? nextElse.toIR() : undefined
-      };
-    },
-    ConditionalElse_else(_else, block) {
-      return { type: "else", block: block.toIR() };
-    },
-    DoExpr(_do, block, _end) {
-      const body = block.toIR();
-      if (body.length === 0)
-        return { type: "undefined" };
-      if (body.length === 1)
-        return body[0];
-      return { type: "program", body };
-    },
-    WhileExpr(_while, condition, _do, block, _end) {
-      return {
-        type: "while",
-        condition: condition.toIR(),
-        body: block.toIR()
-      };
-    },
-    ForExpr(_for, binding, _do, block, _end) {
-      return {
-        type: "for",
-        binding: binding.toIR(),
-        body: block.toIR()
-      };
-    },
-    BindingExpr(iterOrExpr) {
-      const node = iterOrExpr.toIR();
-      if (typeof node === "object" && node && "type" in node && String(node.type).startsWith("binding:")) {
-        return node;
-      }
-      return { type: "binding:expr", source: node };
-    },
-    Array_empty(_open, _close) {
-      return { type: "array", items: [] };
-    },
-    Array_comprehension(_open, binding, _semi, body, _close) {
-      return {
-        type: "arrayComprehension",
-        binding: binding.toIR(),
-        body: body.toIR()
-      };
-    },
-    Array_values(_open, items, _close) {
-      return { type: "array", items: normalizeList(items.toIR()) };
-    },
-    Object_empty(_open, _close) {
-      return { type: "object", entries: [] };
-    },
-    Object_comprehension(_open, binding, _semi, key, _colon, value, _close) {
-      return {
-        type: "objectComprehension",
-        binding: binding.toIR(),
-        key: key.toIR(),
-        value: value.toIR()
-      };
-    },
-    Object_pairs(_open, pairs, _close) {
-      return {
-        type: "object",
-        entries: normalizeList(pairs.toIR())
-      };
-    },
-    IterBinding_keyValueIn(key, _comma, value, _in, source) {
-      return {
-        type: "binding:keyValueIn",
-        key: key.sourceString,
-        value: value.sourceString,
-        source: source.toIR()
-      };
-    },
-    IterBinding_valueIn(value, _in, source) {
-      return {
-        type: "binding:valueIn",
-        value: value.sourceString,
-        source: source.toIR()
-      };
-    },
-    IterBinding_keyOf(key, _of, source) {
-      return {
-        type: "binding:keyOf",
-        key: key.sourceString,
-        source: source.toIR()
-      };
-    },
-    Pair(key, _colon, value) {
-      return { key: key.toIR(), value: value.toIR() };
-    },
-    ObjKey_bare(key) {
-      return { type: "key", name: key.sourceString };
-    },
-    ObjKey_number(num) {
-      return num.toIR();
-    },
-    ObjKey_string(str) {
-      return str.toIR();
-    },
-    ObjKey_computed(_open, expr, _close) {
-      return expr.toIR();
-    },
-    BreakKw(_kw) {
-      return { type: "break" };
-    },
-    ContinueKw(_kw) {
-      return { type: "continue" };
-    },
-    SelfExpr_depth(_self, _at, depth) {
-      const value = depth.toIR();
-      if (value.type !== "number" || !Number.isInteger(value.value) || value.value < 1) {
-        throw new Error("self depth must be a positive integer literal");
-      }
-      if (value.value === 1)
-        return { type: "self" };
-      return { type: "selfDepth", depth: value.value };
-    },
-    SelfExpr_plain(selfKw) {
-      return selfKw.toIR();
-    },
-    SelfKw(_kw) {
-      return { type: "self" };
-    },
-    TrueKw(_kw) {
-      return { type: "boolean", value: true };
-    },
-    FalseKw(_kw) {
-      return { type: "boolean", value: false };
-    },
-    NullKw(_kw) {
-      return { type: "null" };
-    },
-    UndefinedKw(_kw) {
-      return { type: "undefined" };
-    },
-    StringKw(_kw) {
-      return { type: "identifier", name: "string" };
-    },
-    NumberKw(_kw) {
-      return { type: "identifier", name: "number" };
-    },
-    ObjectKw(_kw) {
-      return { type: "identifier", name: "object" };
-    },
-    ArrayKw(_kw) {
-      return { type: "identifier", name: "array" };
-    },
-    BooleanKw(_kw) {
-      return { type: "identifier", name: "boolean" };
-    },
-    identifier(_a, _b) {
-      return { type: "identifier", name: this.sourceString };
-    },
-    String(_value) {
-      return { type: "string", raw: this.sourceString };
-    },
-    Number(_value) {
-      return { type: "number", raw: this.sourceString, value: parseNumber(this.sourceString) };
-    },
-    PrimaryExpr_group(_open, expr, _close) {
-      return { type: "group", expression: expr.toIR() };
+semantics.addOperation("toIR", {
+  _iter(...children) {
+    return children.map((child) => child.toIR());
+  },
+  _terminal() {
+    return this.sourceString;
+  },
+  _nonterminal(...children) {
+    if (children.length === 1 && children[0])
+      return children[0].toIR();
+    return children.map((child) => child.toIR());
+  },
+  Program(expressions) {
+    const body = normalizeList(expressions.toIR());
+    if (body.length === 1)
+      return body[0];
+    return { type: "program", body };
+  },
+  Block(expressions) {
+    return normalizeList(expressions.toIR());
+  },
+  Elements(first, separatorsAndItems, maybeTrailingComma, maybeEmpty) {
+    return normalizeList([
+      first.toIR(),
+      separatorsAndItems.toIR(),
+      maybeTrailingComma.toIR(),
+      maybeEmpty.toIR()
+    ]);
+  },
+  AssignExpr_assign(place, op, value) {
+    return {
+      type: "assign",
+      op: op.sourceString,
+      place: place.toIR(),
+      value: value.toIR()
+    };
+  },
+  ExistenceExpr_and(left, _and, right) {
+    return { type: "binary", op: "and", left: left.toIR(), right: right.toIR() };
+  },
+  ExistenceExpr_or(left, _or, right) {
+    return { type: "binary", op: "or", left: left.toIR(), right: right.toIR() };
+  },
+  BitExpr_and(left, _op, right) {
+    return { type: "binary", op: "bitAnd", left: left.toIR(), right: right.toIR() };
+  },
+  BitExpr_xor(left, _op, right) {
+    return { type: "binary", op: "bitXor", left: left.toIR(), right: right.toIR() };
+  },
+  BitExpr_or(left, _op, right) {
+    return { type: "binary", op: "bitOr", left: left.toIR(), right: right.toIR() };
+  },
+  CompareExpr_binary(left, op, right) {
+    const map = {
+      "==": "eq",
+      "!=": "neq",
+      ">": "gt",
+      ">=": "gte",
+      "<": "lt",
+      "<=": "lte"
+    };
+    const mapped = map[op.sourceString];
+    if (!mapped)
+      throw new Error(`Unsupported compare op: ${op.sourceString}`);
+    return { type: "binary", op: mapped, left: left.toIR(), right: right.toIR() };
+  },
+  AddExpr_add(left, _op, right) {
+    return { type: "binary", op: "add", left: left.toIR(), right: right.toIR() };
+  },
+  AddExpr_sub(left, _op, right) {
+    return { type: "binary", op: "sub", left: left.toIR(), right: right.toIR() };
+  },
+  MulExpr_mul(left, _op, right) {
+    return { type: "binary", op: "mul", left: left.toIR(), right: right.toIR() };
+  },
+  MulExpr_div(left, _op, right) {
+    return { type: "binary", op: "div", left: left.toIR(), right: right.toIR() };
+  },
+  MulExpr_mod(left, _op, right) {
+    return { type: "binary", op: "mod", left: left.toIR(), right: right.toIR() };
+  },
+  UnaryExpr_neg(_op, value) {
+    const lowered = value.toIR();
+    if (lowered.type === "number") {
+      const raw = lowered.raw.startsWith("-") ? lowered.raw.slice(1) : `-${lowered.raw}`;
+      return { type: "number", raw, value: -lowered.value };
     }
-  });
+    return { type: "unary", op: "neg", value: lowered };
+  },
+  UnaryExpr_not(_op, value) {
+    return { type: "unary", op: "not", value: value.toIR() };
+  },
+  UnaryExpr_delete(_del, place) {
+    return { type: "unary", op: "delete", value: place.toIR() };
+  },
+  PostfixExpr_chain(base, tails) {
+    return buildPostfix(base.toIR(), normalizePostfixSteps(tails.toIR()));
+  },
+  Place(base, tails) {
+    return buildPostfix(base.toIR(), normalizePostfixSteps(tails.toIR()));
+  },
+  PlaceTail_navStatic(_dot, key) {
+    return { kind: "navStatic", key: key.sourceString };
+  },
+  PlaceTail_navDynamic(_dotOpen, key, _close) {
+    return { kind: "navDynamic", key: key.toIR() };
+  },
+  PostfixTail_navStatic(_dot, key) {
+    return { kind: "navStatic", key: key.sourceString };
+  },
+  PostfixTail_navDynamic(_dotOpen, key, _close) {
+    return { kind: "navDynamic", key: key.toIR() };
+  },
+  PostfixTail_callEmpty(_open, _close) {
+    return { kind: "call", args: [] };
+  },
+  PostfixTail_call(_open, args, _close) {
+    return { kind: "call", args: normalizeList(args.toIR()) };
+  },
+  ConditionalExpr(head, condition, _do, thenBlock, elseBranch, _end) {
+    const nextElse = elseBranch.children[0];
+    return {
+      type: "conditional",
+      head: head.toIR(),
+      condition: condition.toIR(),
+      thenBlock: thenBlock.toIR(),
+      elseBranch: nextElse ? nextElse.toIR() : undefined
+    };
+  },
+  ConditionalHead(_kw) {
+    return this.sourceString;
+  },
+  ConditionalElse_elseChain(_else, head, condition, _do, thenBlock, elseBranch) {
+    const nextElse = elseBranch.children[0];
+    return {
+      type: "elseChain",
+      head: head.toIR(),
+      condition: condition.toIR(),
+      thenBlock: thenBlock.toIR(),
+      elseBranch: nextElse ? nextElse.toIR() : undefined
+    };
+  },
+  ConditionalElse_else(_else, block) {
+    return { type: "else", block: block.toIR() };
+  },
+  DoExpr(_do, block, _end) {
+    const body = block.toIR();
+    if (body.length === 0)
+      return { type: "undefined" };
+    if (body.length === 1)
+      return body[0];
+    return { type: "program", body };
+  },
+  WhileExpr(_while, condition, _do, block, _end) {
+    return {
+      type: "while",
+      condition: condition.toIR(),
+      body: block.toIR()
+    };
+  },
+  ForExpr(_for, binding, _do, block, _end) {
+    return {
+      type: "for",
+      binding: binding.toIR(),
+      body: block.toIR()
+    };
+  },
+  BindingExpr(iterOrExpr) {
+    const node = iterOrExpr.toIR();
+    if (typeof node === "object" && node && "type" in node && String(node.type).startsWith("binding:")) {
+      return node;
+    }
+    return { type: "binding:expr", source: node };
+  },
+  Array_empty(_open, _close) {
+    return { type: "array", items: [] };
+  },
+  Array_comprehension(_open, binding, _semi, body, _close) {
+    return {
+      type: "arrayComprehension",
+      binding: binding.toIR(),
+      body: body.toIR()
+    };
+  },
+  Array_values(_open, items, _close) {
+    return { type: "array", items: normalizeList(items.toIR()) };
+  },
+  Object_empty(_open, _close) {
+    return { type: "object", entries: [] };
+  },
+  Object_comprehension(_open, binding, _semi, key, _colon, value, _close) {
+    return {
+      type: "objectComprehension",
+      binding: binding.toIR(),
+      key: key.toIR(),
+      value: value.toIR()
+    };
+  },
+  Object_pairs(_open, pairs, _close) {
+    return {
+      type: "object",
+      entries: normalizeList(pairs.toIR())
+    };
+  },
+  IterBinding_keyValueIn(key, _comma, value, _in, source) {
+    return {
+      type: "binding:keyValueIn",
+      key: key.sourceString,
+      value: value.sourceString,
+      source: source.toIR()
+    };
+  },
+  IterBinding_valueIn(value, _in, source) {
+    return {
+      type: "binding:valueIn",
+      value: value.sourceString,
+      source: source.toIR()
+    };
+  },
+  IterBinding_keyOf(key, _of, source) {
+    return {
+      type: "binding:keyOf",
+      key: key.sourceString,
+      source: source.toIR()
+    };
+  },
+  Pair(key, _colon, value) {
+    return { key: key.toIR(), value: value.toIR() };
+  },
+  ObjKey_bare(key) {
+    return { type: "key", name: key.sourceString };
+  },
+  ObjKey_number(num) {
+    return num.toIR();
+  },
+  ObjKey_string(str) {
+    return str.toIR();
+  },
+  ObjKey_computed(_open, expr, _close) {
+    return expr.toIR();
+  },
+  BreakKw(_kw) {
+    return { type: "break" };
+  },
+  ContinueKw(_kw) {
+    return { type: "continue" };
+  },
+  SelfExpr_depth(_self, _at, depth) {
+    const value = depth.toIR();
+    if (value.type !== "number" || !Number.isInteger(value.value) || value.value < 1) {
+      throw new Error("self depth must be a positive integer literal");
+    }
+    if (value.value === 1)
+      return { type: "self" };
+    return { type: "selfDepth", depth: value.value };
+  },
+  SelfExpr_plain(selfKw) {
+    return selfKw.toIR();
+  },
+  SelfKw(_kw) {
+    return { type: "self" };
+  },
+  TrueKw(_kw) {
+    return { type: "boolean", value: true };
+  },
+  FalseKw(_kw) {
+    return { type: "boolean", value: false };
+  },
+  NullKw(_kw) {
+    return { type: "null" };
+  },
+  UndefinedKw(_kw) {
+    return { type: "undefined" };
+  },
+  StringKw(_kw) {
+    return { type: "identifier", name: "string" };
+  },
+  NumberKw(_kw) {
+    return { type: "identifier", name: "number" };
+  },
+  ObjectKw(_kw) {
+    return { type: "identifier", name: "object" };
+  },
+  ArrayKw(_kw) {
+    return { type: "identifier", name: "array" };
+  },
+  BooleanKw(_kw) {
+    return { type: "identifier", name: "boolean" };
+  },
+  identifier(_a, _b) {
+    return { type: "identifier", name: this.sourceString };
+  },
+  String(_value) {
+    return { type: "string", raw: this.sourceString };
+  },
+  Number(_value) {
+    return { type: "number", raw: this.sourceString, value: parseNumber(this.sourceString) };
+  },
+  PrimaryExpr_group(_open, expr, _close) {
+    return { type: "group", expression: expr.toIR() };
+  }
 });
 
 // rexc-interpreter.ts
+var DIGITS2 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
+var digitMap = new Map(Array.from(DIGITS2).map((char, index) => [char, index]));
+var OPCODES = {
+  do: 0,
+  add: 1,
+  sub: 2,
+  mul: 3,
+  div: 4,
+  eq: 5,
+  neq: 6,
+  lt: 7,
+  lte: 8,
+  gt: 9,
+  gte: 10,
+  and: 11,
+  or: 12,
+  xor: 13,
+  not: 14,
+  boolean: 15,
+  number: 16,
+  string: 17,
+  array: 18,
+  object: 19,
+  mod: 20,
+  neg: 21
+};
 function decodePrefix(text, start, end) {
   let value = 0;
   for (let index = start;index < end; index += 1) {
@@ -3242,46 +3214,23 @@ function evaluateRexc(text, ctx = {}) {
 function evaluateSource(source, ctx = {}) {
   return evaluateRexc(compile(source), ctx);
 }
-var DIGITS2 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_", digitMap, OPCODES;
-var init_rexc_interpreter = __esm(() => {
-  init_rex();
-  digitMap = new Map(Array.from(DIGITS2).map((char, index) => [char, index]));
-  OPCODES = {
-    do: 0,
-    add: 1,
-    sub: 2,
-    mul: 3,
-    div: 4,
-    eq: 5,
-    neq: 6,
-    lt: 7,
-    lte: 8,
-    gt: 9,
-    gte: 10,
-    and: 11,
-    or: 12,
-    xor: 13,
-    not: 14,
-    boolean: 15,
-    number: 16,
-    string: 17,
-    array: 18,
-    object: 19,
-    mod: 20,
-    neg: 21
-  };
-});
 
 // rex-repl.ts
-var exports_rex_repl = {};
-__export(exports_rex_repl, {
-  startRepl: () => startRepl,
-  isIncomplete: () => isIncomplete,
-  highlightLine: () => highlightLine,
-  formatVarState: () => formatVarState
-});
-import * as readline from "node:readline";
-import { createRequire as createRequire2 } from "node:module";
+var req = createRequire2(import.meta.url);
+var { version } = req("./package.json");
+var C = {
+  reset: "\x1B[0m",
+  bold: "\x1B[1m",
+  dim: "\x1B[2m",
+  red: "\x1B[31m",
+  green: "\x1B[32m",
+  yellow: "\x1B[33m",
+  blue: "\x1B[34m",
+  cyan: "\x1B[36m",
+  gray: "\x1B[90m",
+  boldBlue: "\x1B[1;34m"
+};
+var TOKEN_RE = /(?<blockComment>\/\*[\s\S]*?(?:\*\/|$))|(?<lineComment>\/\/[^\n]*)|(?<dstring>"(?:[^"\\]|\\.)*"?)|(?<sstring>'(?:[^'\\]|\\.)*'?)|(?<keyword>\b(?:when|unless|while|for|do|end|in|of|and|or|else|break|continue|delete|self)\b)|(?<literal>\b(?:true|false|null|undefined)\b)|(?<typePred>\b(?:string|number|object|array|boolean)\b)|(?<num>\b(?:0x[0-9a-fA-F]+|0b[01]+|(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)/g;
 function highlightLine(line) {
   let result = "";
   let lastIndex = 0;
@@ -3388,6 +3337,32 @@ function formatVarState(vars) {
   }
   return `${C.dim}  ${parts.join(", ")}${C.reset}`;
 }
+var KEYWORDS = [
+  "when",
+  "unless",
+  "while",
+  "for",
+  "do",
+  "end",
+  "in",
+  "of",
+  "and",
+  "or",
+  "else",
+  "break",
+  "continue",
+  "delete",
+  "self",
+  "true",
+  "false",
+  "null",
+  "undefined",
+  "string",
+  "number",
+  "object",
+  "array",
+  "boolean"
+];
 function completer(state) {
   return (line) => {
     const match = line.match(/[a-zA-Z_][a-zA-Z0-9_.-]*$/);
@@ -3546,239 +3521,9 @@ async function startRepl() {
   });
   rl.prompt();
 }
-var req, version, C, TOKEN_RE, KEYWORDS;
-var init_rex_repl = __esm(() => {
-  init_rex();
-  init_rexc_interpreter();
-  req = createRequire2(import.meta.url);
-  ({ version } = req("./package.json"));
-  C = {
-    reset: "\x1B[0m",
-    bold: "\x1B[1m",
-    dim: "\x1B[2m",
-    red: "\x1B[31m",
-    green: "\x1B[32m",
-    yellow: "\x1B[33m",
-    blue: "\x1B[34m",
-    cyan: "\x1B[36m",
-    gray: "\x1B[90m",
-    boldBlue: "\x1B[1;34m"
-  };
-  TOKEN_RE = /(?<blockComment>\/\*[\s\S]*?(?:\*\/|$))|(?<lineComment>\/\/[^\n]*)|(?<dstring>"(?:[^"\\]|\\.)*"?)|(?<sstring>'(?:[^'\\]|\\.)*'?)|(?<keyword>\b(?:when|unless|while|for|do|end|in|of|and|or|else|break|continue|delete|self)\b)|(?<literal>\b(?:true|false|null|undefined)\b)|(?<typePred>\b(?:string|number|object|array|boolean)\b)|(?<num>\b(?:0x[0-9a-fA-F]+|0b[01]+|(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)/g;
-  KEYWORDS = [
-    "when",
-    "unless",
-    "while",
-    "for",
-    "do",
-    "end",
-    "in",
-    "of",
-    "and",
-    "or",
-    "else",
-    "break",
-    "continue",
-    "delete",
-    "self",
-    "true",
-    "false",
-    "null",
-    "undefined",
-    "string",
-    "number",
-    "object",
-    "array",
-    "boolean"
-  ];
-});
-
-// rex-cli.ts
-init_rex();
-init_rexc_interpreter();
-import { dirname, resolve } from "node:path";
-import { readFile, writeFile } from "node:fs/promises";
-function parseArgs(argv) {
-  const options = {
-    compile: false,
-    ir: false,
-    minifyNames: false,
-    dedupeValues: false,
-    help: false
-  };
-  for (let index = 0;index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (!arg)
-      continue;
-    if (arg === "--help" || arg === "-h") {
-      options.help = true;
-      continue;
-    }
-    if (arg === "--compile" || arg === "-c") {
-      options.compile = true;
-      continue;
-    }
-    if (arg === "--ir") {
-      options.ir = true;
-      continue;
-    }
-    if (arg === "--minify-names" || arg === "-m") {
-      options.minifyNames = true;
-      continue;
-    }
-    if (arg === "--dedupe-values") {
-      options.dedupeValues = true;
-      continue;
-    }
-    if (arg === "--dedupe-min-bytes") {
-      const value = argv[index + 1];
-      if (!value)
-        throw new Error("Missing value for --dedupe-min-bytes");
-      const parsed = Number(value);
-      if (!Number.isInteger(parsed) || parsed < 1)
-        throw new Error("--dedupe-min-bytes must be a positive integer");
-      options.dedupeMinBytes = parsed;
-      index += 1;
-      continue;
-    }
-    if (arg === "--expr" || arg === "-e") {
-      const value = argv[index + 1];
-      if (!value)
-        throw new Error("Missing value for --expr");
-      options.expr = value;
-      index += 1;
-      continue;
-    }
-    if (arg === "--file" || arg === "-f") {
-      const value = argv[index + 1];
-      if (!value)
-        throw new Error("Missing value for --file");
-      options.file = value;
-      index += 1;
-      continue;
-    }
-    if (arg === "--out" || arg === "-o") {
-      const value = argv[index + 1];
-      if (!value)
-        throw new Error("Missing value for --out");
-      options.out = value;
-      index += 1;
-      continue;
-    }
-    if (!arg.startsWith("-")) {
-      if (options.file)
-        throw new Error("Multiple file arguments provided");
-      options.file = arg;
-      continue;
-    }
-    throw new Error(`Unknown option: ${arg}`);
-  }
-  return options;
-}
-function usage() {
-  return [
-    "Rex expression language CLI.",
-    "",
-    "Usage:",
-    "  rex                            Start interactive REPL",
-    "  rex input.rex                  Evaluate a Rex script (JSON output)",
-    "  rex --expr '1 + 2'             Evaluate an inline expression",
-    "  cat input.rex | rex            Evaluate from stdin",
-    "  rex -c input.rex               Compile to rexc bytecode",
-    "",
-    "Input:",
-    "  <file>                Evaluate/compile a Rex source file",
-    "  -e, --expr <source>   Evaluate/compile an inline expression",
-    "  -f, --file <path>     Evaluate/compile source from a file",
-    "",
-    "Output mode:",
-    "  (default)             Evaluate and output result as JSON",
-    "  -c, --compile         Compile to rexc bytecode",
-    "      --ir              Output lowered IR as JSON",
-    "",
-    "Compile options:",
-    "  -m, --minify-names    Minify local variable names",
-    "      --dedupe-values   Deduplicate large repeated values",
-    "      --dedupe-min-bytes <n>  Minimum bytes for dedupe (default: 4)",
-    "",
-    "General:",
-    "  -o, --out <path>      Write output to file instead of stdout",
-    "  -h, --help            Show this message"
-  ].join(`
-`);
-}
-async function readStdin() {
-  const chunks = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-async function resolveSource(options) {
-  if (options.expr && options.file)
-    throw new Error("Use only one of --expr, --file, or a positional file path");
-  if (options.expr)
-    return options.expr;
-  if (options.file)
-    return readFile(options.file, "utf8");
-  if (!process.stdin.isTTY) {
-    const piped = await readStdin();
-    if (piped.trim().length > 0)
-      return piped;
-  }
-  throw new Error("No input provided. Use a file path, --expr, or pipe source via stdin.");
-}
-async function loadDomainConfigFromFolder(folderPath) {
-  const configPath = resolve(folderPath, ".config.rex");
-  try {
-    return parse(await readFile(configPath, "utf8"));
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return;
-    throw error;
-  }
-}
-async function resolveDomainConfig(options) {
-  const baseFolder = options.file ? dirname(resolve(options.file)) : process.cwd();
-  return loadDomainConfigFromFolder(baseFolder);
-}
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
-  if (options.help) {
-    console.log(usage());
-    return;
-  }
-  const hasSource = options.expr || options.file || !process.stdin.isTTY;
-  if (!hasSource && !options.compile && !options.ir) {
-    const { startRepl: startRepl2 } = await Promise.resolve().then(() => (init_rex_repl(), exports_rex_repl));
-    await startRepl2();
-    return;
-  }
-  const source = await resolveSource(options);
-  let output;
-  if (options.ir) {
-    output = JSON.stringify(parseToIR(source), null, 2);
-  } else if (options.compile) {
-    const domainConfig = await resolveDomainConfig(options);
-    output = compile(source, {
-      minifyNames: options.minifyNames,
-      dedupeValues: options.dedupeValues,
-      dedupeMinBytes: options.dedupeMinBytes,
-      domainConfig
-    });
-  } else {
-    const { value } = evaluateSource(source);
-    output = JSON.stringify(value, null, 2);
-  }
-  if (options.out) {
-    await writeFile(options.out, `${output}
-`, "utf8");
-    return;
-  }
-  console.log(output);
-}
-await main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`rex: ${message}`);
-  process.exit(1);
-});
+export {
+  startRepl,
+  isIncomplete,
+  highlightLine,
+  formatVarState
+};

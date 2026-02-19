@@ -4,7 +4,7 @@ const DIGIT_SET = new Set(
 );
 
 // Tags that can start a value (excludes closing delimiters)
-const VALUE_TAGS = new Set("+*:%$@^~=([{,?!|&><;'");
+const VALUE_TAGS = new Set("+*:%$@^~=([{,?!|&><;'#");
 
 export const TOKEN_TYPES = [
 	"byteLength", // 0 - length prefixes
@@ -202,11 +202,12 @@ export function tokenize(text: string): Token[] {
 		const tagCol = col;
 
 		switch (tag) {
-			// Control-flow containers: ?( !( |( &(
+			// Control-flow containers: ?( !( |( &( #(
 			case "?":
 			case "!":
 			case "|":
-			case "&": {
+			case "&":
+			case "#": {
 				// Peek for ( after the tag
 				if (pos + 1 < text.length && text[pos + 1] === "(") {
 					if (pos > prefixStart)

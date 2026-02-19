@@ -106,4 +106,9 @@ describe("Rex encoding backend", () => {
 		expect(compile("for users do self end")).toBe(">(users$@)");
 		expect(compile("{k, v in scores ; (k): v * 100}")).toBe(">{scores$k$v$k$7(3%v$38+)}");
 	});
+
+	test("encodes while loops", () => {
+		expect(compile("while x do self end")).toBe("#(x$@)");
+		expect(compile("while x > 0 do x -= 1 end")).toBe("#((9%x$+)b=x$6(2%x$2+))");
+	});
 });

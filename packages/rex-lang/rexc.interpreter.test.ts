@@ -52,6 +52,31 @@ describe("rexc interpreter (streaming)", () => {
 		expect(evaluateRexc("3;").value).toEqual({ kind: "continue", depth: 2 });
 	});
 
+	test("supports while loops", () => {
+		// Basic countdown
+		const r1 = evaluateSource("do x = 3 while x > 0 do x -= 1 end x end");
+		expect(r1.value).toBe(0);
+
+		// While returns last body value
+		const r2 = evaluateSource("do x = 3 while x > 0 do x -= 1 end end");
+		expect(r2.value).toBe(0);
+
+		// Condition is existence-based — stops on undefined
+		expect(evaluateSource("while undefined do 99 end").value).toBeUndefined();
+
+		// Self is set to condition value
+		const r3 = evaluateSource("do x = 3 while x > 0 do x -= 1 self end end");
+		expect(r3.value).toBe(1);
+
+		// Break exits early
+		const r4 = evaluateSource("do x = 10 while x > 0 do x -= 1 when x == 5 do break end end x end");
+		expect(r4.value).toBe(5);
+
+		// Continue skips to next iteration (must be last expression in body)
+		const r5 = evaluateSource("do x = 3 while x > 0 do x -= 1 continue end end");
+		expect(r5.value).toBeUndefined();
+	});
+
 	test("supports variable delete", () => {
 		const result = evaluateSource("do x = 10 delete x x end");
 		expect(result.value).toBeUndefined();
@@ -81,6 +106,68 @@ describe("rexc interpreter (streaming)", () => {
 
 	test("supports deep self stack reads", () => {
 		expect(evaluateRexc("2@", { selfStack: ["grand", "parent", "child"] }).value).toBe("grand");
+	});
+
+	test("self in when (?) then-branch equals condition value", () => {
+		// Literal condition
+		expect(evaluateSource("when 3 do self end").value).toBe(3);
+		expect(evaluateSource("when 'hello' do self end").value).toBe("hello");
+		expect(evaluateSource("when 0 do self end").value).toBe(0);
+		expect(evaluateSource("when false do self end").value).toBe(false);
+
+		// Assignment condition — self is the assigned value
+		expect(evaluateSource("when x = 3 do self end").value).toBe(3);
+
+		// Expression condition
+		expect(evaluateSource("when 2 + 3 do self end").value).toBe(5);
+	});
+
+	test("self in when (?) else-branch inherits outer self", () => {
+		// No outer self — self is initial (undefined)
+		expect(evaluateSource("when undefined do 'yes' else self end").value).toBeUndefined();
+
+		// Inside a for loop — self should be the loop item, not the undefined condition
+		expect(evaluateSource("for [42] do when undefined do 'yes' else self end end").value).toBe(42);
+	});
+
+	test("self in unless (!) then-branch inherits outer self", () => {
+		// No outer self — self is initial (undefined)
+		expect(evaluateSource("unless undefined do self end").value).toBeUndefined();
+
+		// Inside a for loop — self should be the loop item, not the undefined condition
+		expect(evaluateSource("for [42] do unless undefined do self end end").value).toBe(42);
+	});
+
+	test("self in unless (!) else-branch equals condition value", () => {
+		// Condition is defined, so else runs and self = condition
+		expect(evaluateSource("unless 7 do 'no' else self end").value).toBe(7);
+		expect(evaluateSource("unless 'hi' do 'no' else self end").value).toBe("hi");
+	});
+
+	test("self in for loop body equals iteration value", () => {
+		expect(evaluateSource("for [10, 20, 30] do self end").value).toBe(30);
+		expect(evaluateSource("[3 ; self * self]").value).toEqual([1, 4, 9]);
+	});
+
+	test("self in array comprehension equals iteration value", () => {
+		expect(evaluateSource("[v in [5, 6] ; self]").value).toEqual([5, 6]);
+	});
+
+	test("self in object comprehension equals iteration value", () => {
+		expect(evaluateSource("{v in [1, 2] ; (self): self * 10}").value).toEqual({ "1": 10, "2": 20 });
+	});
+
+	test("nested self depth through conditionals and loops", () => {
+		// when inside for — self is the when condition, self@2 is the loop item
+		expect(evaluateSource("for [100] do when 5 do self end end").value).toBe(5);
+		expect(evaluateSource("for [100] do when 5 do self@2 end end").value).toBe(100);
+
+		// Nested for loops — self@2 reaches outer loop
+		expect(evaluateSource("for [10] do for [20] do self@2 end end").value).toBe(10);
+
+		// when inside when — self at each depth
+		expect(evaluateSource("when 'outer' do when 'inner' do self end end").value).toBe("inner");
+		expect(evaluateSource("when 'outer' do when 'inner' do self@2 end end").value).toBe("outer");
 	});
 
 	test("supports reference place mutation", () => {
