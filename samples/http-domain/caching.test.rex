@@ -4,12 +4,12 @@
       name: "catalog upstream miss"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/v1/catalog"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/v1/catalog"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -27,12 +27,12 @@
       name: "catalog with if-none-match"
       input: {
         refs: {
-          "43": {if-none-match: "etag123"}
-          "48": "GET"
-          "51": "/v1/catalog"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {if-none-match: "etag123"}
+          M: "GET"
+          P: "/v1/catalog"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -50,12 +50,12 @@
       name: "profile policy path"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/v1/profile"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/v1/profile"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {

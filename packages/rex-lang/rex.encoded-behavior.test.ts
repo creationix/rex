@@ -22,7 +22,7 @@ describe("Rex encoded behavior", () => {
 	});
 
 	test("encodes loop control scalars", () => {
-		expect(compile("for 1 do break continue end")).toBe(">(2+4(%;1;))");
+		expect(compile("for in 1 do break continue end")).toBe(">(2+4(%;1;))");
 	});
 
 	test("prefixes nested container values in arrays and objects", () => {
@@ -31,8 +31,8 @@ describe("Rex encoded behavior", () => {
 	});
 
 	test("prefixes comprehension result containers in skip positions", () => {
-		expect(compile("[v in [1, 2] ; {x: v}]")).toBe(">[[2+4+]v$4{x:v$}]");
-		expect(compile("{v in [1, 2] ; (v): [v]}"))
+		expect(compile("[{x: v} for v in [1, 2]]")).toBe(">[[2+4+]v$4{x:v$}]");
+		expect(compile("{(v): [v] for v in [1, 2]}"))
 			.toBe(">{[2+4+]v$v$2[v$]}");
 	});
 

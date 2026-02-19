@@ -78,9 +78,11 @@ export type IRNode =
 export type IRBinding =
 	| { type: "binding:keyValueIn"; key: string; value: string; source: IRNode }
 	| { type: "binding:valueIn"; value: string; source: IRNode }
-	| { type: "binding:keyOf"; key: string; source: IRNode };
+	| { type: "binding:keyOf"; key: string; source: IRNode }
+	| { type: "binding:bareIn"; source: IRNode }
+	| { type: "binding:bareOf"; source: IRNode };
 
-export type IRBindingOrExpr = IRBinding | { type: "binding:expr"; source: IRNode };
+export type IRBindingOrExpr = IRBinding;
 
 export type IRConditionalElse =
 	| { type: "else"; block: IRNode[] }
@@ -99,34 +101,35 @@ function byteLength(value: string): number {
 }
 
 const OPCODE_IDS = {
-	do: 0,
-	add: 1,
-	sub: 2,
-	mul: 3,
-	div: 4,
-	eq: 5,
-	neq: 6,
-	lt: 7,
-	lte: 8,
-	gt: 9,
-	gte: 10,
-	and: 11,
-	or: 12,
-	xor: 13,
-	not: 14,
-	boolean: 15,
-	number: 16,
-	string: 17,
-	array: 18,
-	object: 19,
-	mod: 20,
-	neg: 21,
+	do: "",
+	add: "ad",
+	sub: "sb",
+	mul: "ml",
+	div: "dv",
+	eq: "eq",
+	neq: "nq",
+	lt: "lt",
+	lte: "le",
+	gt: "gt",
+	gte: "ge",
+	and: "an",
+	or: "or",
+	xor: "xr",
+	not: "nt",
+	boolean: "bt",
+	number: "nm",
+	string: "st",
+	array: "ar",
+	object: "ob",
+	mod: "md",
+	neg: "ng",
 } as const;
 
 type OpcodeName = keyof typeof OPCODE_IDS;
 
 type EncodeOptions = {
-	domainRefs?: Record<string, number>;
+	domainRefs?: Record<string, string>;
+	domainOpcodes?: Record<string, string>;
 };
 
 type CompileOptions = {
@@ -140,9 +143,6 @@ type CompileOptions = {
 type RexDomainConfigEntry = {
 	names?: unknown;
 };
-
-const FIRST_NON_RESERVED_REF = 8;
-const DOMAIN_DIGIT_INDEX = new Map<string, number>(Array.from(DIGITS).map((char, index) => [char, index]));
 
 const BINARY_TO_OPCODE: Record<Extract<IRNode, { type: "binary" }> ["op"], OpcodeName> = {
 	add: "add",
@@ -267,9 +267,9 @@ function encodeDecimal(significand: number, power: number): string {
 
 function encodeNumberNode(node: Extract<IRNode, { type: "number" }>): string {
 	const numberValue = node.value;
-	if (Number.isNaN(numberValue)) return "5'";
-	if (numberValue === Infinity) return "6'";
-	if (numberValue === -Infinity) return "7'";
+	if (Number.isNaN(numberValue)) return "nan'";
+	if (numberValue === Infinity) return "inf'";
+	if (numberValue === -Infinity) return "nif'";
 
 	if (Number.isInteger(numberValue)) {
 		const { base, exp } = splitDecimal(numberValue);
@@ -302,7 +302,7 @@ function encodeNumberNode(node: Extract<IRNode, { type: "number" }>): string {
 }
 
 function encodeOpcode(opcode: OpcodeName): string {
-	return `${encodeUint(OPCODE_IDS[opcode])}%`;
+	return `${OPCODE_IDS[opcode]}%`;
 }
 
 function encodeCallParts(parts: string[]): string {
@@ -334,7 +334,7 @@ function addOptionalPrefix(encoded: string): string {
 }
 
 function encodeBlockExpression(block: IRNode[]): string {
-	if (block.length === 0) return "4'";
+	if (block.length === 0) return "un'";
 	if (block.length === 1) return encodeNode(block[0] as IRNode);
 	return encodeCallParts([encodeOpcode("do"), ...block.map((node) => encodeNode(node))]);
 }
@@ -351,9 +351,14 @@ function encodeConditionalElse(elseBranch: IRConditionalElse): string {
 	return encodeNode(nested);
 }
 
+function encodeDomainLookup(shortCode: string, tag: string): string {
+	return `${shortCode}${tag}`;
+}
+
 function encodeNavigation(node: Extract<IRNode, { type: "navigation" }>): string {
 	const domainRefs = activeEncodeOptions?.domainRefs;
-	if (domainRefs && node.target.type === "identifier") {
+	const domainOpcodes = activeEncodeOptions?.domainOpcodes;
+	if ((domainRefs || domainOpcodes) && node.target.type === "identifier") {
 		const staticPath = [node.target.name];
 		for (const segment of node.segments) {
 			if (segment.type !== "static") break;
@@ -362,15 +367,18 @@ function encodeNavigation(node: Extract<IRNode, { type: "navigation" }>): string
 
 		for (let pathLength = staticPath.length; pathLength >= 1; pathLength -= 1) {
 			const dottedName = staticPath.slice(0, pathLength).join(".");
-			const domainRef = domainRefs[dottedName];
-			if (domainRef === undefined) continue;
+			const refCode = domainRefs?.[dottedName];
+			const opcodeCode = domainOpcodes?.[dottedName];
+			const shortCode = refCode ?? opcodeCode;
+			if (shortCode === undefined) continue;
+			const tag = refCode !== undefined ? "'" : "%";
 
 			const consumedStaticSegments = pathLength - 1;
 			if (consumedStaticSegments === node.segments.length) {
-				return `${encodeUint(domainRef)}'`;
+				return encodeDomainLookup(shortCode, tag);
 			}
 
-			const parts = [`${encodeUint(domainRef)}'`];
+			const parts = [encodeDomainLookup(shortCode, tag)];
 			for (const segment of node.segments.slice(consumedStaticSegments)) {
 				if (segment.type === "static") parts.push(encodeBareOrLengthString(segment.key));
 				else parts.push(encodeNode(segment.key));
@@ -395,8 +403,11 @@ function encodeWhile(node: Extract<IRNode, { type: "while" }>): string {
 
 function encodeFor(node: Extract<IRNode, { type: "for" }>): string {
 	const body = addOptionalPrefix(encodeBlockExpression(node.body));
-	if (node.binding.type === "binding:expr") {
+	if (node.binding.type === "binding:bareIn") {
 		return `>(${encodeNode(node.binding.source)}${body})`;
+	}
+	if (node.binding.type === "binding:bareOf") {
+		return `<(${encodeNode(node.binding.source)}${body})`;
 	}
 	if (node.binding.type === "binding:valueIn") {
 		return `>(${encodeNode(node.binding.source)}${node.binding.value}$${body})`;
@@ -409,8 +420,11 @@ function encodeFor(node: Extract<IRNode, { type: "for" }>): string {
 
 function encodeArrayComprehension(node: Extract<IRNode, { type: "arrayComprehension" }>): string {
 	const body = addOptionalPrefix(encodeNode(node.body));
-	if (node.binding.type === "binding:expr") {
+	if (node.binding.type === "binding:bareIn") {
 		return `>[${encodeNode(node.binding.source)}${body}]`;
+	}
+	if (node.binding.type === "binding:bareOf") {
+		return `<[${encodeNode(node.binding.source)}${body}]`;
 	}
 	if (node.binding.type === "binding:valueIn") {
 		return `>[${encodeNode(node.binding.source)}${node.binding.value}$${body}]`;
@@ -418,14 +432,17 @@ function encodeArrayComprehension(node: Extract<IRNode, { type: "arrayComprehens
 	if (node.binding.type === "binding:keyValueIn") {
 		return `>[${encodeNode(node.binding.source)}${node.binding.key}$${node.binding.value}$${body}]`;
 	}
-	return `>[${encodeNode(node.binding.source)}${node.binding.key}$${body}]`;
+	return `<[${encodeNode(node.binding.source)}${node.binding.key}$${body}]`;
 }
 
 function encodeObjectComprehension(node: Extract<IRNode, { type: "objectComprehension" }>): string {
 	const key = addOptionalPrefix(encodeNode(node.key));
 	const value = addOptionalPrefix(encodeNode(node.value));
-	if (node.binding.type === "binding:expr") {
+	if (node.binding.type === "binding:bareIn") {
 		return `>{${encodeNode(node.binding.source)}${key}${value}}`;
+	}
+	if (node.binding.type === "binding:bareOf") {
+		return `<{${encodeNode(node.binding.source)}${key}${value}}`;
 	}
 	if (node.binding.type === "binding:valueIn") {
 		return `>{${encodeNode(node.binding.source)}${node.binding.value}$${key}${value}}`;
@@ -433,7 +450,7 @@ function encodeObjectComprehension(node: Extract<IRNode, { type: "objectComprehe
 	if (node.binding.type === "binding:keyValueIn") {
 		return `>{${encodeNode(node.binding.source)}${node.binding.key}$${node.binding.value}$${key}${value}}`;
 	}
-	return `>{${encodeNode(node.binding.source)}${node.binding.key}$${key}${value}}`;
+	return `<{${encodeNode(node.binding.source)}${node.binding.key}$${key}${value}}`;
 }
 
 let activeEncodeOptions: EncodeOptions | undefined;
@@ -444,7 +461,9 @@ function encodeNode(node: IRNode): string {
 			return encodeBlockExpression(node.body);
 		case "identifier": {
 			const domainRef = activeEncodeOptions?.domainRefs?.[node.name];
-			if (domainRef !== undefined) return `${encodeUint(domainRef)}'`;
+			if (domainRef !== undefined) return `${domainRef}'`;
+			const domainOpcode = activeEncodeOptions?.domainOpcodes?.[node.name];
+			if (domainOpcode !== undefined) return `${domainOpcode}%`;
 			return `${node.name}$`;
 		}
 		case "self":
@@ -455,11 +474,11 @@ function encodeNode(node: IRNode): string {
 			return `${encodeUint(node.depth - 1)}@`;
 		}
 		case "boolean":
-			return node.value ? "1'" : "2'";
+			return node.value ? "tr'" : "fl'";
 		case "null":
-			return "3'";
+			return "nl'";
 		case "undefined":
-			return "4'";
+			return "un'";
 		case "number":
 			return encodeNumberNode(node);
 		case "string":
@@ -690,81 +709,62 @@ export function parse(source: string): unknown {
 	return parseDataNode(parseToIR(source));
 }
 
-export function domainRefsFromConfig(config: unknown): Record<string, number> {
+type DomainMaps = { domainRefs: Record<string, string>; domainOpcodes: Record<string, string> };
+
+export function domainRefsFromConfig(config: unknown): DomainMaps {
 	if (!config || typeof config !== "object" || Array.isArray(config)) {
 		throw new Error("Domain config must be an object");
 	}
-	const refs: Record<string, number> = {};
-	for (const section of Object.values(config)) {
-		if (!section || typeof section !== "object" || Array.isArray(section)) continue;
-		mapConfigEntries(section as Record<string, unknown>, refs);
+	const configObj = config as Record<string, unknown>;
+	const domainRefs: Record<string, string> = {};
+	const domainOpcodes: Record<string, string> = {};
+
+	const dataSection = configObj.data;
+	if (dataSection && typeof dataSection === "object" && !Array.isArray(dataSection)) {
+		mapConfigEntries(dataSection as Record<string, unknown>, domainRefs);
 	}
-	return refs;
+
+	const functionsSection = configObj.functions;
+	if (functionsSection && typeof functionsSection === "object" && !Array.isArray(functionsSection)) {
+		mapConfigEntries(functionsSection as Record<string, unknown>, domainOpcodes);
+	}
+
+	return { domainRefs, domainOpcodes };
 }
 
-function decodeDomainRefKey(refText: string): number {
-	if (!refText) throw new Error("Domain ref key cannot be empty");
-	if (!/^[0-9A-Za-z_-]+$/.test(refText)) {
-		throw new Error(`Invalid domain ref key '${refText}' (must use base64 alphabet 0-9a-zA-Z-_)`);
-	}
-	if (refText.length > 1 && refText[0] === "0") {
-		throw new Error(`Invalid domain ref key '${refText}' (leading zeroes are not allowed)`);
-	}
-	if (/^[1-9]$/.test(refText)) {
-		throw new Error(`Invalid domain ref key '${refText}' (reserved by core language)`);
-	}
-
-	let value = 0;
-	for (const char of refText) {
-		const digit = DOMAIN_DIGIT_INDEX.get(char);
-		if (digit === undefined) throw new Error(`Invalid domain ref key '${refText}'`);
-		value = value * 64 + digit;
-		if (value > Number.MAX_SAFE_INTEGER) {
-			throw new Error(`Invalid domain ref key '${refText}' (must fit in 53 bits)`);
-		}
-	}
-
-	if (value < FIRST_NON_RESERVED_REF) {
-		throw new Error(`Invalid domain ref key '${refText}' (maps to reserved id ${value})`);
-	}
-
-	return value;
-}
-
-function mapConfigEntries(entries: Record<string, unknown>, refs: Record<string, number>) {
+function mapConfigEntries(entries: Record<string, unknown>, refs: Record<string, string>) {
 	const sourceKindByRoot = new Map<string, "explicit" | "implicit">();
 	for (const root of Object.keys(refs)) {
 		sourceKindByRoot.set(root, "explicit");
 	}
 
-	for (const [refText, rawEntry] of Object.entries(entries)) {
+	for (const [shortCode, rawEntry] of Object.entries(entries)) {
 		const entry = rawEntry as RexDomainConfigEntry;
 		if (!entry || typeof entry !== "object") continue;
 		if (!Array.isArray(entry.names)) continue;
 
-		const refId = decodeDomainRefKey(refText);
 		for (const rawName of entry.names) {
 			if (typeof rawName !== "string") continue;
-			const existingNameRef = refs[rawName];
-			if (existingNameRef !== undefined && existingNameRef !== refId) {
-				throw new Error(`Conflicting refs for '${rawName}': ${existingNameRef} vs ${refId}`);
+			const existingRef = refs[rawName];
+			if (existingRef !== undefined && existingRef !== shortCode) {
+				throw new Error(`Conflicting refs for '${rawName}': ${existingRef} vs ${shortCode}`);
 			}
-			refs[rawName] = refId;
+			refs[rawName] = shortCode;
 
 			const root = rawName.split(".")[0];
 			if (!root) continue;
 			const currentKind: "explicit" | "implicit" = rawName.includes(".") ? "implicit" : "explicit";
 			const existing = refs[root];
 			if (existing !== undefined) {
-				if (existing === refId) continue;
+				if (existing === shortCode) continue;
 				const existingKind = sourceKindByRoot.get(root) ?? "explicit";
 				if (currentKind === "explicit") {
-					throw new Error(`Conflicting refs for '${root}': ${existing} vs ${refId}`);
+					throw new Error(`Conflicting refs for '${root}': ${existing} vs ${shortCode}`);
 				}
 				if (existingKind === "explicit") continue;
 				continue;
 			}
-			refs[root] = refId;
+			refs[root] = shortCode;
 			sourceKindByRoot.set(root, currentKind);
 		}
 	}
@@ -1050,6 +1050,22 @@ function dropBindingNames(env: OptimizeEnv, binding: IRBindingOrExpr) {
 	}
 	if (binding.type === "binding:keyOf") {
 		clearBinding(env, binding.key);
+	}
+}
+
+function optimizeBinding(binding: IRBindingOrExpr, sourceEnv: OptimizeEnv, currentDepth: number): IRBinding {
+	const source = optimizeNode(binding.source, sourceEnv, currentDepth);
+	switch (binding.type) {
+		case "binding:bareIn":
+			return { type: "binding:bareIn", source };
+		case "binding:bareOf":
+			return { type: "binding:bareOf", source };
+		case "binding:valueIn":
+			return { type: "binding:valueIn", value: binding.value, source };
+		case "binding:keyValueIn":
+			return { type: "binding:keyValueIn", key: binding.key, value: binding.value, source };
+		case "binding:keyOf":
+			return { type: "binding:keyOf", key: binding.key, source };
 	}
 }
 
@@ -1706,31 +1722,7 @@ function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number, asPl
 		}
 		case "for": {
 			const sourceEnv = cloneOptimizeEnv(env);
-			const binding = (() => {
-				if (node.binding.type === "binding:expr") {
-					return { type: "binding:expr", source: optimizeNode(node.binding.source, sourceEnv, currentDepth) } satisfies IRBindingOrExpr;
-				}
-				if (node.binding.type === "binding:valueIn") {
-					return {
-						type: "binding:valueIn",
-						value: node.binding.value,
-						source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
-					} satisfies IRBinding;
-				}
-				if (node.binding.type === "binding:keyValueIn") {
-					return {
-						type: "binding:keyValueIn",
-						key: node.binding.key,
-						value: node.binding.value,
-						source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
-					} satisfies IRBinding;
-				}
-				return {
-					type: "binding:keyOf",
-					key: node.binding.key,
-					source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
-				} satisfies IRBinding;
-			})();
+			const binding = optimizeBinding(node.binding, sourceEnv, currentDepth);
 			const bodyEnv = cloneOptimizeEnv(env);
 			dropBindingNames(bodyEnv, binding);
 			return {
@@ -1741,26 +1733,7 @@ function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number, asPl
 		}
 		case "arrayComprehension": {
 			const sourceEnv = cloneOptimizeEnv(env);
-			const binding = node.binding.type === "binding:expr"
-				? ({ type: "binding:expr", source: optimizeNode(node.binding.source, sourceEnv, currentDepth) } satisfies IRBindingOrExpr)
-				: node.binding.type === "binding:valueIn"
-					? ({
-						type: "binding:valueIn",
-						value: node.binding.value,
-						source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
-					} satisfies IRBinding)
-					: node.binding.type === "binding:keyValueIn"
-						? ({
-							type: "binding:keyValueIn",
-							key: node.binding.key,
-							value: node.binding.value,
-							source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
-						} satisfies IRBinding)
-						: ({
-							type: "binding:keyOf",
-							key: node.binding.key,
-							source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
-						} satisfies IRBinding);
+			const binding = optimizeBinding(node.binding, sourceEnv, currentDepth);
 			const bodyEnv = cloneOptimizeEnv(env);
 			dropBindingNames(bodyEnv, binding);
 			return {
@@ -1771,26 +1744,7 @@ function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number, asPl
 		}
 		case "objectComprehension": {
 			const sourceEnv = cloneOptimizeEnv(env);
-			const binding = node.binding.type === "binding:expr"
-				? ({ type: "binding:expr", source: optimizeNode(node.binding.source, sourceEnv, currentDepth) } satisfies IRBindingOrExpr)
-				: node.binding.type === "binding:valueIn"
-					? ({
-						type: "binding:valueIn",
-						value: node.binding.value,
-						source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
-					} satisfies IRBinding)
-					: node.binding.type === "binding:keyValueIn"
-						? ({
-							type: "binding:keyValueIn",
-							key: node.binding.key,
-							value: node.binding.value,
-							source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
-						} satisfies IRBinding)
-						: ({
-							type: "binding:keyOf",
-							key: node.binding.key,
-							source: optimizeNode(node.binding.source, sourceEnv, currentDepth),
-						} satisfies IRBinding);
+			const binding = optimizeBinding(node.binding, sourceEnv, currentDepth);
 			const bodyEnv = cloneOptimizeEnv(env);
 			dropBindingNames(bodyEnv, binding);
 			return {
@@ -2090,29 +2044,19 @@ function renameLocalNames(node: IRNode, map: Map<string, string>): IRNode {
 }
 
 function renameLocalNamesBinding(binding: IRBindingOrExpr, map: Map<string, string>): IRBindingOrExpr {
-	if (binding.type === "binding:expr") {
-		return { type: "binding:expr", source: renameLocalNames(binding.source, map) } satisfies IRBindingOrExpr;
+	const source = renameLocalNames(binding.source, map);
+	switch (binding.type) {
+		case "binding:bareIn":
+			return { type: "binding:bareIn", source };
+		case "binding:bareOf":
+			return { type: "binding:bareOf", source };
+		case "binding:valueIn":
+			return { type: "binding:valueIn", value: map.get(binding.value) ?? binding.value, source };
+		case "binding:keyValueIn":
+			return { type: "binding:keyValueIn", key: map.get(binding.key) ?? binding.key, value: map.get(binding.value) ?? binding.value, source };
+		case "binding:keyOf":
+			return { type: "binding:keyOf", key: map.get(binding.key) ?? binding.key, source };
 	}
-	if (binding.type === "binding:valueIn") {
-		return {
-			type: "binding:valueIn",
-			value: map.get(binding.value) ?? binding.value,
-			source: renameLocalNames(binding.source, map),
-		} satisfies IRBinding;
-	}
-	if (binding.type === "binding:keyValueIn") {
-		return {
-			type: "binding:keyValueIn",
-			key: map.get(binding.key) ?? binding.key,
-			value: map.get(binding.value) ?? binding.value,
-			source: renameLocalNames(binding.source, map),
-		} satisfies IRBinding;
-	}
-	return {
-		type: "binding:keyOf",
-		key: map.get(binding.key) ?? binding.key,
-		source: renameLocalNames(binding.source, map),
-	} satisfies IRBinding;
 }
 
 function renameLocalNamesElse(elseBranch: IRConditionalElse, map: Map<string, string>): IRConditionalElse {
@@ -2163,9 +2107,9 @@ export function compile(source: string, options?: CompileOptions): string {
 	const ir = parseToIR(source);
 	let lowered = options?.optimize ? optimizeIR(ir) : ir;
 	if (options?.minifyNames) lowered = minifyLocalNamesIR(lowered);
-	const domainRefs = options?.domainConfig ? domainRefsFromConfig(options.domainConfig) : undefined;
+	const domainMaps = options?.domainConfig ? domainRefsFromConfig(options.domainConfig) : undefined;
 	return encodeIR(lowered, {
-		domainRefs,
+		...domainMaps,
 		dedupeValues: options?.dedupeValues,
 		dedupeMinBytes: options?.dedupeMinBytes,
 	});
@@ -2408,13 +2352,6 @@ semantics.addOperation("toIR", {
 		return { type: "else", block: block.toIR() as IRNode[] } satisfies IRConditionalElse;
 	},
 
-	DoExpr(_do, block, _end) {
-		const body = block.toIR() as IRNode[];
-		if (body.length === 0) return { type: "undefined" } satisfies IRNode;
-		if (body.length === 1) return body[0] as IRNode;
-		return { type: "program", body } satisfies IRNode;
-	},
-
 	WhileExpr(_while, condition, _do, block, _end) {
 		return {
 			type: "while",
@@ -2426,25 +2363,32 @@ semantics.addOperation("toIR", {
 	ForExpr(_for, binding, _do, block, _end) {
 		return {
 			type: "for",
-			binding: binding.toIR() as IRBindingOrExpr,
+			binding: binding.toIR() as IRBinding,
 			body: block.toIR() as IRNode[],
 		} satisfies IRNode;
-	},
-	BindingExpr(iterOrExpr) {
-		const node = iterOrExpr.toIR();
-		if (typeof node === "object" && node && "type" in node && String(node.type).startsWith("binding:")) {
-			return node as IRBinding;
-		}
-		return { type: "binding:expr", source: node as IRNode } satisfies IRBindingOrExpr;
 	},
 
 	Array_empty(_open, _close) {
 		return { type: "array", items: [] } satisfies IRNode;
 	},
-	Array_comprehension(_open, binding, _semi, body, _close) {
+	Array_forComprehension(_open, body, _for, binding, _close) {
 		return {
 			type: "arrayComprehension",
-			binding: binding.toIR() as IRBindingOrExpr,
+			binding: binding.toIR() as IRBinding,
+			body: body.toIR(),
+		} satisfies IRNode;
+	},
+	Array_inComprehension(_open, body, _in, source, _close) {
+		return {
+			type: "arrayComprehension",
+			binding: { type: "binding:bareIn", source: source.toIR() } satisfies IRBinding,
+			body: body.toIR(),
+		} satisfies IRNode;
+	},
+	Array_ofComprehension(_open, body, _of, source, _close) {
+		return {
+			type: "arrayComprehension",
+			binding: { type: "binding:bareOf", source: source.toIR() } satisfies IRBinding,
 			body: body.toIR(),
 		} satisfies IRNode;
 	},
@@ -2455,10 +2399,26 @@ semantics.addOperation("toIR", {
 	Object_empty(_open, _close) {
 		return { type: "object", entries: [] } satisfies IRNode;
 	},
-	Object_comprehension(_open, binding, _semi, key, _colon, value, _close) {
+	Object_forComprehension(_open, key, _colon, value, _for, binding, _close) {
 		return {
 			type: "objectComprehension",
-			binding: binding.toIR() as IRBindingOrExpr,
+			binding: binding.toIR() as IRBinding,
+			key: key.toIR(),
+			value: value.toIR(),
+		} satisfies IRNode;
+	},
+	Object_inComprehension(_open, key, _colon, value, _in, source, _close) {
+		return {
+			type: "objectComprehension",
+			binding: { type: "binding:bareIn", source: source.toIR() } satisfies IRBinding,
+			key: key.toIR(),
+			value: value.toIR(),
+		} satisfies IRNode;
+	},
+	Object_ofComprehension(_open, key, _colon, value, _of, source, _close) {
+		return {
+			type: "objectComprehension",
+			binding: { type: "binding:bareOf", source: source.toIR() } satisfies IRBinding,
 			key: key.toIR(),
 			value: value.toIR(),
 		} satisfies IRNode;
@@ -2489,6 +2449,18 @@ semantics.addOperation("toIR", {
 		return {
 			type: "binding:keyOf",
 			key: key.sourceString,
+			source: source.toIR(),
+		} satisfies IRBinding;
+	},
+	IterBinding_bareIn(_in, source) {
+		return {
+			type: "binding:bareIn",
+			source: source.toIR(),
+		} satisfies IRBinding;
+	},
+	IterBinding_bareOf(_of, source) {
+		return {
+			type: "binding:bareOf",
 			source: source.toIR(),
 		} satisfies IRBinding;
 	},

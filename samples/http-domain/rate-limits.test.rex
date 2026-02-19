@@ -4,12 +4,12 @@
       name: "search route global limit"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/v1/search"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/v1/search"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -31,12 +31,12 @@
       name: "payments route global limit"
       input: {
         refs: {
-          "43": {}
-          "48": "POST"
-          "51": "/v1/payments/charge"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "POST"
+          P: "/v1/payments/charge"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {
@@ -58,12 +58,12 @@
       name: "other route global limit"
       input: {
         refs: {
-          "43": {}
-          "48": "GET"
-          "51": "/v1/other"
-          "52": {}
-          "38": {}
-          "37": undefined
+          H: {}
+          M: "GET"
+          P: "/v1/other"
+          Q: {}
+          C: {}
+          B: undefined
         }
       }
       expect: {

@@ -9,9 +9,9 @@ describe("rexc interpreter (streaming)", () => {
 		expect(evaluateSource("2 > 3").value).toBeUndefined();
 	});
 
-	test("supports assignment and standalone do expression", () => {
+	test("supports assignment and multi-expression programs", () => {
 		const state = { vars: {} as Record<string, unknown> };
-		const result = evaluateSource("do x = 10 x + 2 end", state);
+		const result = evaluateSource("x = 10 x + 2", state);
 		expect(result.value).toBe(12);
 		expect(result.state.vars["x"]).toBe(10);
 	});
@@ -30,21 +30,21 @@ describe("rexc interpreter (streaming)", () => {
 	});
 
 	test("supports comprehensions and loop control scalar", () => {
-		expect(evaluateSource("[v in [1, 2, 3] ; v + 1]").value).toEqual([2, 3, 4]);
-		expect(evaluateSource("{v in [1, 2] ; (v): v * 10}").value).toEqual({ "1": 10, "2": 20 });
-		expect(evaluateSource("for 5 do break end").value).toBeUndefined();
+		expect(evaluateSource("[v + 1 for v in [1, 2, 3]]").value).toEqual([2, 3, 4]);
+		expect(evaluateSource("{(v): v * 10 for v in [1, 2]}").value).toEqual({ "1": 10, "2": 20 });
+		expect(evaluateSource("for in 5 do break end").value).toBeUndefined();
 	});
 
 	test("supports in/of binding forms and key/value bindings", () => {
-		expect(evaluateSource("[k of {a: 1, b: 2} ; k]").value).toEqual([1, 2]);
-		expect(evaluateSource("[k in {a: 1, b: 2} ; k]").value).toEqual([1, 2]);
-		expect(evaluateSource("[k, v in [10, 20] ; k + v]").value).toEqual([10, 21]);
-		expect(evaluateSource("{k, v in {a: 1, b: 2} ; (k): v}").value).toEqual({ a: 1, b: 2 });
+		expect(evaluateSource("[k for k of {a: 1, b: 2}]").value).toEqual(["a", "b"]);
+		expect(evaluateSource("[k for k in {a: 1, b: 2}]").value).toEqual([1, 2]);
+		expect(evaluateSource("[k + v for k, v in [10, 20]]").value).toEqual([10, 21]);
+		expect(evaluateSource("{(k): v for k, v in {a: 1, b: 2}}").value).toEqual({ a: 1, b: 2 });
 	});
 
 	test("supports nested break and continue behavior", () => {
-		expect(evaluateSource("for 3 do for 3 do break end 99 end").value).toBe(99);
-		expect(evaluateSource("for 3 do continue end").value).toBeUndefined();
+		expect(evaluateSource("for in 3 do for in 3 do break end 99 end").value).toBe(99);
+		expect(evaluateSource("for in 3 do continue end").value).toBeUndefined();
 	});
 
 	test("supports loop-control scalar depth decoding", () => {
@@ -54,31 +54,31 @@ describe("rexc interpreter (streaming)", () => {
 
 	test("supports while loops", () => {
 		// Basic countdown
-		const r1 = evaluateSource("do x = 3 while x > 0 do x -= 1 end x end");
+		const r1 = evaluateSource("x = 3 while x > 0 do x -= 1 end x");
 		expect(r1.value).toBe(0);
 
 		// While returns last body value
-		const r2 = evaluateSource("do x = 3 while x > 0 do x -= 1 end end");
+		const r2 = evaluateSource("x = 3 while x > 0 do x -= 1 end");
 		expect(r2.value).toBe(0);
 
 		// Condition is existence-based — stops on undefined
 		expect(evaluateSource("while undefined do 99 end").value).toBeUndefined();
 
 		// Self is set to condition value
-		const r3 = evaluateSource("do x = 3 while x > 0 do x -= 1 self end end");
+		const r3 = evaluateSource("x = 3 while x > 0 do x -= 1 self end");
 		expect(r3.value).toBe(1);
 
 		// Break exits early
-		const r4 = evaluateSource("do x = 10 while x > 0 do x -= 1 when x == 5 do break end end x end");
+		const r4 = evaluateSource("x = 10 while x > 0 do x -= 1 when x == 5 do break end end x");
 		expect(r4.value).toBe(5);
 
 		// Continue skips to next iteration (must be last expression in body)
-		const r5 = evaluateSource("do x = 3 while x > 0 do x -= 1 continue end end");
+		const r5 = evaluateSource("x = 3 while x > 0 do x -= 1 continue end");
 		expect(r5.value).toBeUndefined();
 	});
 
 	test("supports variable delete", () => {
-		const result = evaluateSource("do x = 10 delete x x end");
+		const result = evaluateSource("x = 10 delete x x");
 		expect(result.value).toBeUndefined();
 		expect(result.state.vars["x"]).toBeUndefined();
 	});
@@ -87,14 +87,14 @@ describe("rexc interpreter (streaming)", () => {
 		expect(evaluateRexc("@", { self: "root" }).value).toBe("root");
 		expect(evaluateRexc(">([2+]1@)", { self: "outer" }).value).toBe("outer");
 		expect(evaluateRexc("5'", { refs: { 5: "headers" } }).value).toBe("headers");
-		expect(evaluateSource("for [10] do for [20] do self@2 end end").value).toBe(10);
+		expect(evaluateSource("for in [10] do for in [20] do self@2 end end").value).toBe(10);
 	});
 
 	test("supports built-in apostrophe references", () => {
-		expect(evaluateRexc("1'").value).toBe(true);
-		expect(evaluateRexc("2'").value).toBe(false);
-		expect(evaluateRexc("3'").value).toBeNull();
-		expect(evaluateRexc("4'").value).toBeUndefined();
+		expect(evaluateRexc("tr'").value).toBe(true);
+		expect(evaluateRexc("fl'").value).toBe(false);
+		expect(evaluateRexc("nl'").value).toBeNull();
+		expect(evaluateRexc("un'").value).toBeUndefined();
 	});
 
 	test("supports existence operator runtime semantics", () => {
@@ -127,7 +127,7 @@ describe("rexc interpreter (streaming)", () => {
 		expect(evaluateSource("when undefined do 'yes' else self end").value).toBeUndefined();
 
 		// Inside a for loop — self should be the loop item, not the undefined condition
-		expect(evaluateSource("for [42] do when undefined do 'yes' else self end end").value).toBe(42);
+		expect(evaluateSource("for in [42] do when undefined do 'yes' else self end end").value).toBe(42);
 	});
 
 	test("self in unless (!) then-branch inherits outer self", () => {
@@ -135,7 +135,7 @@ describe("rexc interpreter (streaming)", () => {
 		expect(evaluateSource("unless undefined do self end").value).toBeUndefined();
 
 		// Inside a for loop — self should be the loop item, not the undefined condition
-		expect(evaluateSource("for [42] do unless undefined do self end end").value).toBe(42);
+		expect(evaluateSource("for in [42] do unless undefined do self end end").value).toBe(42);
 	});
 
 	test("self in unless (!) else-branch equals condition value", () => {
@@ -145,25 +145,25 @@ describe("rexc interpreter (streaming)", () => {
 	});
 
 	test("self in for loop body equals iteration value", () => {
-		expect(evaluateSource("for [10, 20, 30] do self end").value).toBe(30);
-		expect(evaluateSource("[3 ; self * self]").value).toEqual([1, 4, 9]);
+		expect(evaluateSource("for in [10, 20, 30] do self end").value).toBe(30);
+		expect(evaluateSource("[self * self in 3]").value).toEqual([1, 4, 9]);
 	});
 
 	test("self in array comprehension equals iteration value", () => {
-		expect(evaluateSource("[v in [5, 6] ; self]").value).toEqual([5, 6]);
+		expect(evaluateSource("[self for v in [5, 6]]").value).toEqual([5, 6]);
 	});
 
 	test("self in object comprehension equals iteration value", () => {
-		expect(evaluateSource("{v in [1, 2] ; (self): self * 10}").value).toEqual({ "1": 10, "2": 20 });
+		expect(evaluateSource("{(self): self * 10 for v in [1, 2]}").value).toEqual({ "1": 10, "2": 20 });
 	});
 
 	test("nested self depth through conditionals and loops", () => {
 		// when inside for — self is the when condition, self@2 is the loop item
-		expect(evaluateSource("for [100] do when 5 do self end end").value).toBe(5);
-		expect(evaluateSource("for [100] do when 5 do self@2 end end").value).toBe(100);
+		expect(evaluateSource("for in [100] do when 5 do self end end").value).toBe(5);
+		expect(evaluateSource("for in [100] do when 5 do self@2 end end").value).toBe(100);
 
 		// Nested for loops — self@2 reaches outer loop
-		expect(evaluateSource("for [10] do for [20] do self@2 end end").value).toBe(10);
+		expect(evaluateSource("for in [10] do for in [20] do self@2 end end").value).toBe(10);
 
 		// when inside when — self at each depth
 		expect(evaluateSource("when 'outer' do when 'inner' do self end end").value).toBe("inner");

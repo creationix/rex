@@ -54,7 +54,6 @@ Rex {
 
   PrimaryExpr
     = ConditionalExpr
-    | DoExpr
     | ForExpr
     | WhileExpr
     | BreakKw                        -- break
@@ -103,35 +102,34 @@ Rex {
     | ElseKw Block                                               -- else
 
   ForExpr
-    = ForKw BindingExpr DoKw Block EndKw
+    = ForKw IterBinding DoKw Block EndKw
 
   WhileExpr
     = WhileKw Expr DoKw Block EndKw
 
-  DoExpr
-    = DoKw Block EndKw
-
-  BindingExpr
-    = IterBinding
-    | Expr
+  IterBinding
+    = identifier "," identifier inTok Expr   -- keyValueIn
+    | identifier inTok Expr                  -- valueIn
+    | identifier ofTok Expr                  -- keyOf
+    | inTok Expr                             -- bareIn
+    | ofTok Expr                             -- bareOf
 
   Block
     = Expr*
 
   Array
-    = "[" "]"                                -- empty
-    | "[" BindingExpr ";" Expr "]"          -- comprehension
-    | "[" Elements<Expr> "]"                 -- values
+    = "[" "]"                                              -- empty
+    | "[" Expr ForKw IterBinding "]"                       -- forComprehension
+    | "[" Expr inTok Expr "]"                              -- inComprehension
+    | "[" Expr ofTok Expr "]"                              -- ofComprehension
+    | "[" Elements<Expr> "]"                               -- values
 
   Object
-    = "{" "}"                                 -- empty
-    | "{" BindingExpr ";" ObjKey ":" Expr "}" -- comprehension
-    | "{" Elements<Pair> "}"                 -- pairs
-
-  IterBinding
-    = identifier "," identifier "in" Expr   -- keyValueIn
-    | identifier "in" Expr                  -- valueIn
-    | identifier "of" Expr                  -- keyOf
+    = "{" "}"                                              -- empty
+    | "{" ObjKey ":" Expr ForKw IterBinding "}"            -- forComprehension
+    | "{" ObjKey ":" Expr inTok Expr "}"                   -- inComprehension
+    | "{" ObjKey ":" Expr ofTok Expr "}"                   -- ofComprehension
+    | "{" Elements<Pair> "}"                               -- pairs
 
   Pair
     = ObjKey ":" Expr

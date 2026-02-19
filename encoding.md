@@ -79,6 +79,7 @@ Digits form a **big-endian base-64 integer**. Zero is **no digits** (zero-length
 | `&(`   | All    | expr, expr, ... (first undefined short-circuits) |
 | `>(`   | For-in | iterable, body OR iterable, value-var, body OR iterable, key-var, value-var, body |
 | `<(`   | For-of | iterable, body OR iterable, key-var, body    |
+| `#(`   | While  | condition, body                               |
 | `>[`,`<[` | Array comprehension | iteration clause, body expression |
 | `>{`,`<{` | Object comprehension | iteration clause, key expression, value expression |
 
@@ -147,49 +148,56 @@ b,hello world │ "hello world"
 
 ## Opcodes
 
-A single unified opcode family. Control flow (`when`, `unless`, `alt`, `all`, loops, loop control) has dedicated syntax and is not in this table. Domain opcodes extend from 22+.
+Opcodes use short mnemonic string keys. The digit prefix is the raw key string (not a base-64 integer). Control flow (`when`, `unless`, `alt`, `all`, loops, loop control) has dedicated syntax and is not in this table.
 
-| ID | Opcode | Enc. |  | ID | Opcode    | Enc. |
-|----|--------|------|--|----|-----------|------|
-| 0  | `do`   | `%`  |  | 11 | `and`     | `b%` |
-| 1  | `add`  | `1%` |  | 12 | `or`      | `c%` |
-| 2  | `sub`  | `2%` |  | 13 | `xor`     | `d%` |
-| 3  | `mul`  | `3%` |  | 14 | `not`     | `e%` |
-| 4  | `div`  | `4%` |  | 15 | `boolean` | `f%` |
-| 5  | `eq`   | `5%` |  | 16 | `number`  | `g%` |
-| 6  | `neq`  | `6%` |  | 17 | `string`  | `h%` |
-| 7  | `lt`   | `7%` |  | 18 | `array`   | `i%` |
-| 8  | `lte`  | `8%` |  | 19 | `object`  | `j%` |
-| 9  | `gt`   | `9%` |  | 20 | `mod`     | `k%` |
-| 10 | `gte`  | `a%` |  | 21 | `neg`     | `l%` |
+| Opcode | Enc.  |  | Opcode    | Enc.  |
+|--------|-------|--|-----------|-------|
+| `do`   | `%`   |  | `and`     | `an%` |
+| `add`  | `ad%` |  | `or`      | `or%` |
+| `sub`  | `sb%` |  | `xor`     | `xr%` |
+| `mul`  | `ml%` |  | `not`     | `nt%` |
+| `div`  | `dv%` |  | `boolean` | `bt%` |
+| `eq`   | `eq%` |  | `number`  | `nm%` |
+| `neq`  | `nq%` |  | `string`  | `st%` |
+| `lt`   | `lt%` |  | `array`   | `ar%` |
+| `lte`  | `le%` |  | `object`  | `ob%` |
+| `gt`   | `gt%` |  | `mod`     | `md%` |
+| `gte`  | `ge%` |  | `neg`     | `ng%` |
+
+Domain functions also compile as opcodes with their own short codes (e.g., `jp%` for `json.parse`).
 
 Opcodes are used as the first value inside `()` calls:
 
 ```rexc
-(1%2+4+)   │ 1 + 2
-(9%x$k+)   │ x > 10
-(%=x$k+E+) │ do x = 10 20 end
+(ad%2+4+)   │ 1 + 2
+(gt%x$k+)   │ x > 10
+(%=x$k+E+)  │ do x = 10 20 end
 ```
 
 ## References
 
-Pre-assigned constants. IDs other than 1-4 are domain-defined.
+References use short mnemonic string keys. The digit prefix is the raw key string (not a base-64 integer).
 
-| ID | Value       | Encoding |
-|----|-------------|----------|
-| 0  | Domain-defined | `0'` |
-| 1  | `true`      | `1'`     |
-| 2  | `false`     | `2'`     |
-| 3  | `null`      | `3'`     |
-| 4  | `undefined` | `4'`     |
-| 5+ | Domain-defined | `5'`, `6'`, ... |
+**Built-in constants:**
+
+| Value       | Encoding |
+|-------------|----------|
+| `true`      | `tr'`    |
+| `false`     | `fl'`    |
+| `null`      | `nl'`    |
+| `undefined` | `un'`    |
+| `NaN`       | `nan'`   |
+| `Infinity`  | `inf'`   |
+| `-Infinity` | `nif'`   |
+
+**Domain data** also compiles as references with short codes defined in the domain config (e.g., `H'` for `headers`, `M'` for `method`).  By convention, domain references use uppercase letters to distinguish them from opcode references.
 
 For navigation into a domain reference, use a call:
 
 ```rexc
-(5'host:)                   │ headers.host
-(5'x-forwarded-for:origin:) │ headers.x-forwarded-for.origin
-(5'key$)                    │ headers[key]
+(H'host:)                   │ headers.host
+(H'x-forwarded-for:origin:) │ headers.x-forwarded-for.origin
+(H'key$)                    │ headers[key]
 ```
 
 ## Self Depth
@@ -230,7 +238,7 @@ Both have an optional byte-length prefix for when the operation itself needs to 
 
 ```rexc
 =x$1k+                │ x = 42
-=(5'x-handler:)handler$ │ headers['x-handler'] = handler
+=(H'x-handler:)handler$ │ headers['x-handler'] = handler
 ~x$                    │ delete x
 ~(user$temp:)          │ delete user.temp
 ```
@@ -247,10 +255,10 @@ The `(` `)` container groups a function-like expression. The first value determi
 | Any other value  | Navigation from expression result |
 
 ```rexc
-(1%2+4+)                    │ 1 + 2
-(9%x$k+)                    │ x > 10
+(ad%2+4+)                   │ 1 + 2
+(gt%x$k+)                   │ x > 10
 (user$address:street:)      │ user.address.street
-(5'x-forwarded-for:origin:) │ headers.x-forwarded-for.origin
+(H'x-forwarded-for:origin:) │ headers.x-forwarded-for.origin
 ({a:2+}a:)                  │ {a:1}.a
 ```
 
@@ -269,12 +277,12 @@ Control-flow operations have dedicated container syntax with compound openers. `
 The condition is always evaluated. Then-expr and else-expr are in skip positions — the interpreter jumps past whichever branch isn't taken. Container values in these positions get byte-length prefixes.
 
 ```rexc
-?((9%x$k+)5(1%x$2+)5(1%x$3+))
-├╯╰──┬───╯╰───┬───╯╰───┬───╯╰─ closer
-│    │        │        ╰────── else: add(x, -2) — prefixed, skip position
-│    │        ╰─────────────── then: add(x, 1) — prefixed, skip position
-│    ╰──────────────────────── cond: gt(x, 10) — bare, always evaluated
-╰───────────────────────────── when opener
+?((gt%x$k+)7(ad%x$2+)7(sb%x$4+))
+├╯╰───┬───╯╰────┬───╯╰────┬───╯╰─ closer
+│     │         │         ╰────── else: sub(x, 2) — prefixed, skip position
+│     │         ╰──────────────── then: add(x, 1) — prefixed, skip position
+│     ╰────────────────────────── cond: gt(x, 10) — bare, always evaluated
+╰──────────────────────────────── when opener
 ```
 
 ### Alt / All
@@ -296,25 +304,30 @@ The first expression is always evaluated. Remaining expressions are in skip posi
 
 ### Loops and Comprehensions
 
-`for` forms are dedicated control-flow containers, not opcodes.
+`for` and `while` forms are dedicated control-flow containers, not opcodes.
 
 ```rexc
->(iter body)                 │ for self in iter
->(iter v$ body)              │ for v in iter
->(iter k$ v$ body)           │ for k, v in iter
-<(iter body)                 │ for self of iter
-<(iter k$ body)              │ for k of iter
+>(iter body)                 │ for in iter do ... end
+>(iter v$ body)              │ for v in iter do ... end
+>(iter k$ v$ body)           │ for k, v in iter do ... end
+<(iter body)                 │ for of iter do ... end
+<(iter k$ body)              │ for k of iter do ... end
+#(cond body)                 │ while cond do ... end
 ```
 
-Comprehensions use dedicated containers to avoid ambiguity with plain loop expressions:
+Comprehensions put the body expression first, then `for`/`in`/`of` and the iterator:
 
 ```rexc
->[iter body]                 │ [iter ; body] array comprehension
->[iter v$ body]              │ [v in iter ; body]
->[iter k$ v$ body]           │ [k, v in iter ; body]
->{iter key val}              │ {iter ; key: val} object comprehension
->{iter v$ key val}           │ {v in iter ; key: val}
->{iter k$ v$ key val}        │ {k, v in iter ; key: val}
+>[iter body]                 │ [val in iter] array comprehension (self is value)
+>[iter v$ body]              │ [val for v in iter]
+>[iter k$ v$ body]           │ [val for k, v in iter]
+>{iter key val}              │ {key:val in iter} object comprehension (self is value)
+>{iter v$ key val}           │ {key:val for v in iter}
+>{iter k$ v$ key val}        │ {key:val for k, v in iter}
+<[iter body]                 │ [val of iter] array comprehension (self is key)
+<[iter k$ body]              │ [val for k of iter]
+<{iter key val}              │ {key:val of iter} object comprehension  (self is key)
+<{iter k$ key val}           │ {key:val for k of iter}
 ```
 
 `>[...]` collects defined body results into a new array (undefined results are skipped). `>{...}` evaluates key/value expressions and writes entries only when the value is defined.
@@ -450,12 +463,12 @@ The encoder adds byte-length prefixes to container values only where O(1) skippi
 ### `1 + 2`
 
 ```rexc
-(1%2+4+)
-│├╯├╯├╯╰─ call closer
-││ │ ╰─── integer 2 (zigzag)
-││ ╰───── integer 1 (zigzag)
-│╰─────── add (opcode 1)
-╰──────── call opener
+(ad%2+4+)
+│╰┬╯├╯├╯╰─ call closer
+│ │ │ ╰─── integer 2 (zigzag)
+│ │ ╰───── integer 1 (zigzag)
+│ ╰─────── add opcode
+╰───────── call opener
 ```
 
 ### `x = 42`
@@ -471,11 +484,11 @@ The encoder adds byte-length prefixes to container values only where O(1) skippi
 ### `when x > 10 do x + 1 end`
 
 ```rexc
-?((9%x$k+)6(1%x$2+))
-├╯╰──┬───╯╰───┬───╯╰─ closer
-│    │        ╰────── then: (add x 1) — prefixed(6), skip position
-│    ╰─────────────── cond: x > 10 — bare, always evaluated
-╰──────────────────── when opener
+?((gt%x$k+)7(ad%x$2+))
+├╯╰───┬───╯╰────┬───╯╰─ closer
+│     │         ╰────── then: (add x 1) — prefixed(7), skip position
+│     ╰─────────────── cond: x > 10 — bare, always evaluated
+╰───────────────────── when opener
 ```
 
 ### `{color: "red", size: 42}`
@@ -500,17 +513,24 @@ The encoder adds byte-length prefixes to container values only where O(1) skippi
 ╰───────────────────────── alt opener
 ```
 
-### `[x in 10 ; when self % 3 > 0 do x * 3 end]`
+### `[when self % 3 > 0 do x * 3 end for x in 10]`
 
 ```rexc
->[k+x$?((9%(k%'6+)+)(3%x$6+))]
+>[k+x$o?((gt%(md%@6+)+)7(ml%x$6+))]
+├╯╰┬─╯╰┬╯╰─────┬──────╯╰───┬────╯│╰─ array comprehension closer
+│  │   │       │           │     ╰── when closer
+│  │   │       │           ╰──────── then: x * 3 — prefixed(7), skip position
+│  │   │       ╰──────────────────── condition: self % 3 > 0
+│  │   ╰──────────────────────────── when body opener (length prefixed)
+│  ╰──────────────────────────────── x in 10
+╰─────────────────────────────────── array comprehension opener
 ```
 
 This yields `[3, 6, 12, 15, 21, 24, 30]`.
 
 ### HTTP Server Action Annotations
 
-This is a larger example using a domain provided `headers` ref object `0'` (shown as `'` in compact form).
+This is a larger example using domain ref `H'` for `headers`.
 
 ```rex
 map = {
@@ -522,10 +542,10 @@ when act = map.(headers.x-action) do
 end
 ```
 
-This compiles down to 84 bytes:
+This compiles down to 86 bytes:
 
 ```rexc
-(%=map$r{abc:8,/letters3S+8,/numbers}?(=act$g(map$('x-action:))h=('x-handler:)act$))
+(%=map$r{abc:8,/letters3S+8,/numbers}?(=act$h(map$(H'x-action:))i=(H'x-handler:)act$))
 ```
 
 This can be optimized using inline data and `self` instead of two local variables.
@@ -539,10 +559,10 @@ when {
 end
 ```
 
-Which compiles down to 62 bytes:
+Which compiles down to 65 bytes:
 
 ```rexc
-?(({abc:8,/letters3S+8,/numbers}('x-action:))e=('x-handler:)@)
+?(({abc:8,/letters123:8,/numbers}(H'x-action:))f=(H'x-handler:)@)
 ```
 
 ### Repeated Value with Pointers
