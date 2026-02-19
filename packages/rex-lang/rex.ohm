@@ -38,7 +38,7 @@ Rex {
     | UnaryExpr                      -- value
 
   UnaryExpr
-    = "-" ~digit UnaryExpr           -- neg
+    = "-" ~digit ~infTok UnaryExpr    -- neg
     | "~" UnaryExpr                  -- not
     | DeleteKw Place                 -- delete
     | PostfixExpr                    -- value
@@ -47,7 +47,7 @@ Rex {
     = PrimaryExpr PostfixTail*       -- chain
 
   PostfixTail
-    = "." keyName                    -- navStatic
+    = "." navKey                     -- navStatic
     | ".(" Expr ")"                 -- navDynamic
     | "(" ")"                      -- callEmpty
     | "(" Elements<Expr> ")"        -- call
@@ -88,7 +88,7 @@ Rex {
     | SelfKw
 
   PlaceTail
-    = "." keyName                    -- navStatic
+    = "." navKey                     -- navStatic
     | ".(" Expr ")"                 -- navDynamic
 
   ConditionalExpr
@@ -142,6 +142,10 @@ Rex {
     | String                         -- string
     | "(" Expr ")"                  -- computed
 
+  navKey
+    = keyName
+    | digit+
+
   keyName
     = nameHead nameTail*
 
@@ -185,6 +189,8 @@ Rex {
     | falseTok
     | nullTok
     | undefinedTok
+    | nanTok
+    | infTok
     | selfTok
     | whenTok
     | unlessTok
@@ -284,6 +290,12 @@ Rex {
   undefinedTok
     = "undefined" ~nameTail
 
+  nanTok
+    = "nan" ~nameTail
+
+  infTok
+    = "inf" ~nameTail
+
   selfTok
     = "self" ~nameTail
 
@@ -382,7 +394,15 @@ Rex {
   Number
     = hexNumber
     | binaryNumber
+    | infLiteral
+    | nanLiteral
     | decimalNumber
+
+  infLiteral
+    = "-"? infTok
+
+  nanLiteral
+    = nanTok
 
   hexNumber
     = "-"? "0x" hex+

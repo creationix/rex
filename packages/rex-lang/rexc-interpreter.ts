@@ -101,6 +101,9 @@ class CursorInterpreter {
 				2: ctx.refs?.[2] ?? false,
 				3: ctx.refs?.[3] ?? null,
 				4: ctx.refs?.[4] ?? undefined,
+				5: ctx.refs?.[5] ?? NaN,
+				6: ctx.refs?.[6] ?? Infinity,
+				7: ctx.refs?.[7] ?? -Infinity,
 			},
 		};
 		this.selfStack = ctx.selfStack && ctx.selfStack.length > 0 ? [...ctx.selfStack] : [initialSelf];
@@ -658,24 +661,31 @@ class CursorInterpreter {
 			case OPCODES.do:
 				return args.length ? args[args.length - 1] : undefined;
 			case OPCODES.add:
+					if (args[0] === undefined || args[1] === undefined) return undefined;
 					if (typeof args[0] === "string" || typeof args[1] === "string") {
-						return String(args[0] ?? "") + String(args[1] ?? "");
+						return String(args[0]) + String(args[1]);
 					}
-					return Number(args[0] ?? 0) + Number(args[1] ?? 0);
+					return Number(args[0]) + Number(args[1]);
 			case OPCODES.sub:
-				return Number(args[0] ?? 0) - Number(args[1] ?? 0);
+				if (args[0] === undefined || args[1] === undefined) return undefined;
+				return Number(args[0]) - Number(args[1]);
 			case OPCODES.mul:
-				return Number(args[0] ?? 0) * Number(args[1] ?? 0);
+				if (args[0] === undefined || args[1] === undefined) return undefined;
+				return Number(args[0]) * Number(args[1]);
 			case OPCODES.div:
-				return Number(args[0] ?? 0) / Number(args[1] ?? 0);
+				if (args[0] === undefined || args[1] === undefined) return undefined;
+				return Number(args[0]) / Number(args[1]);
 			case OPCODES.mod:
-				return Number(args[0] ?? 0) % Number(args[1] ?? 0);
+				if (args[0] === undefined || args[1] === undefined) return undefined;
+				return Number(args[0]) % Number(args[1]);
 			case OPCODES.neg:
-				return -Number(args[0] ?? 0);
+				if (args[0] === undefined) return undefined;
+				return -Number(args[0]);
 			case OPCODES.not: {
 				const value = args[0];
+				if (value === undefined) return undefined;
 				if (typeof value === "boolean") return !value;
-				return ~Number(value ?? 0);
+				return ~Number(value);
 			}
 			case OPCODES.and: {
 				const [a, b] = args;
