@@ -119,7 +119,7 @@
 			]
 		},
 		"literal-keyword": {
-			"match": "\\b(true|false|null|undefined)\\b",
+			"match": "\\b(true|false|null|undefined|nan)\\b|-?\\binf\\b",
 			"name": "constant.language.rex"
 		},
 		"control-keyword": {
