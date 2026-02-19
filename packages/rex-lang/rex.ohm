@@ -56,6 +56,7 @@ Rex {
     = ConditionalExpr
     | DoExpr
     | ForExpr
+    | WhileExpr
     | BreakKw                        -- break
     | ContinueKw                     -- continue
     | Array
@@ -103,6 +104,9 @@ Rex {
 
   ForExpr
     = ForKw BindingExpr DoKw Block EndKw
+
+  WhileExpr
+    = WhileKw Expr DoKw Block EndKw
 
   DoExpr
     = DoKw Block EndKw
@@ -185,6 +189,7 @@ Rex {
     | whenTok
     | unlessTok
     | forTok
+    | whileTok
     | inTok
     | ofTok
     | doTok
@@ -221,6 +226,9 @@ Rex {
 
   UnlessKw
     = unlessTok
+
+  WhileKw
+    = whileTok
 
   ForKw
     = forTok
@@ -284,6 +292,9 @@ Rex {
 
   unlessTok
     = "unless" ~nameTail
+
+  whileTok
+    = "while" ~nameTail
 
   forTok
     = "for" ~nameTail

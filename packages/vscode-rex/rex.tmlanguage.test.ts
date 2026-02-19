@@ -28,7 +28,7 @@ describe("rex TextMate grammar", () => {
 		expect(includes.has("#object-key")).toBe(true);
 
 		expect(grammar.repository["control-keyword"]?.match).toContain(
-			"(when|unless|else|for|in|of|do|end|break|continue)",
+			"(when|unless|else|while|for|in|of|do|end|break|continue)",
 		);
 		expect(grammar.repository["existence-operator"]?.match).toContain("(and|or)");
 		expect(grammar.repository["self-depth"]?.match).toContain("self(?:@[1-9][0-9]*)?");

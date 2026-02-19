@@ -123,7 +123,7 @@
 			"name": "constant.language.rex"
 		},
 		"control-keyword": {
-			"match": "\\b(when|unless|else|for|in|of|do|end|break|continue)\\b",
+			"match": "\\b(when|unless|else|while|for|in|of|do|end|break|continue)\\b",
 			"name": "keyword.control.rex"
 		},
 		"self-depth": {

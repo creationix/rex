@@ -187,13 +187,13 @@ function needsOptionalPrefix(encoded) {
   const first = encoded[0];
   if (!first)
     return false;
-  return first === "[" || first === "{" || first === "(" || first === "=" || first === "~" || first === "?" || first === "!" || first === "|" || first === "&" || first === ">" || first === "<";
+  return first === "[" || first === "{" || first === "(" || first === "=" || first === "~" || first === "?" || first === "!" || first === "|" || first === "&" || first === ">" || first === "<" || first === "#";
 }
 function addOptionalPrefix(encoded) {
   if (!needsOptionalPrefix(encoded))
     return encoded;
   let payload = encoded;
-  if (encoded.startsWith("?(") || encoded.startsWith("!(") || encoded.startsWith("|(") || encoded.startsWith("&(") || encoded.startsWith(">(") || encoded.startsWith("<(")) {
+  if (encoded.startsWith("?(") || encoded.startsWith("!(") || encoded.startsWith("|(") || encoded.startsWith("&(") || encoded.startsWith(">(") || encoded.startsWith("<(") || encoded.startsWith("#(")) {
     payload = encoded.slice(2, -1);
   } else if (encoded.startsWith(">[") || encoded.startsWith(">{")) {
     payload = encoded.slice(2, -1);
@@ -259,6 +259,11 @@ function encodeNavigation(node) {
       parts.push(encodeNode(segment.key));
   }
   return encodeCallParts(parts);
+}
+function encodeWhile(node) {
+  const cond = encodeNode(node.condition);
+  const body = addOptionalPrefix(encodeBlockExpression(node.body));
+  return `#(${cond}${body})`;
 }
 function encodeFor(node) {
   const body = addOptionalPrefix(encodeBlockExpression(node.body));
@@ -396,6 +401,8 @@ function encodeNode(node) {
     }
     case "for":
       return encodeFor(node);
+    case "while":
+      return encodeWhile(node);
     case "break":
       return ";";
     case "continue":
@@ -2235,6 +2242,13 @@ semantics.addOperation("toIR", {
     if (body.length === 1)
       return body[0];
     return { type: "program", body };
+  },
+  WhileExpr(_while, condition, _do, block, _end) {
+    return {
+      type: "while",
+      condition: condition.toIR(),
+      body: block.toIR()
+    };
   },
   ForExpr(_for, binding, _do, block, _end) {
     return {

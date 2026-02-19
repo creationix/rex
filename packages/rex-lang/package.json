@@ -29,12 +29,14 @@
 		"rex.ohm-bundle.cjs",
 		"rex.ohm-bundle.js",
 		"rex.ohm-bundle.d.ts",
-		"rexc-interpreter.ts"
+		"rexc-interpreter.ts",
+		"rex-repl.ts",
+		"rex-repl.js"
 	],
 	"scripts": {
 		"test": "bun test",
 		"build:grammar": "ohm generateBundles --withTypes rex.ohm && node -e \"require('node:fs').copyFileSync('rex.ohm-bundle.js','rex.ohm-bundle.cjs')\"",
-		"build:js": "bun build rex.ts --outfile rex.js --format esm --target node && bun build rex-cli.ts --outfile rex-cli.js --format esm --target node && node -e \"const fs=require('fs'),f='rex-cli.js';fs.writeFileSync(f,'#!/usr/bin/env node\\n'+fs.readFileSync(f,'utf8'))\"",
+		"build:js": "bun build rex.ts --outfile rex.js --format esm --target node && bun build rex-repl.ts --outfile rex-repl.js --format esm --target node && bun build rex-cli.ts --outfile rex-cli.js --format esm --target node && node -e \"const fs=require('fs'),f='rex-cli.js';fs.writeFileSync(f,'#!/usr/bin/env node\\n'+fs.readFileSync(f,'utf8'))\"",
 		"compile": "bun run rex-cli.ts",
 		"verify:docs": "bun run verify-doc-examples.ts",
 		"pack:dry-run": "npm pack --dry-run",

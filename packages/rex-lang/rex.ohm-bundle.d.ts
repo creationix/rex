@@ -80,6 +80,7 @@ export interface RexActionDict<T> extends BaseActionDict<T> {
   ConditionalElse_else?: (this: NonterminalNode, arg0: NonterminalNode, arg1: NonterminalNode) => T;
   ConditionalElse?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   ForExpr?: (this: NonterminalNode, arg0: NonterminalNode, arg1: NonterminalNode, arg2: NonterminalNode, arg3: NonterminalNode, arg4: NonterminalNode) => T;
+  WhileExpr?: (this: NonterminalNode, arg0: NonterminalNode, arg1: NonterminalNode, arg2: NonterminalNode, arg3: NonterminalNode, arg4: NonterminalNode) => T;
   DoExpr?: (this: NonterminalNode, arg0: NonterminalNode, arg1: NonterminalNode, arg2: NonterminalNode) => T;
   BindingExpr?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   Block?: (this: NonterminalNode, arg0: IterationNode) => T;
@@ -116,6 +117,7 @@ export interface RexActionDict<T> extends BaseActionDict<T> {
   SelfKw?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   WhenKw?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   UnlessKw?: (this: NonterminalNode, arg0: NonterminalNode) => T;
+  WhileKw?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   ForKw?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   DoKw?: (this: NonterminalNode, arg0: NonterminalNode) => T;
   ElseKw?: (this: NonterminalNode, arg0: NonterminalNode) => T;
@@ -137,6 +139,7 @@ export interface RexActionDict<T> extends BaseActionDict<T> {
   selfTok?: (this: NonterminalNode, arg0: TerminalNode) => T;
   whenTok?: (this: NonterminalNode, arg0: TerminalNode) => T;
   unlessTok?: (this: NonterminalNode, arg0: TerminalNode) => T;
+  whileTok?: (this: NonterminalNode, arg0: TerminalNode) => T;
   forTok?: (this: NonterminalNode, arg0: TerminalNode) => T;
   inTok?: (this: NonterminalNode, arg0: TerminalNode) => T;
   ofTok?: (this: NonterminalNode, arg0: TerminalNode) => T;

@@ -96,6 +96,12 @@ describe("Rex grammar", () => {
 		expectParses("for v in [1,2,3,4,5] do when v == 4 do break end when v % 2 != 0 do continue end process(v) end");
 	});
 
+	test("parses while loops", () => {
+		expectParses("while x do x -= 1 end");
+		expectParses("while get-next() do process(self) end");
+		expectParses("while x > 0 do x -= 1 end");
+	});
+
 	test("parses empty calls and empty containers", () => {
 		expectParses("ping()");
 		expectParses("[]");
