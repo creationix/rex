@@ -3,9 +3,10 @@ import { evaluateSource } from "./rexc-interpreter.ts";
 import { dirname, resolve } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 
+type SourceSegment = { type: "expr"; value: string } | { type: "file"; path: string };
+
 type CliOptions = {
-	expr?: string;
-	file?: string;
+	sources: SourceSegment[];
 	out?: string;
 	compile: boolean;
 	ir: boolean;
@@ -17,6 +18,7 @@ type CliOptions = {
 
 function parseArgs(argv: string[]): CliOptions {
 	const options: CliOptions = {
+		sources: [],
 		compile: false,
 		ir: false,
 		minifyNames: false,
@@ -58,14 +60,14 @@ function parseArgs(argv: string[]): CliOptions {
 		if (arg === "--expr" || arg === "-e") {
 			const value = argv[index + 1];
 			if (!value) throw new Error("Missing value for --expr");
-			options.expr = value;
+			options.sources.push({ type: "expr", value });
 			index += 1;
 			continue;
 		}
 		if (arg === "--file" || arg === "-f") {
 			const value = argv[index + 1];
 			if (!value) throw new Error("Missing value for --file");
-			options.file = value;
+			options.sources.push({ type: "file", path: value });
 			index += 1;
 			continue;
 		}
@@ -78,8 +80,7 @@ function parseArgs(argv: string[]): CliOptions {
 		}
 		// Positional argument = file path
 		if (!arg.startsWith("-")) {
-			if (options.file) throw new Error("Multiple file arguments provided");
-			options.file = arg;
+			options.sources.push({ type: "file", path: arg });
 			continue;
 		}
 		throw new Error(`Unknown option: ${arg}`);
@@ -98,10 +99,17 @@ function usage() {
 		"  cat input.rex | rex            Evaluate from stdin",
 		"  rex -c input.rex               Compile to rexc bytecode",
 		"",
+		"  Sources are concatenated in order, so flags and files can be mixed:",
+		"  rex -e 'max = 200' primes.rex  Set max before running script",
+		"  rex primes.rex -e '42'         Run script, then evaluate 42",
+		"",
 		"Input:",
 		"  <file>                Evaluate/compile a Rex source file",
 		"  -e, --expr <source>   Evaluate/compile an inline expression",
 		"  -f, --file <path>     Evaluate/compile source from a file",
+		"",
+		"  Multiple -e and -f flags (and positional files) can be combined.",
+		"  They are concatenated in the order they appear on the command line.",
 		"",
 		"Output mode:",
 		"  (default)             Evaluate and output result as JSON",
@@ -128,14 +136,26 @@ async function readStdin(): Promise<string> {
 }
 
 async function resolveSource(options: CliOptions): Promise<string> {
-	if (options.expr && options.file) throw new Error("Use only one of --expr, --file, or a positional file path");
-	if (options.expr) return options.expr;
-	if (options.file) return readFile(options.file, "utf8");
+	if (options.sources.length > 0) {
+		const parts: string[] = [];
+		for (const seg of options.sources) {
+			if (seg.type === "expr") parts.push(seg.value);
+			else parts.push(await readFile(seg.path, "utf8"));
+		}
+		return parts.join("\n");
+	}
 	if (!process.stdin.isTTY) {
 		const piped = await readStdin();
 		if (piped.trim().length > 0) return piped;
 	}
 	throw new Error("No input provided. Use a file path, --expr, or pipe source via stdin.");
+}
+
+function findFirstFilePath(sources: SourceSegment[]): string | undefined {
+	for (const seg of sources) {
+		if (seg.type === "file") return seg.path;
+	}
+	return undefined;
 }
 
 async function loadDomainConfigFromFolder(folderPath: string): Promise<unknown | undefined> {
@@ -149,7 +169,8 @@ async function loadDomainConfigFromFolder(folderPath: string): Promise<unknown |
 }
 
 async function resolveDomainConfig(options: CliOptions): Promise<unknown | undefined> {
-	const baseFolder = options.file ? dirname(resolve(options.file)) : process.cwd();
+	const filePath = findFirstFilePath(options.sources);
+	const baseFolder = filePath ? dirname(resolve(filePath)) : process.cwd();
 	return loadDomainConfigFromFolder(baseFolder);
 }
 
@@ -161,7 +182,7 @@ async function main() {
 	}
 
 	// No source provided on a TTY → launch interactive REPL
-	const hasSource = options.expr || options.file || !process.stdin.isTTY;
+	const hasSource = options.sources.length > 0 || !process.stdin.isTTY;
 	if (!hasSource && !options.compile && !options.ir) {
 		const { startRepl } = await import("./rex-repl.ts");
 		await startRepl();

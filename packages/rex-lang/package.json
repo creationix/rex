@@ -40,7 +40,8 @@
 		"compile": "bun run rex-cli.ts",
 		"verify:docs": "bun run verify-doc-examples.ts",
 		"pack:dry-run": "npm pack --dry-run",
-		"prepublishOnly": "bun run build:grammar && bun test && bun run build:js && npm run pack:dry-run"
+		"prepublishOnly": "bun run build:grammar && bun test && bun run build:js && npm run pack:dry-run",
+		"release": "npm publish"
 	},
 	"publishConfig": {
 		"access": "public"
