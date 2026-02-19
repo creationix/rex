@@ -1,4 +1,4 @@
-import { compile, parse, parseToIR } from "./rex.ts";
+import { compile, parse, parseToIR, stringify } from "./rex.ts";
 import { evaluateSource } from "./rexc-interpreter.ts";
 import { dirname, resolve } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
@@ -183,7 +183,7 @@ async function main() {
 		});
 	} else {
 		const { value } = evaluateSource(source);
-		output = JSON.stringify(value, null, 2);
+		output = stringify(value);
 	}
 
 	if (options.out) {
