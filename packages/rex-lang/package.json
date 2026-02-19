@@ -22,9 +22,8 @@
 		"README.md",
 		"LICENSE",
 		"rex.js",
-		"rex-compile.js",
 		"rex.ts",
-		"rex-compile.ts",
+		"rex-cli.ts",
 		"rex-cli.js",
 		"rex.ohm",
 		"rex.ohm-bundle.cjs",
@@ -35,8 +34,8 @@
 	"scripts": {
 		"test": "bun test",
 		"build:grammar": "ohm generateBundles --withTypes rex.ohm && node -e \"require('node:fs').copyFileSync('rex.ohm-bundle.js','rex.ohm-bundle.cjs')\"",
-		"build:js": "bun build rex.ts --outfile rex.js --format esm --target node && bun build rex-compile.ts --outfile rex-compile.js --format esm --target node",
-		"compile": "bun run rex-compile.ts",
+		"build:js": "bun build rex.ts --outfile rex.js --format esm --target node && bun build rex-cli.ts --outfile rex-cli.js --format esm --target node && node -e \"const fs=require('fs'),f='rex-cli.js';fs.writeFileSync(f,'#!/usr/bin/env node\\n'+fs.readFileSync(f,'utf8'))\"",
+		"compile": "bun run rex-cli.ts",
 		"verify:docs": "bun run verify-doc-examples.ts",
 		"pack:dry-run": "npm pack --dry-run",
 		"prepublishOnly": "bun run build:grammar && bun test && bun run build:js && npm run pack:dry-run"

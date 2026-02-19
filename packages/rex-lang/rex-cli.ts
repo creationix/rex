@@ -159,6 +159,6 @@ async function main() {
 
 await main().catch((error) => {
 	const message = error instanceof Error ? error.message : String(error);
-	console.error(`rex:compile error: ${message}`);
+	console.error(`rex: ${message}`);
 	process.exit(1);
 });

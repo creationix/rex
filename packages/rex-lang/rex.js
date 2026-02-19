@@ -224,6 +224,33 @@ function encodeConditionalElse(elseBranch) {
   return encodeNode(nested);
 }
 function encodeNavigation(node) {
+  const domainRefs = activeEncodeOptions?.domainRefs;
+  if (domainRefs && node.target.type === "identifier") {
+    const staticPath = [node.target.name];
+    for (const segment of node.segments) {
+      if (segment.type !== "static")
+        break;
+      staticPath.push(segment.key);
+    }
+    for (let pathLength = staticPath.length;pathLength >= 1; pathLength -= 1) {
+      const dottedName = staticPath.slice(0, pathLength).join(".");
+      const domainRef = domainRefs[dottedName];
+      if (domainRef === undefined)
+        continue;
+      const consumedStaticSegments = pathLength - 1;
+      if (consumedStaticSegments === node.segments.length) {
+        return `${encodeUint(domainRef)}'`;
+      }
+      const parts2 = [`${encodeUint(domainRef)}'`];
+      for (const segment of node.segments.slice(consumedStaticSegments)) {
+        if (segment.type === "static")
+          parts2.push(encodeBareOrLengthString(segment.key));
+        else
+          parts2.push(encodeNode(segment.key));
+      }
+      return encodeCallParts(parts2);
+    }
+  }
   const parts = [encodeNode(node.target)];
   for (const segment of node.segments) {
     if (segment.type === "static")
@@ -574,6 +601,11 @@ function mapConfigEntries(entries, refs) {
     for (const rawName of entry.names) {
       if (typeof rawName !== "string")
         continue;
+      const existingNameRef = refs[rawName];
+      if (existingNameRef !== undefined && existingNameRef !== refId) {
+        throw new Error(`Conflicting refs for '${rawName}': ${existingNameRef} vs ${refId}`);
+      }
+      refs[rawName] = refId;
       const root = rawName.split(".")[0];
       if (!root)
         continue;

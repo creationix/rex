@@ -23,12 +23,7 @@ end
 when res.status == 200 and route.mode == "ingest" do
   parsed = json-parse(req.body)
 
-  unless parsed and array(parsed.events) do
-    res.status = 422
-    body-out = {ok: false, error: "invalid_events_payload"}
-  end
-
-  when parsed and array(parsed.events) do
+  when array(parsed.events) do
     accepted = 0
     dropped = 0
 
@@ -56,6 +51,9 @@ when res.status == 200 and route.mode == "ingest" do
       request-id: request-id
     }
     res.status = 202
+  else
+    res.status = 422
+    res.body = {ok: false, error: "invalid_events_payload"}
   end
 end
 
@@ -63,11 +61,6 @@ when res.status == 200 and route.mode == "stream" do
   cursor = req.query.cursor or "0"
   batch-size = number(req.query.limit) or 100
   stream = stream-read(cursor, batch-size)
-
-  unless stream do
-    res.status = 503
-    body-out = {ok: false, error: "stream_unavailable"}
-  end
 
   when stream do
     res.headers.content-type = "application/x-ndjson"
@@ -82,6 +75,9 @@ when res.status == 200 and route.mode == "stream" do
       next-cursor: stream.next-cursor,
       events: stream.events or []
     }
+  else
+    res.status = 503
+    body-out = {ok: false, error: "stream_unavailable"}
   end
 end
 
