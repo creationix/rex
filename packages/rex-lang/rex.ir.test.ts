@@ -223,6 +223,41 @@ describe("Rex IR (handwritten)", () => {
 			body: [{ type: "self" }],
 		});
 
+	});
+
+	test("while loop lowering", () => {
+		expectIR("while x > 0 do x -= 1 end", {
+			type: "while",
+			condition: {
+				type: "binary",
+				op: "gt",
+				left: { type: "identifier", name: "x" },
+				right: { type: "number", raw: "0", value: 0 },
+			},
+			body: [
+				{
+					type: "assign",
+					op: "-=",
+					place: { type: "identifier", name: "x" },
+					value: { type: "number", raw: "1", value: 1 },
+				},
+			],
+		});
+
+		expectIR("while x do process(self) end", {
+			type: "while",
+			condition: { type: "identifier", name: "x" },
+			body: [
+				{
+					type: "call",
+					callee: { type: "identifier", name: "process" },
+					args: [{ type: "self" }],
+				},
+			],
+		});
+	});
+
+	test("array comprehension lowering", () => {
 		expectIR("[v in [1, 2] ; v * 2]", {
 			type: "arrayComprehension",
 			binding: {
