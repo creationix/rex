@@ -824,9 +824,52 @@ class CursorInterpreter {
 		let current = base;
 		for (const key of keys) {
 			if (current === undefined || current === null) return undefined;
-			current = (current as Record<string, unknown>)[String(key)];
+			current = this.readProperty(current, key);
+			if (current === undefined) return undefined;
 		}
 		return current;
+	}
+
+	private readProperty(target: unknown, key: unknown): unknown {
+		const index = this.parseIndexKey(key);
+		if (Array.isArray(target)) {
+			if (index === undefined) return undefined;
+			return target[index];
+		}
+		if (typeof target === "string") {
+			if (index === undefined) return undefined;
+			return Array.from(target)[index];
+		}
+		if (this.isPlainObject(target)) {
+			const prop = String(key);
+			if (!Object.prototype.hasOwnProperty.call(target as Record<string, unknown>, prop)) return undefined;
+			return (target as Record<string, unknown>)[prop];
+		}
+		return undefined;
+	}
+
+	private canWriteProperty(target: unknown, key: unknown): { kind: "array"; index: number } | { kind: "object" } | undefined {
+		const index = this.parseIndexKey(key);
+		if (Array.isArray(target)) {
+			if (index === undefined) return undefined;
+			return { kind: "array", index };
+		}
+		if (this.isPlainObject(target)) return { kind: "object" };
+		return undefined;
+	}
+
+	private parseIndexKey(key: unknown): number | undefined {
+		if (typeof key === "number" && Number.isInteger(key) && key >= 0) return key;
+		if (typeof key !== "string" || key.length === 0) return undefined;
+		if (!/^(0|[1-9]\d*)$/.test(key)) return undefined;
+		const index = Number(key);
+		return Number.isSafeInteger(index) ? index : undefined;
+	}
+
+	private isPlainObject(value: unknown): value is Record<string, unknown> {
+		if (!value || typeof value !== "object") return false;
+		const proto = Object.getPrototypeOf(value);
+		return proto === Object.prototype || proto === null;
 	}
 
 	private readPlace(): { root: string; keys: unknown[]; isRef: boolean } {
@@ -903,12 +946,28 @@ class CursorInterpreter {
 			rootTable[rootKey] = target;
 		}
 		for (let index = 0; index < place.keys.length - 1; index += 1) {
-			const key = String(place.keys[index]);
-			const next = (target as Record<string, unknown>)[key];
-			if (!next || typeof next !== "object") (target as Record<string, unknown>)[key] = {};
-			target = (target as Record<string, unknown>)[key];
+			const key = place.keys[index];
+			const access = this.canWriteProperty(target, key);
+			if (!access) return;
+			if (access.kind === "array") {
+				const next = (target as unknown[])[access.index];
+				if (!next || typeof next !== "object") (target as unknown[])[access.index] = {};
+				target = (target as unknown[])[access.index] as Record<string, unknown>;
+				continue;
+			}
+			const prop = String(key);
+			const next = (target as Record<string, unknown>)[prop];
+			if (!next || typeof next !== "object") (target as Record<string, unknown>)[prop] = {};
+			target = (target as Record<string, unknown>)[prop];
 		}
-		(target as Record<string, unknown>)[String(place.keys[place.keys.length - 1])] = value;
+		const lastKey = place.keys[place.keys.length - 1];
+		const access = this.canWriteProperty(target, lastKey);
+		if (!access) return;
+		if (access.kind === "array") {
+			(target as unknown[])[access.index] = value;
+			return;
+		}
+		(target as Record<string, unknown>)[String(lastKey)] = value;
 	}
 
 	private readPlaceValue(place: { root: string; keys: unknown[]; isRef: boolean }): unknown {
@@ -916,7 +975,8 @@ class CursorInterpreter {
 		let current: unknown = rootTable[place.root];
 		for (const key of place.keys) {
 			if (current === undefined || current === null) return undefined;
-			current = (current as Record<string, unknown>)[String(key)];
+			current = this.readProperty(current, key);
+			if (current === undefined) return undefined;
 		}
 		return current;
 	}
@@ -931,10 +991,25 @@ class CursorInterpreter {
 		let target = rootTable[rootKey];
 		if (!target || typeof target !== "object") return;
 		for (let index = 0; index < place.keys.length - 1; index += 1) {
-			target = (target as Record<string, unknown>)[String(place.keys[index])];
+			const key = place.keys[index];
+			const access = this.canWriteProperty(target, key);
+			if (!access) return;
+			if (access.kind === "array") {
+				target = (target as unknown[])[access.index];
+				if (!target || typeof target !== "object") return;
+				continue;
+			}
+			target = (target as Record<string, unknown>)[String(key)];
 			if (!target || typeof target !== "object") return;
 		}
-		delete (target as Record<string, unknown>)[String(place.keys[place.keys.length - 1])];
+		const lastKey = place.keys[place.keys.length - 1];
+		const access = this.canWriteProperty(target, lastKey);
+		if (!access) return;
+		if (access.kind === "array") {
+			delete (target as unknown[])[access.index];
+			return;
+		}
+		delete (target as Record<string, unknown>)[String(lastKey)];
 	}
 
 	private skipValue() {
