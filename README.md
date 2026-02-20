@@ -8,44 +8,103 @@
 
 Programmable JSON. Small arms, big bite.
 
-Rex is a compact expression language for configuration and data-driven logic. It is a superset of JSON with high-level syntax (`when`, `unless`, `and`, `or`, assignment, loops, comprehensions) that compiles to a compact bytecode string format called `rexc`.
+Rex is a compact expression language for configuration and data-driven logic. It is a superset of JSON with high-level syntax (`when`, `unless`, `and`, `or`, assignment, loops, comprehensions).
 
-If you need data-first configs with just enough logic — without embedding a full scripting runtime — Rex is built for that.
+Rex covers two common use-case styles:
 
-## Why Rex
+- **Templated data:** generate structured values from JSON-like templates with lightweight logic.
+- **General-purpose decision logic:** write compact policy/router/transform rules as little snippets of logic.
 
-When JSON-only configs hit real-world logic, teams usually end up with one of these:
+Use Rex when JSON alone is too static, but embedding a full scripting runtime is too heavy.
 
-- Massive duplicated rules
-- Embedded JavaScript/Lua/WASM runtimes
-- A custom DSL that keeps growing forever
+## What Rex Is
 
-Rex keeps the model data-oriented and explicit:
+In practice, Rex works like this:
 
-- JSON-like literals and object/array ergonomics
-- Existence-based control flow (`undefined` means absence)
-- Compact, serializable `rexc` bytecode output
-- Domain-agnostic core language
+- Start with normal JSON-shaped data.
+- Add template-style dynamics while keeping a structured-data result.
+- Add just enough logic for real configs (`when`, `unless`, `and`, `or`, loops, comprehensions).
+- Compile once to compact `rexc` bytecode for storage, transport, and fast evaluation.
 
-## Existence Semantics
+## Where Rex Fits
 
-Rex uses **existence** instead of truthiness. There is no concept of "falsy" — `false`, `null`, `0`, and `""` are all ordinary values. Only `undefined` represents absence:
+Rex is a strong fit for:
+
+- HTTP edge routing and middleware policy
+- Request/response shaping and header logic
+- Feature flags and rollout rules
+- Validation and normalization pipelines
+- Data-driven rules where full scripting is too much
+
+## Core Mental Model: Existence
+
+Rex uses **existence**, not truthiness. Only `undefined` means “absent.”
+
+All JSON values (including 0, false, and null) are existing values.  Only `undefined` does not exist.
 
 ```rex
-0 or "fallback"         // => 0         (zero is a value)
-false or "fallback"     // => false     (false is a value)
-null or "fallback"      // => null      (null is a value)
-undefined or "fallback" // => "fallback" (undefined IS absence)
+0 or "fallback"         // => 0
+false or "fallback"     // => false
+null or "fallback"      // => null
+undefined or "fallback" // => "fallback"
 ```
 
-This single idea drives the entire language:
+This drives the language:
 
-- **Comparisons** return the left-hand value on success, `undefined` on failure
-- **`when`/`unless`** branch on whether a value is defined
-- **`and`/`or`/`nor`** short-circuit on existence, not truthiness
-- **Type predicates** return the value if it matches, `undefined` otherwise
+- Comparisons return value-or-`undefined`
+- `when` / `unless` branch on defined-vs-`undefined`
+- `and` / `or` / `nor` short-circuit on existence
 
-Because there's no truthiness, there are no truthiness bugs.
+## Quick Language Tour
+
+### 1) Read and write data
+
+```rex
+user.name
+config.(headers.x-action)
+
+status = 200
+headers.content-type = "application/json"
+old = count := count + 1
+```
+
+### 2) Branch with value-or-absence
+
+```rex
+when token and token == config.api-token do
+  headers.x-auth = "ok"
+else
+  status = 401
+end
+```
+
+### 3) Build collections declaratively
+
+```rex
+// Array comprehension with filtering
+[v % 2 == 0 and v for v in 1..10]
+
+// Object comprehension
+{(k): v * 10 for k, v in scores}
+```
+
+### 4) Type-check inline
+
+```rex
+when n = number(input) do
+  total += n
+else when s = string(input) do
+  log("got string: " + s)
+end
+```
+
+## Runtime Model
+
+Rex runtimes are gas-bounded: evaluation ends with either a value or a gas-limit failure.
+
+The embedding domain decides how to use Rex (final value, side effects, or both).
+
+For precise semantics and edge-case behavior, see the [Language Reference](language.md).
 
 ## Quick Example
 
@@ -63,129 +122,12 @@ when handler = actions.(headers.x-action) do
 end
 ```
 
-This compiles to a single `rexc` bytecode string:
-
-```rexc
-(%=actions$1p{create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profile}?(=handler$r(actions$(headers$x-action:))s=(headers$x-handler:)handler$))
-```
-
-## Language Overview
-
-Rex is a superset of JSON. Every valid JSON document is already valid Rex.
-
-### Data Types
-
-```rex
-// Everything from JSON
-42   -3.14   "hello"   true   false   null
-[1, 2, 3]   {"name": "Rex", "age": 65}
-
-// Rex additions
-undefined                  // absence of value
-0xFF   0b1010              // hex and binary numbers
-{name: "Rex", age: 65}    // bare identifier keys
-[1 2 3]  {a: 1 b: 2}      // commas are optional
-{(field): "value"}         // computed key expressions
-```
-
-### Navigation
-
-Dots navigate into nested structures. Parenthesized expressions handle dynamic keys:
-
-```rex
-user.name                  // static key
-user.address.street        // nested
-map.(key)                  // dynamic key (variable)
-config.(headers.x-action)  // dynamic key (expression)
-self                       // implicit value in current scope
-self@2                     // parent scope's self
-```
-
-### Assignment
-
-```rex
-x = 42
-obj.key = "value"
-x += 1    x -= 5    x *= 2
-```
-
-### Operators
-
-```rex
-// Arithmetic
-x + y    x - y    x * y    x / y    x % y    -x
-
-// Comparison (returns value on success, undefined on failure)
-age > 18    age <= 65    x == y    x != y
-
-// Existence (short-circuit on defined vs undefined)
-a and b       // b if both defined
-a or b        // first defined value
-a nor b       // b if a is undefined
-
-// Value operators (boolean algebra / bitwise)
-a & b    a | b    a ^ b    ~a
-```
-
-### Control Flow
-
-```rex
-when age > 18 do
-  allow(self)
-end
-
-unless authorized do
-  deny()
-end
-
-when string(value) do
-  handle-string(self)
-else when number(value) do
-  handle-number(self)
-else
-  handle-other()
-end
-```
-
-### Iteration
-
-```rex
-// For loops
-for v in [1, 2, 3] do process(v) end
-for k, v in obj do log(k, v) end
-
-// Ranges
-1..10              // [1, 2, 3, ..., 10]
-
-// Array comprehension
-[v * 2 for v in [1, 2, 3]]           // [2, 4, 6]
-
-// Object comprehension
-{(k): v * 10 for k, v in {a: 1, b: 2}}  // {a: 10, b: 20}
-
-// Filtering (undefined values are excluded)
-[v % 2 == 0 and v for v in 1..10]    // [2, 4, 6, 8, 10]
-```
-
-### Type Predicates
-
-Return the value if it matches the type, `undefined` otherwise:
-
-```rex
-when n = number(input) do
-  total += n
-else when s = string(input) do
-  log("got string: " + s)
-end
-```
-
-For the complete syntax and semantics, see the [Language Reference](language.md).
-
 ## Example Programs
 
 ### Fibonacci
 
 ```rex
+// Allow host or CLI to override max, but default to 100
 max = max or 100
 
 fibs = []

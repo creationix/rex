@@ -22,6 +22,17 @@ null or "fallback"     // → null (null is a value, not absence)
 undefined or "fallback" // → "fallback" (undefined IS absence)
 ```
 
+## Runtime Execution
+
+Rex evaluation is gas-bounded in host runtimes.
+
+- Each evaluation ends with either a normal value result or a gas-limit failure.
+- Gas is charged per loop/comprehension iteration (`for`, `while`, and their comprehension forms), using one shared budget per evaluation.
+- In the current implementation, REPL default gas is `10_000_000`.
+- Embedded/runtime APIs can set `gasLimit` via `evaluateRexc(..., { gasLimit })` or `evaluateSource(..., { gasLimit })`.
+- A `gasLimit` of `0` (or omitted) disables gas limiting.
+- The exact gas-limit error message text is intentionally unspecified; the failure condition is normative.
+
 ## Data Types
 
 Same as the core language. Rex is a superset of JSON with a few additions:
@@ -120,6 +131,13 @@ foo.(a + b)                // one expression: look up (a + b) in foo
 x = 42
 obj.key = "value"
 headers.x-handler = self
+```
+
+`:=` is swap assignment: it writes the new value and returns the previous value.
+
+```rex
+x = 1
+old = x := 2   // old = 1, x = 2
 ```
 
 Compound assignment operators modify a place using an operator and return the new value:
@@ -343,6 +361,15 @@ end
 ```
 
 In `in` forms, `self` is set to the current value. In `of` forms, `self` is set to the current key.
+
+### Iteration Order and Mutation
+
+Iteration order is deterministic:
+
+- Arrays and strings iterate in ascending index order.
+- Objects iterate in JavaScript property insertion order.
+
+Iteration uses snapshot semantics: mutating the iterated collection during a loop/comprehension does not change which entries the current iteration visits.
 
 ### Ranges
 
@@ -710,6 +737,18 @@ headers.x-handler = self
 status = 200
 method = "POST"
 ```
+
+Current extension/runtime behavior:
+
+- Extension operation errors are coerced to `undefined`.
+- Evaluation continues using normal existence semantics.
+- Structured error handling is intentionally not part of the current language surface.
+
+Rex is domain-agnostic about outcomes. The embedding domain decides how to use evaluation:
+
+- interpret only the final expression value,
+- use side-effectful extension operations,
+- or combine both models.
 
 ## Identifier Resolution and Place Model
 
