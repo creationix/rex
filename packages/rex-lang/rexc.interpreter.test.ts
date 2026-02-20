@@ -36,6 +36,19 @@ describe("rexc interpreter (streaming)", () => {
 		expect(result.value).toBe("Rex");
 	});
 
+	test("only exposes own properties during navigation", () => {
+		expect(evaluateSource("[1, 2, 3].map").value).toBeUndefined();
+		expect(evaluateSource('"hi".toUpperCase').value).toBeUndefined();
+		expect(evaluateSource("[1, 2, 3].length").value).toBeUndefined();
+		expect(evaluateSource('"hi".length').value).toBeUndefined();
+		const proto = { hidden: 1 };
+		const obj = Object.create(proto) as Record<string, unknown>;
+		obj.visible = 2;
+		expect(evaluateRexc(compile("obj.hidden"), { vars: { obj } }).value).toBeUndefined();
+		const plain = { visible: 2 };
+		expect(evaluateRexc(compile("plain.visible"), { vars: { plain } }).value).toBe(2);
+	});
+
 	test("supports comprehensions and loop control scalar", () => {
 		expect(evaluateSource("[v + 1 for v in [1, 2, 3]]").value).toEqual([2, 3, 4]);
 		expect(evaluateSource("{(v): v * 10 for v in [1, 2]}").value).toEqual({ "1": 10, "2": 20 });
