@@ -26,6 +26,7 @@ const OPCODES = {
 	object: "ob",
 	mod: "md",
 	neg: "ng",
+	range: "rn",
 } as const;
 
 export type RexcContext = {
@@ -64,7 +65,7 @@ function decodeZigzag(value: number): number {
 function isValueStart(char: string | undefined): boolean {
 	if (!char) return false;
 	if (digitMap.has(char)) return true;
-	return "+*:%$@'^~=([{,?!|&><;".includes(char);
+	return "+*:%$@'^~=/([{,?!|&><;".includes(char);
 }
 
 function isDefined(value: unknown): boolean {
@@ -211,7 +212,7 @@ class CursorInterpreter {
 				const power = decodeZigzag(prefix.value);
 				const significand = this.evalValue();
 				if (typeof significand !== "number") throw new Error("Decimal significand must be numeric");
-				return significand * 10 ** power;
+				return parseFloat(`${significand}e${power}`);
 			}
 			case ":":
 				this.pos += 1;
@@ -255,6 +256,14 @@ class CursorInterpreter {
 				this.writePlace(place, value);
 				return value;
 			}
+			case "/": {
+				this.pos += 1;
+				const place = this.readPlace();
+				const oldValue = this.readPlaceValue(place);
+				const newValue = this.evalValue();
+				this.writePlace(place, newValue);
+				return oldValue;
+			}
 			case "~": {
 				this.pos += 1;
 				const place = this.readPlace();
@@ -282,7 +291,7 @@ class CursorInterpreter {
 			case "<":
 				return this.evalLoopLike(tag);
 			case "#":
-				return this.evalWhileLoop();
+				return this.evalWhileLike();
 			default:
 				throw new Error(`Unexpected tag '${tag}' at ${this.pos}`);
 		}
@@ -492,14 +501,6 @@ class CursorInterpreter {
 			if (keysOnly) return entries.map(([key]) => ({ key, value: key }));
 			return entries.map(([key, value]) => ({ key, value }));
 		}
-		if (typeof iterable === "number" && Number.isFinite(iterable) && iterable > 0) {
-			const out: Array<{ key: unknown; value: unknown }> = [];
-			for (let index = 0; index < Math.floor(iterable); index += 1) {
-				if (keysOnly) out.push({ key: index, value: index });
-				else out.push({ key: index, value: index + 1 });
-			}
-			return out;
-		}
 		return [];
 	}
 
@@ -545,9 +546,12 @@ class CursorInterpreter {
 		return last;
 	}
 
-	private evalWhileLoop(): unknown {
+	private evalWhileLike(): unknown {
 		this.pos += 1; // skip '#'
-		this.ensure("(");
+		const open = this.text[this.pos];
+		if (!open || !"([{".includes(open)) throw new Error(`Expected opener after '#' at ${this.pos}`);
+		const close = open === "(" ? ")" : open === "[" ? "]" : "}";
+		this.pos += 1;
 
 		const condStart = this.pos;
 
@@ -555,18 +559,23 @@ class CursorInterpreter {
 		const condValue = this.evalValue();
 		const bodyStart = this.pos;
 
-		// Skip past the body to find the closing paren
-		const bodyValueCount = 1;
+		// Skip past body values to find the closing bracket
+		const bodyValueCount = open === "{" ? 2 : 1;
 		let cursor = bodyStart;
 		for (let index = 0; index < bodyValueCount; index += 1) {
 			cursor = this.skipValueFrom(cursor);
 		}
 		const bodyEnd = cursor;
 		this.pos = bodyEnd;
-		this.ensure(")");
+		this.ensure(close);
 		const afterClose = this.pos;
 
-		// Now iterate
+		if (open === "[") return this.evalWhileArrayComprehension(condStart, bodyStart, bodyEnd, afterClose, condValue);
+		if (open === "{") return this.evalWhileObjectComprehension(condStart, bodyStart, bodyEnd, afterClose, condValue);
+		return this.evalWhileLoop(condStart, bodyStart, bodyEnd, afterClose, condValue);
+	}
+
+	private evalWhileLoop(condStart: number, bodyStart: number, bodyEnd: number, afterClose: number, condValue: unknown): unknown {
 		let last: unknown = undefined;
 		let currentCond = condValue;
 		while (isDefined(currentCond)) {
@@ -582,12 +591,65 @@ class CursorInterpreter {
 				last = undefined;
 			}
 
-			// Re-evaluate condition
 			currentCond = this.evalBodySlice(condStart, bodyStart);
 		}
 
 		this.pos = afterClose;
 		return last;
+	}
+
+	private evalWhileArrayComprehension(condStart: number, bodyStart: number, bodyEnd: number, afterClose: number, condValue: unknown): unknown[] | LoopControl {
+		const out: unknown[] = [];
+		let currentCond = condValue;
+		while (isDefined(currentCond)) {
+			this.tick();
+			this.selfStack.push(currentCond);
+			const value = this.evalBodySlice(bodyStart, bodyEnd);
+			this.selfStack.pop();
+
+			const control = this.handleLoopControl(value);
+			if (control) {
+				if (control.depth > 1) return { kind: control.kind, depth: control.depth - 1 } satisfies LoopControl;
+				if (control.kind === "break") break;
+				currentCond = this.evalBodySlice(condStart, bodyStart);
+				continue;
+			}
+			if (isDefined(value)) out.push(value);
+
+			currentCond = this.evalBodySlice(condStart, bodyStart);
+		}
+
+		this.pos = afterClose;
+		return out;
+	}
+
+	private evalWhileObjectComprehension(condStart: number, bodyStart: number, bodyEnd: number, afterClose: number, condValue: unknown): Record<string, unknown> | LoopControl {
+		const result: Record<string, unknown> = {};
+		let currentCond = condValue;
+		while (isDefined(currentCond)) {
+			this.tick();
+			this.selfStack.push(currentCond);
+			const save = this.pos;
+			this.pos = bodyStart;
+			const key = this.evalValue();
+			const value = this.evalValue();
+			this.pos = save;
+			this.selfStack.pop();
+
+			const control = this.handleLoopControl(value);
+			if (control) {
+				if (control.depth > 1) return { kind: control.kind, depth: control.depth - 1 } satisfies LoopControl;
+				if (control.kind === "break") break;
+				currentCond = this.evalBodySlice(condStart, bodyStart);
+				continue;
+			}
+			if (isDefined(value)) result[String(key)] = value;
+
+			currentCond = this.evalBodySlice(condStart, bodyStart);
+		}
+
+		this.pos = afterClose;
+		return result;
 	}
 
 	private evalArrayComprehension(iterable: unknown, varA: string | undefined, varB: string | undefined, bodyStart: number, bodyEnd: number, keysOnly: boolean): unknown[] | LoopControl {
@@ -718,6 +780,15 @@ class CursorInterpreter {
 				return Array.isArray(args[0]) ? args[0] : undefined;
 			case OPCODES.object:
 				return args[0] && typeof args[0] === "object" && !Array.isArray(args[0]) ? args[0] : undefined;
+			case OPCODES.range: {
+				const from = Number(args[0]);
+				const to = Number(args[1]);
+				const step = to >= from ? 1 : -1;
+				const out: number[] = [];
+				for (let v = from; step > 0 ? v <= to : v >= to; v += step)
+					out.push(v);
+				return out;
+			}
 			default:
 				throw new Error(`Unknown opcode ${id}`);
 		}
@@ -814,6 +885,16 @@ class CursorInterpreter {
 		(target as Record<string, unknown>)[String(place.keys[place.keys.length - 1])] = value;
 	}
 
+	private readPlaceValue(place: { root: string; keys: unknown[]; isRef: boolean }): unknown {
+		const rootTable = place.isRef ? this.state.refs : this.state.vars;
+		let current: unknown = rootTable[place.root];
+		for (const key of place.keys) {
+			if (current === undefined || current === null) return undefined;
+			current = (current as Record<string, unknown>)[String(key)];
+		}
+		return current;
+	}
+
 	private deletePlace(place: { root: string; keys: unknown[]; isRef: boolean }) {
 		const rootTable = place.isRef ? this.state.refs : this.state.vars;
 		const rootKey = place.root;
@@ -851,7 +932,7 @@ class CursorInterpreter {
 			this.pos = save;
 			return end;
 		}
-		if (tag === "=") {
+		if (tag === "=" || tag === "/") {
 			this.pos += 1;
 			this.skipValue();
 			this.skipValue();

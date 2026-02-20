@@ -56,6 +56,7 @@ describe("Rex grammar", () => {
 
 	test("parses assignment and arithmetic operators", () => {
 		expectParses("x = 42");
+		expectParses("x := 42");
 		expectParses("x += 1");
 		expectParses("x -= 5");
 		expectParses("x *= 2");
@@ -75,6 +76,7 @@ describe("Rex grammar", () => {
 		expectParses("a & b | c ^ d");
 		expectParses("~a");
 		expectParses("a or b or c");
+		expectParses("a nor b");
 	});
 
 	test("parses when/unless forms", () => {
@@ -85,9 +87,18 @@ describe("Rex grammar", () => {
 		expectParses("when a do x() else unless b do y() else z() end");
 	});
 
+	test("parses range expressions", () => {
+		expectParses("1..10");
+		expectParses("x..y");
+		expectParses("a + 1 .. b - 1");
+		expectParses("1..10 == x");
+		expectParses("for i in 1..10 do i end");
+		expectParses("[self * 2 in 1..5]");
+	});
+
 	test("parses for loops", () => {
 		expectParses("for in [1, 2, 3] do process(self) end");
-		expectParses("for in 5 do process(self) end");
+		expectParses("for in 1..5 do process(self) end");
 		expectParses("for v in [1, 2, 3] do process(v) end");
 		expectParses("for k, v in [1, 2, 3] do process(k, v) end");
 		expectParses("for k of {a: 1, b: 2} do log(k) end");
@@ -108,11 +119,13 @@ describe("Rex grammar", () => {
 	});
 
 	test("parses array comprehensions", () => {
-		expectParses("[self % 2 > 0 and self % 3 > 0 and self % 5 > 0 in 100]");
+		expectParses("[self % 2 > 0 and self % 3 > 0 and self % 5 > 0 in 1..100]");
 		expectParses("[v * 2 for v in [1, 2, 3]]");
 		expectParses("[v + k for k, v in [10, 20, 30]]");
 		expectParses("[k for k of {name: \"Rex\", age: 65}]");
 		expectParses("[self of items]");
+		expectParses("[self while next-item()]");
+		expectParses("[self * 2 while pop(queue)]");
 	});
 
 	test("parses object comprehensions", () => {
@@ -121,6 +134,14 @@ describe("Rex grammar", () => {
 		expectParses('{("player-" + k): v * 100 for k, v in scores}');
 		expectParses("{(self.name): self.score in users}");
 		expectParses("{(k): v != null and v for k, v in data}");
+		expectParses("{(self): self * 10 while pop(queue)}");
+	});
+
+	test("parses logical not", () => {
+		expectParses("not x");
+		expectParses("not composites.(self)");
+		expectParses("not x and y");
+		expectParses("not not x");
 	});
 
 	test("parses multi-expression program", () => {

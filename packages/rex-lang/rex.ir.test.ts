@@ -39,6 +39,13 @@ describe("Rex IR (handwritten)", () => {
 			value: { type: "number", raw: "1", value: 1 },
 		});
 
+		expectIR("x := 1", {
+			type: "assign",
+			op: ":=",
+			place: { type: "identifier", name: "x" },
+			value: { type: "number", raw: "1", value: 1 },
+		});
+
 		expectIR("user.(key) += 2", {
 			type: "assign",
 			op: "+=",
@@ -62,6 +69,13 @@ describe("Rex IR (handwritten)", () => {
 				left: { type: "identifier", name: "b" },
 				right: { type: "identifier", name: "c" },
 			},
+		});
+
+		expectIR("a nor b", {
+			type: "binary",
+			op: "nor",
+			left: { type: "identifier", name: "a" },
+			right: { type: "identifier", name: "b" },
 		});
 
 		expectIR("~a or delete self.name", {
@@ -374,6 +388,53 @@ total`,
 				source: { type: "identifier", name: "items" },
 			},
 			body: { type: "self" },
+		});
+	});
+
+	test("while comprehension lowering", () => {
+		expectIR("[self while x]", {
+			type: "whileArrayComprehension",
+			condition: { type: "identifier", name: "x" },
+			body: { type: "self" },
+		});
+
+		expectIR("{(self): self * 10 while x}", {
+			type: "whileObjectComprehension",
+			condition: { type: "identifier", name: "x" },
+			key: { type: "self" },
+			value: { type: "binary", op: "mul", left: { type: "self" }, right: { type: "number", raw: "10", value: 10 } },
+		});
+	});
+
+	test("range expression lowering", () => {
+		expectIR("1..10", {
+			type: "range",
+			from: { type: "number", raw: "1", value: 1 },
+			to: { type: "number", raw: "10", value: 10 },
+		});
+
+		expectIR("a + 1 .. b - 1", {
+			type: "range",
+			from: {
+				type: "binary",
+				op: "add",
+				left: { type: "identifier", name: "a" },
+				right: { type: "number", raw: "1", value: 1 },
+			},
+			to: {
+				type: "binary",
+				op: "sub",
+				left: { type: "identifier", name: "b" },
+				right: { type: "number", raw: "1", value: 1 },
+			},
+		});
+	});
+
+	test("logical not lowering", () => {
+		expectIR("not x", {
+			type: "unary",
+			op: "logicalNot",
+			value: { type: "identifier", name: "x" },
 		});
 	});
 });

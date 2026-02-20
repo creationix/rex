@@ -26,6 +26,16 @@ describe("Rex encoding backend", () => {
 		expect(compile("table.(k) = v")).toBe("=(table$k$)v$");
 	});
 
+	test("encodes nor as unless container", () => {
+		expect(compile("a nor b")).toBe("!(a$b$)");
+		expect(compile("x nor 42")).toBe("!(x$1k+)");
+	});
+
+	test("encodes swap-assign with / tag", () => {
+		expect(compile("x := 42")).toBe("/x$1k+");
+		expect(compile("obj.count := 0")).toBe("/(obj$count:)+");
+	});
+
 	test("encodes compound assignments for identifiers and navigations", () => {
 		expect(compile("x += 2")).toBe("=x$7(ad%x$4+)");
 		expect(compile("x -= 2")).toBe("=x$7(sb%x$4+)");
@@ -112,5 +122,21 @@ describe("Rex encoding backend", () => {
 	test("encodes while loops", () => {
 		expect(compile("while x do self end")).toBe("#(x$@)");
 		expect(compile("while x > 0 do x -= 1 end")).toBe("#((gt%x$+)c=x$7(sb%x$2+))");
+	});
+
+	test("encodes while comprehensions", () => {
+		expect(compile("[self while x]")).toBe("#[x$@]");
+		expect(compile("{(self): self * 10 while x}")).toBe("#{x$@6(ml%@k+)}");
+	});
+
+	test("encodes range expressions", () => {
+		expect(compile("1..10")).toBe("(rn%2+k+)");
+		expect(compile("1..5")).toBe("(rn%2+a+)");
+		expect(compile("x..y")).toBe("(rn%x$y$)");
+	});
+
+	test("encodes logical not", () => {
+		expect(compile("not x")).toBe("!(x$tr')");
+		expect(compile("not not x")).toBe("!(!(x$tr')tr')");
 	});
 });

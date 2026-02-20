@@ -1,6 +1,6 @@
-# Rex Encoding Format
+# Rex Bytecode Format (`rexc`)
 
-A compact encoding for Rex bytecode that serializes as a UTF-8 string. The format embeds directly in JSON string values with minimal escaping.
+Rex compiles to `rexc` — a compact bytecode that serializes as a UTF-8 string. This is the format that Rex interpreters execute. It embeds directly in JSON string values with minimal escaping.
 
 ## Format Basics
 
@@ -64,10 +64,11 @@ Digits form a **big-endian base-64 integer**. Zero is **no digits** (zero-length
 
 ### Mutation Operators (optional byte-length prefix, fixed arity)
 
-| Tag | Type   | Body contains     |
-|-----|--------|-------------------|
-| `=` | Set    | Place, then value |
-| `~` | Delete | Place             |
+| Tag | Type     | Body contains     |
+|-----|----------|-------------------|
+| `=` | Set      | Place, then value |
+| `/` | Swap-set | Place, then value |
+| `~` | Delete   | Place             |
 
 ### Control-Flow Containers (optional byte-length prefix)
 
@@ -163,6 +164,7 @@ Opcodes use short mnemonic string keys. The digit prefix is the raw key string (
 | `lte`  | `le%` |  | `object`  | `ob%` |
 | `gt`   | `gt%` |  | `mod`     | `md%` |
 | `gte`  | `ge%` |  | `neg`     | `ng%` |
+| `range`| `rn%` |  |           |       |
 
 Domain functions also compile as opcodes with their own short codes (e.g., `jp%` for `json.parse`).
 
@@ -230,17 +232,18 @@ For navigation, use a call:
 (table$key$)           │ table[key]
 ```
 
-## Set and Delete
+## Set, Swap-Set, and Delete
 
-The `=` operator binds a value to a place. Fixed arity: place then value. The `~` operator removes a place. Fixed arity: place only.
+The `=` operator binds a value to a place. Fixed arity: place then value. The `/` operator binds a value to a place but returns the **old** value (swap-set). Fixed arity: place then value. The `~` operator removes a place. Fixed arity: place only.
 
-Both have an optional byte-length prefix for when the operation itself needs to be skippable.
+All three have an optional byte-length prefix for when the operation itself needs to be skippable.
 
 ```rexc
-=x$1k+                │ x = 42
+=x$1k+                  │ x = 42
+/x$1k+                  │ x := 42 (returns old value of x)
 =(H'x-handler:)handler$ │ headers['x-handler'] = handler
-~x$                    │ delete x
-~(user$temp:)          │ delete user.temp
+~x$                     │ delete x
+~(user$temp:)           │ delete user.temp
 ```
 
 ## Calls
@@ -285,21 +288,25 @@ The condition is always evaluated. Then-expr and else-expr are in skip positions
 ╰──────────────────────────────── when opener
 ```
 
-### Alt / All
+### Logical Or / And / Not / Nor
 
 ```rexc
-|(expr1 expr2 expr3)  │ alt: first non-undefined result or return undefined
-&(expr1 expr2 expr3)  │ all: short-circuit on first undefined or return last value
+|(expr1 expr2 expr3)  │ or: first non-undefined result or return undefined
+&(expr1 expr2 expr3)  │ and: short-circuit on first undefined or return last value
+!(expr)               │ not: return undefined if expr is defined, otherwise return true
+!(expr1 expr2)        │ nor: return expr2 if expr1 is undefined, otherwise undefined
 ```
 
 The first expression is always evaluated. Remaining expressions are in skip positions (the operation may short-circuit past them).
+
+`nor` reuses the `!(` unless container with exactly 2 arguments. This is equivalent to `unless expr1 do expr2 end`.
 
 ```rexc
 |((user$name:)anonymous:)
 ├╯╰────┬─────╯╰───┬────╯╰─ closer
 │      │          ╰─────── "anonymous" — scalar, self-delimiting
 │      ╰────────────────── user.name — bare, always evaluated
-╰───────────────────────── alt opener
+╰───────────────────────── or opener
 ```
 
 ### Loops and Comprehensions
@@ -307,27 +314,29 @@ The first expression is always evaluated. Remaining expressions are in skip posi
 `for` and `while` forms are dedicated control-flow containers, not opcodes.
 
 ```rexc
->(iter body)                 │ for in iter do ... end
->(iter v$ body)              │ for v in iter do ... end
->(iter k$ v$ body)           │ for k, v in iter do ... end
-<(iter body)                 │ for of iter do ... end
-<(iter k$ body)              │ for k of iter do ... end
-#(cond body)                 │ while cond do ... end
+>(iter body)        │ for in iter do ... end
+>(iter v$ body)     │ for v in iter do ... end
+>(iter k$ v$ body)  │ for k, v in iter do ... end
+<(iter body)        │ for of iter do ... end
+<(iter k$ body)     │ for k of iter do ... end
+#(cond body)        │ while cond do ... end
 ```
 
 Comprehensions put the body expression first, then `for`/`in`/`of` and the iterator:
 
 ```rexc
->[iter body]                 │ [val in iter] array comprehension (self is value)
->[iter v$ body]              │ [val for v in iter]
->[iter k$ v$ body]           │ [val for k, v in iter]
->{iter key val}              │ {key:val in iter} object comprehension (self is value)
->{iter v$ key val}           │ {key:val for v in iter}
->{iter k$ v$ key val}        │ {key:val for k, v in iter}
-<[iter body]                 │ [val of iter] array comprehension (self is key)
-<[iter k$ body]              │ [val for k of iter]
-<{iter key val}              │ {key:val of iter} object comprehension  (self is key)
-<{iter k$ key val}           │ {key:val for k of iter}
+>[iter val]            │ [val in iter] array comprehension (self is value)
+>[iter v$ val]         │ [val for v in iter]
+>[iter k$ v$ val]      │ [val for k, v in iter]
+>{iter key val}        │ {key:val in iter} object comprehension (self is value)
+>{iter v$ key val}     │ {key:val for v in iter}
+>{iter k$ v$ key val}  │ {key:val for k, v in iter}
+<[iter val]            │ [val of iter] array comprehension (self is key)
+<[iter k$ val]         │ [val for k of iter]
+<{iter key val}        │ {key:val of iter} object comprehension  (self is key)
+<{iter k$ key val}     │ {key:val for k of iter}
+#[conf val]            │ [val while conf] while loop (self is value)
+#{cond key val}        │ {key:val while cond} while loop (self is key)
 ```
 
 `>[...]` collects defined body results into a new array (undefined results are skipped). `>{...}` evaluates key/value expressions and writes entries only when the value is defined.
@@ -446,7 +455,7 @@ The encoder adds byte-length prefixes to container values only where O(1) skippi
 - Iterable and binding slots in `>(` / `<(` (always evaluated)
 - Iterable and binding slots in `>[` / `>{` (always evaluated)
 - All arguments in regular `()` calls (all evaluated)
-- Body of `=` / `~` (fixed arity, all parts evaluated)
+- Body of `=` / `/` / `~` (fixed arity, all parts evaluated)
 - `;` loop-control scalar (self-delimiting)
 
 **Prefix added to container values in:**
@@ -513,16 +522,16 @@ The encoder adds byte-length prefixes to container values only where O(1) skippi
 ╰───────────────────────── alt opener
 ```
 
-### `[when self % 3 > 0 do x * 3 end for x in 10]`
+### `[when self % 3 > 0 do x * 3 end for x in 1..10]`
 
 ```rexc
->[k+x$o?((gt%(md%@6+)+)7(ml%x$6+))]
+>[(rn%2+k+)x$o?((gt%(md%@6+)+)7(ml%x$6+))]
 ├╯╰┬─╯╰┬╯╰─────┬──────╯╰───┬────╯│╰─ array comprehension closer
 │  │   │       │           │     ╰── when closer
 │  │   │       │           ╰──────── then: x * 3 — prefixed(7), skip position
 │  │   │       ╰──────────────────── condition: self % 3 > 0
 │  │   ╰──────────────────────────── when body opener (length prefixed)
-│  ╰──────────────────────────────── x in 10
+│  ╰──────────────────────────────── x in 1..10 (range opcode produces [1..10])
 ╰─────────────────────────────────── array comprehension opener
 ```
 
