@@ -133,12 +133,13 @@ const OPCODE_IDS = {
 	mod: "md",
 	neg: "ng",
 	range: "rn",
+	size: "sz",
 } as const;
 
 type OpcodeName = keyof typeof OPCODE_IDS;
 
-// Type predicate keywords that are reserved in the grammar and compile to opcodes when called.
-const TYPE_PREDICATE_OPCODES: ReadonlySet<string> = new Set(["boolean", "number", "string", "array", "object"]);
+// Keyword identifiers that are reserved in the grammar and compile to opcodes when called.
+const KEYWORD_OPCODES: ReadonlySet<string> = new Set(["boolean", "number", "string", "array", "object", "size"]);
 
 type EncodeOptions = {
 	domainRefs?: Record<string, string>;
@@ -581,9 +582,9 @@ function encodeNode(node: IRNode): string {
 		case "navigation":
 			return encodeNavigation(node);
 		case "call": {
-			// Type predicate keywords (boolean, number, string, array, object) are parsed
+			// Keyword identifiers (boolean, number, string, array, object, size) are parsed
 			// as identifier nodes but must be encoded as opcode calls, not variable navigation.
-			if (node.callee.type === "identifier" && TYPE_PREDICATE_OPCODES.has(node.callee.name)) {
+			if (node.callee.type === "identifier" && KEYWORD_OPCODES.has(node.callee.name)) {
 				return encodeCallParts([encodeOpcode(node.callee.name as OpcodeName), ...node.args.map((arg) => encodeNode(arg))]);
 			}
 			return encodeCallParts([encodeNode(node.callee), ...node.args.map((arg) => encodeNode(arg))]);
@@ -2693,6 +2694,9 @@ semantics.addOperation("toIR", {
 	},
 	BooleanKw(_kw) {
 		return { type: "identifier", name: "boolean" } satisfies IRNode;
+	},
+	SizeKw(_kw) {
+		return { type: "identifier", name: "size" } satisfies IRNode;
 	},
 
 	identifier(_a, _b) {

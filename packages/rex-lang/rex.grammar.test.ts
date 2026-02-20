@@ -51,6 +51,7 @@ describe("Rex grammar", () => {
 		expectParses("foo.bar.(key).baz");
 		expectParses("table.(k1).(k2)");
 		expectParses("string(value)");
+		expectParses("size([1, 2, 3])");
 		expectParses('path-match("/api/*")');
 	});
 

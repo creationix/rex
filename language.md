@@ -369,6 +369,8 @@ Iteration order is deterministic:
 - Arrays and strings iterate in ascending index order.
 - Objects iterate in JavaScript property insertion order.
 
+Strings iterate by Unicode code points.
+
 Iteration uses snapshot semantics: mutating the iterated collection during a loop/comprehension does not change which entries the current iteration visits.
 
 ### Ranges
@@ -532,6 +534,17 @@ else when number(value) do
 else
   handle-other()
 end
+```
+
+## Size
+
+`size(expr)` returns the number of elements in arrays, the number of Unicode code points in strings, and the number of key/value pairs in objects. For other values it returns `undefined`.
+
+```rex
+size([1, 2, 3])     // → 3
+size("hello")       // → 5
+size({a: 1, b: 2})  // → 2
+size(123)           // → undefined
 ```
 
 ## Delete

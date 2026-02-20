@@ -149,4 +149,9 @@ describe("Rex encoding backend", () => {
 		expect(compile("number(42)")).toBe("(nm%1k+)");
 		expect(compile('string("hello")')).toBe("(st%hello:)");
 	});
+
+	test("encodes size calls as opcodes", () => {
+		expect(compile("size([1, 2])")).toBe("(sz%[2+4+])");
+		expect(compile('size("hello")')).toBe("(sz%hello:)");
+	});
 });
