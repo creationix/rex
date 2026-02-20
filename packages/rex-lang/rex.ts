@@ -19,6 +19,7 @@ export type IRNode =
 	| { type: "string"; raw: string }
 	| { type: "array"; items: IRNode[] }
 	| { type: "arrayComprehension"; binding: IRBindingOrExpr; body: IRNode }
+	| { type: "whileArrayComprehension"; condition: IRNode; body: IRNode }
 	| { type: "object"; entries: { key: IRNode; value: IRNode }[] }
 	| {
 			type: "objectComprehension";
@@ -26,9 +27,15 @@ export type IRNode =
 			key: IRNode;
 			value: IRNode;
 	  }
+	| {
+			type: "whileObjectComprehension";
+			condition: IRNode;
+			key: IRNode;
+			value: IRNode;
+	  }
 	| { type: "key"; name: string }
 	| { type: "group"; expression: IRNode }
-	| { type: "unary"; op: "neg" | "not" | "delete"; value: IRNode }
+	| { type: "unary"; op: "neg" | "not" | "logicalNot" | "delete"; value: IRNode }
 	| {
 			type: "binary";
 			op:
@@ -42,6 +49,7 @@ export type IRNode =
 				| "bitXor"
 				| "and"
 				| "or"
+				| "nor"
 				| "eq"
 				| "neq"
 				| "gt"
@@ -53,7 +61,7 @@ export type IRNode =
 	  }
 	| {
 			type: "assign";
-			op: "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=";
+			op: ":=" | "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=";
 			place: IRNode;
 			value: IRNode;
 	  }
@@ -72,6 +80,7 @@ export type IRNode =
 	  }
 	| { type: "for"; binding: IRBindingOrExpr; body: IRNode[] }
 	| { type: "while"; condition: IRNode; body: IRNode[] }
+	| { type: "range"; from: IRNode; to: IRNode }
 	| { type: "break" }
 	| { type: "continue" };
 
@@ -123,6 +132,7 @@ const OPCODE_IDS = {
 	object: "ob",
 	mod: "md",
 	neg: "ng",
+	range: "rn",
 } as const;
 
 type OpcodeName = keyof typeof OPCODE_IDS;
@@ -144,7 +154,7 @@ type RexDomainConfigEntry = {
 	names?: unknown;
 };
 
-const BINARY_TO_OPCODE: Record<Extract<IRNode, { type: "binary" }> ["op"], OpcodeName> = {
+const BINARY_TO_OPCODE: Record<Exclude<Extract<IRNode, { type: "binary" }> ["op"], "nor">, OpcodeName> = {
 	add: "add",
 	sub: "sub",
 	mul: "mul",
@@ -321,7 +331,7 @@ function addOptionalPrefix(encoded: string): string {
 	if (encoded.startsWith("?(") || encoded.startsWith("!(") || encoded.startsWith("|(") || encoded.startsWith("&(") || encoded.startsWith(">(") || encoded.startsWith("<(") || encoded.startsWith("#(")) {
 		payload = encoded.slice(2, -1);
 	}
-	else if (encoded.startsWith(">[") || encoded.startsWith(">{")) {
+	else if (encoded.startsWith(">[") || encoded.startsWith(">{") || encoded.startsWith("<[") || encoded.startsWith("<{") || encoded.startsWith("#[") || encoded.startsWith("#{")) {
 		payload = encoded.slice(2, -1);
 	}
 	else if (encoded.startsWith("[") || encoded.startsWith("{") || encoded.startsWith("(")) {
@@ -453,6 +463,19 @@ function encodeObjectComprehension(node: Extract<IRNode, { type: "objectComprehe
 	return `<{${encodeNode(node.binding.source)}${node.binding.key}$${key}${value}}`;
 }
 
+function encodeWhileArrayComprehension(node: Extract<IRNode, { type: "whileArrayComprehension" }>): string {
+	const cond = encodeNode(node.condition);
+	const body = addOptionalPrefix(encodeNode(node.body));
+	return `#[${cond}${body}]`;
+}
+
+function encodeWhileObjectComprehension(node: Extract<IRNode, { type: "whileObjectComprehension" }>): string {
+	const cond = encodeNode(node.condition);
+	const key = addOptionalPrefix(encodeNode(node.key));
+	const value = addOptionalPrefix(encodeNode(node.value));
+	return `#{${cond}${key}${value}}`;
+}
+
 let activeEncodeOptions: EncodeOptions | undefined;
 
 function encodeNode(node: IRNode): string {
@@ -489,6 +512,8 @@ function encodeNode(node: IRNode): string {
 		}
 		case "arrayComprehension":
 			return encodeArrayComprehension(node);
+		case "whileArrayComprehension":
+			return encodeWhileArrayComprehension(node);
 		case "object": {
 			const body = node.entries
 				.map(({ key, value }) => `${encodeNode(key)}${addOptionalPrefix(encodeNode(value))}`)
@@ -497,6 +522,8 @@ function encodeNode(node: IRNode): string {
 		}
 		case "objectComprehension":
 			return encodeObjectComprehension(node);
+		case "whileObjectComprehension":
+			return encodeWhileObjectComprehension(node);
 		case "key":
 			return encodeBareOrLengthString(node.name);
 		case "group":
@@ -504,6 +531,10 @@ function encodeNode(node: IRNode): string {
 		case "unary":
 			if (node.op === "delete") return `~${encodeNode(node.value)}`;
 			if (node.op === "neg") return encodeCallParts([encodeOpcode("neg"), encodeNode(node.value)]);
+			if (node.op === "logicalNot") {
+				const val = encodeNode(node.value);
+				return `!(${val}tr')`;
+			}
 			return encodeCallParts([encodeOpcode("not"), encodeNode(node.value)]);
 		case "binary":
 			if (node.op === "and") {
@@ -526,12 +557,18 @@ function encodeNode(node: IRNode): string {
 					.join("");
 				return `|(${body})`;
 			}
+			if (node.op === "nor") {
+				const left = encodeNode(node.left);
+				const right = addOptionalPrefix(encodeNode(node.right));
+				return `!(${left}${right})`;
+			}
 			return encodeCallParts([
 				encodeOpcode(BINARY_TO_OPCODE[node.op]),
 				encodeNode(node.left),
 				encodeNode(node.right),
 			]);
 		case "assign": {
+			if (node.op === ":=") return `/${encodeNode(node.place)}${addOptionalPrefix(encodeNode(node.value))}`;
 			if (node.op === "=") return `=${encodeNode(node.place)}${addOptionalPrefix(encodeNode(node.value))}`;
 			const opcode = ASSIGN_COMPOUND_TO_OPCODE[node.op];
 			if (!opcode) throw new Error(`Unsupported assignment op: ${node.op}`);
@@ -549,6 +586,8 @@ function encodeNode(node: IRNode): string {
 			const elseExpr = node.elseBranch ? addOptionalPrefix(encodeConditionalElse(node.elseBranch)) : "";
 			return `${opener}${cond}${thenExpr}${elseExpr})`;
 		}
+		case "range":
+			return encodeCallParts([encodeOpcode("range"), encodeNode(node.from), encodeNode(node.to)]);
 		case "for":
 			return encodeFor(node);
 		case "while":
@@ -1090,8 +1129,17 @@ function collectReads(node: IRNode, out: Set<string>) {
 			collectReads(node.binding.source, out);
 			collectReads(node.body, out);
 			return;
+		case "whileArrayComprehension":
+			collectReads(node.condition, out);
+			collectReads(node.body, out);
+			return;
 		case "objectComprehension":
 			collectReads(node.binding.source, out);
+			collectReads(node.key, out);
+			collectReads(node.value, out);
+			return;
+		case "whileObjectComprehension":
+			collectReads(node.condition, out);
 			collectReads(node.key, out);
 			collectReads(node.value, out);
 			return;
@@ -1124,6 +1172,10 @@ function collectReads(node: IRNode, out: Set<string>) {
 		case "for":
 			collectReads(node.binding.source, out);
 			for (const part of node.body) collectReads(part, out);
+			return;
+		case "range":
+			collectReads(node.from, out);
+			collectReads(node.to, out);
 			return;
 		case "program":
 			for (const part of node.body) collectReads(part, out);
@@ -1167,6 +1219,8 @@ function isPureNode(node: IRNode): boolean {
 			return node.op !== "delete" && isPureNode(node.value);
 		case "binary":
 			return isPureNode(node.left) && isPureNode(node.right);
+		case "range":
+			return isPureNode(node.from) && isPureNode(node.to);
 		default:
 			return false;
 	}
@@ -1239,6 +1293,8 @@ function hasIdentifierRead(node: IRNode, name: string, asPlace = false): boolean
 			return hasIdentifierRead(node.value, name, node.op === "delete");
 		case "binary":
 			return hasIdentifierRead(node.left, name) || hasIdentifierRead(node.right, name);
+		case "range":
+			return hasIdentifierRead(node.from, name) || hasIdentifierRead(node.to, name);
 		case "assign":
 			return hasIdentifierRead(node.place, name, true) || hasIdentifierRead(node.value, name);
 		default:
@@ -1261,6 +1317,8 @@ function countIdentifierReads(node: IRNode, name: string, asPlace = false): numb
 			return countIdentifierReads(node.value, name, node.op === "delete");
 		case "binary":
 			return countIdentifierReads(node.left, name) + countIdentifierReads(node.right, name);
+		case "range":
+			return countIdentifierReads(node.from, name) + countIdentifierReads(node.to, name);
 		case "assign":
 			return countIdentifierReads(node.place, name, true) + countIdentifierReads(node.value, name);
 		default:
@@ -1317,6 +1375,12 @@ function replaceIdentifier(node: IRNode, name: string, replacement: IRNode, asPl
 				op: node.op,
 				place: replaceIdentifier(node.place, name, replacement, true),
 				value: replaceIdentifier(node.value, name, replacement),
+			} satisfies IRNode;
+		case "range":
+			return {
+				type: "range",
+				from: replaceIdentifier(node.from, name, replacement),
+				to: replaceIdentifier(node.to, name, replacement),
 			} satisfies IRNode;
 		default:
 			return node;
@@ -1450,6 +1514,9 @@ function foldUnary(op: Extract<IRNode, { type: "unary" }> ["op"], value: unknown
 		if (typeof value === "boolean") return !value;
 		if (typeof value === "number") return ~value;
 		return undefined;
+	}
+	if (op === "logicalNot") {
+		return value === undefined ? true : undefined;
 	}
 	return undefined;
 }
@@ -1613,6 +1680,12 @@ function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number, asPl
 			}
 			return { type: "binary", op: node.op, left, right } satisfies IRNode;
 		}
+		case "range":
+			return {
+				type: "range",
+				from: optimizeNode(node.from, env, currentDepth),
+				to: optimizeNode(node.to, env, currentDepth),
+			} satisfies IRNode;
 		case "navigation": {
 			const target = optimizeNode(node.target, env, currentDepth);
 			const segments = node.segments.map((segment) => (segment.type === "static"
@@ -1742,6 +1815,12 @@ function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number, asPl
 				body: optimizeNode(node.body, bodyEnv, currentDepth + 1),
 			} satisfies IRNode;
 		}
+		case "whileArrayComprehension":
+			return {
+				type: "whileArrayComprehension",
+				condition: optimizeNode(node.condition, env, currentDepth),
+				body: optimizeNode(node.body, env, currentDepth + 1),
+			} satisfies IRNode;
 		case "objectComprehension": {
 			const sourceEnv = cloneOptimizeEnv(env);
 			const binding = optimizeBinding(node.binding, sourceEnv, currentDepth);
@@ -1754,6 +1833,13 @@ function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number, asPl
 				value: optimizeNode(node.value, bodyEnv, currentDepth + 1),
 			} satisfies IRNode;
 		}
+		case "whileObjectComprehension":
+			return {
+				type: "whileObjectComprehension",
+				condition: optimizeNode(node.condition, env, currentDepth),
+				key: optimizeNode(node.key, env, currentDepth + 1),
+				value: optimizeNode(node.value, env, currentDepth + 1),
+			} satisfies IRNode;
 		default:
 			return node;
 	}
@@ -1802,6 +1888,10 @@ function collectLocalBindings(node: IRNode, locals: Set<string>) {
 			collectLocalBindings(node.left, locals);
 			collectLocalBindings(node.right, locals);
 			return;
+		case "range":
+			collectLocalBindings(node.from, locals);
+			collectLocalBindings(node.to, locals);
+			return;
 		case "conditional":
 			collectLocalBindings(node.condition, locals);
 			for (const part of node.thenBlock) collectLocalBindings(part, locals);
@@ -1815,8 +1905,17 @@ function collectLocalBindings(node: IRNode, locals: Set<string>) {
 			collectLocalBindingFromBinding(node.binding, locals);
 			collectLocalBindings(node.body, locals);
 			return;
+		case "whileArrayComprehension":
+			collectLocalBindings(node.condition, locals);
+			collectLocalBindings(node.body, locals);
+			return;
 		case "objectComprehension":
 			collectLocalBindingFromBinding(node.binding, locals);
+			collectLocalBindings(node.key, locals);
+			collectLocalBindings(node.value, locals);
+			return;
+		case "whileObjectComprehension":
+			collectLocalBindings(node.condition, locals);
 			collectLocalBindings(node.key, locals);
 			collectLocalBindings(node.value, locals);
 			return;
@@ -1906,6 +2005,10 @@ function collectNameFrequencies(node: IRNode, locals: Set<string>, frequencies: 
 			collectNameFrequencies(node.left, locals, frequencies, order, nextOrder);
 			collectNameFrequencies(node.right, locals, frequencies, order, nextOrder);
 			return;
+		case "range":
+			collectNameFrequencies(node.from, locals, frequencies, order, nextOrder);
+			collectNameFrequencies(node.to, locals, frequencies, order, nextOrder);
+			return;
 		case "conditional":
 			collectNameFrequencies(node.condition, locals, frequencies, order, nextOrder);
 			for (const part of node.thenBlock) collectNameFrequencies(part, locals, frequencies, order, nextOrder);
@@ -1919,8 +2022,17 @@ function collectNameFrequencies(node: IRNode, locals: Set<string>, frequencies: 
 			collectNameFrequenciesBinding(node.binding, locals, frequencies, order, nextOrder);
 			collectNameFrequencies(node.body, locals, frequencies, order, nextOrder);
 			return;
+		case "whileArrayComprehension":
+			collectNameFrequencies(node.condition, locals, frequencies, order, nextOrder);
+			collectNameFrequencies(node.body, locals, frequencies, order, nextOrder);
+			return;
 		case "objectComprehension":
 			collectNameFrequenciesBinding(node.binding, locals, frequencies, order, nextOrder);
+			collectNameFrequencies(node.key, locals, frequencies, order, nextOrder);
+			collectNameFrequencies(node.value, locals, frequencies, order, nextOrder);
+			return;
+		case "whileObjectComprehension":
+			collectNameFrequencies(node.condition, locals, frequencies, order, nextOrder);
 			collectNameFrequencies(node.key, locals, frequencies, order, nextOrder);
 			collectNameFrequencies(node.value, locals, frequencies, order, nextOrder);
 			return;
@@ -2000,6 +2112,12 @@ function renameLocalNames(node: IRNode, map: Map<string, string>): IRNode {
 				left: renameLocalNames(node.left, map),
 				right: renameLocalNames(node.right, map),
 			} satisfies IRNode;
+		case "range":
+			return {
+				type: "range",
+				from: renameLocalNames(node.from, map),
+				to: renameLocalNames(node.to, map),
+			} satisfies IRNode;
 		case "assign": {
 			const place = node.place.type === "identifier" && map.has(node.place.name)
 				? ({ type: "identifier", name: map.get(node.place.name) as string } satisfies IRNode)
@@ -2031,10 +2149,23 @@ function renameLocalNames(node: IRNode, map: Map<string, string>): IRNode {
 				binding: renameLocalNamesBinding(node.binding, map),
 				body: renameLocalNames(node.body, map),
 			} satisfies IRNode;
+		case "whileArrayComprehension":
+			return {
+				type: "whileArrayComprehension",
+				condition: renameLocalNames(node.condition, map),
+				body: renameLocalNames(node.body, map),
+			} satisfies IRNode;
 		case "objectComprehension":
 			return {
 				type: "objectComprehension",
 				binding: renameLocalNamesBinding(node.binding, map),
+				key: renameLocalNames(node.key, map),
+				value: renameLocalNames(node.value, map),
+			} satisfies IRNode;
+		case "whileObjectComprehension":
+			return {
+				type: "whileObjectComprehension",
+				condition: renameLocalNames(node.condition, map),
 				key: renameLocalNames(node.key, map),
 				value: renameLocalNames(node.value, map),
 			} satisfies IRNode;
@@ -2243,6 +2374,9 @@ semantics.addOperation("toIR", {
 	ExistenceExpr_or(left, _or, right) {
 		return { type: "binary", op: "or", left: left.toIR(), right: right.toIR() } satisfies IRNode;
 	},
+	ExistenceExpr_nor(left, _nor, right) {
+		return { type: "binary", op: "nor", left: left.toIR(), right: right.toIR() } satisfies IRNode;
+	},
 
 	BitExpr_and(left, _op, right) {
 		return { type: "binary", op: "bitAnd", left: left.toIR(), right: right.toIR() } satisfies IRNode;
@@ -2252,6 +2386,10 @@ semantics.addOperation("toIR", {
 	},
 	BitExpr_or(left, _op, right) {
 		return { type: "binary", op: "bitOr", left: left.toIR(), right: right.toIR() } satisfies IRNode;
+	},
+
+	RangeExpr_range(left, _op, right) {
+		return { type: "range", from: left.toIR(), to: right.toIR() } satisfies IRNode;
 	},
 
 	CompareExpr_binary(left, op, right) {
@@ -2295,6 +2433,9 @@ semantics.addOperation("toIR", {
 	},
 	UnaryExpr_not(_op, value) {
 		return { type: "unary", op: "not", value: value.toIR() } satisfies IRNode;
+	},
+	UnaryExpr_logicalNot(_not, value) {
+		return { type: "unary", op: "logicalNot", value: value.toIR() } satisfies IRNode;
 	},
 	UnaryExpr_delete(_del, place) {
 		return { type: "unary", op: "delete", value: place.toIR() } satisfies IRNode;
@@ -2378,6 +2519,13 @@ semantics.addOperation("toIR", {
 			body: body.toIR(),
 		} satisfies IRNode;
 	},
+	Array_whileComprehension(_open, body, _while, condition, _close) {
+		return {
+			type: "whileArrayComprehension",
+			condition: condition.toIR(),
+			body: body.toIR(),
+		} satisfies IRNode;
+	},
 	Array_inComprehension(_open, body, _in, source, _close) {
 		return {
 			type: "arrayComprehension",
@@ -2403,6 +2551,14 @@ semantics.addOperation("toIR", {
 		return {
 			type: "objectComprehension",
 			binding: binding.toIR() as IRBinding,
+			key: key.toIR(),
+			value: value.toIR(),
+		} satisfies IRNode;
+	},
+	Object_whileComprehension(_open, key, _colon, value, _while, condition, _close) {
+		return {
+			type: "whileObjectComprehension",
+			condition: condition.toIR(),
 			key: key.toIR(),
 			value: value.toIR(),
 		} satisfies IRNode;

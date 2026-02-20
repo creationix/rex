@@ -36,5 +36,5 @@
 ## Change checklists (project-specific)
 - If `rex.ohm` changed: run `bun run build:grammar` then `bun test` in `packages/rex-lang`.
 - If parser/IR/encoder/interpreter changed: run `bun test` in `packages/rex-lang` and spot-check with `rex --expr ... --ir` (or `bunx @creationix/rex --expr ... --ir`, `npx -y @creationix/rex -- --expr ... --ir`, or `bun run rex:compile --expr ... --ir`).
-- If docs examples changed (`high-level.md`, `encoding.md`): run `bun run rex:verify-docs` from root.
+- If docs examples changed (`language.md`, `rexc-bytecode.md`): run `bun run rex:verify-docs` from root.
 - If VS Code grammar/tokenization changed: run `bun test` and `bun run build` in `packages/vscode-rex`.

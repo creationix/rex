@@ -55,6 +55,7 @@ const KEYWORDS = new Set([
 	"continue",
 	"and",
 	"or",
+	"nor",
 	"true",
 	"false",
 	"null",
@@ -64,7 +65,7 @@ const KEYWORDS = new Set([
 	"self",
 ]);
 
-const ASSIGNMENT_OPERATORS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="]);
+const ASSIGNMENT_OPERATORS = new Set([":=", "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="]);
 
 export function analyzeRexSymbols(source: string): RexSymbolAnalysis {
 	const tokens = tokenize(source);
@@ -449,7 +450,7 @@ function skipQuotedString(source: string, start: number, quote: string): number 
 
 function readOperator(source: string, start: number): string | null {
 	const two = source.slice(start, start + 2);
-	if (["==", "!=", "<=", ">=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="].includes(two)) {
+	if (["==", "!=", "<=", ">=", ":=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="].includes(two)) {
 		return two;
 	}
 	const one = source[start] ?? "";

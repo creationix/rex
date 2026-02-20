@@ -1,6 +1,6 @@
-# Rex High-Level Syntax
+# Rex Language Reference
 
-An infix syntax for Rex designed for users who want to configure a system and learn as little new syntax as possible.
+Rex is designed for users who want to configure a system and learn as little new syntax as possible.
 
 ## Guiding Principles
 
@@ -10,7 +10,7 @@ This single idea drives the entire language:
 
 - **Comparisons** return the left-hand value on success, `undefined` on failure
 - **`when`/`unless`** branch on whether a value is defined
-- **`and`/`or`** short-circuit on existence, not truthiness
+- **`and`/`or`/`nor`** short-circuit on existence, not truthiness
 - **Type predicates** return the value if it matches, `undefined` otherwise
 
 Because there's no truthiness, there are no truthiness bugs:
@@ -173,29 +173,6 @@ when age > 18 and age < 65 do
 end
 ```
 
-### Existence Operators
-
-`and` and `or` short-circuit based on existence (defined vs `undefined`). They return actual values, not booleans:
-
-| Operator  | Returns                                          |
-|-----------|--------------------------------------------------|
-| `a and b` | `b` if both defined, first `undefined` otherwise |
-| `a or b`  | first defined value, `undefined` otherwise       |
-
-```rex
-// or — first defined value (nullish coalescing)
-user.preferred-name or user.name or "anonymous"
-
-// and — last value if all defined
-user and user.name and user.email
-```
-
-These are variadic in the bytecode, but in infix they chain naturally with standard left-to-right evaluation.
-
-If you want a ternary expression `a ? b : c`, you can use `a and b or c` when `a` is an existence-style condition and `b` is known to be defined, otherwise use `when a do b else c end`.
-
-For boolean conditions, compare explicitly (for example `when flag == true do ... end`) since `when` checks defined-vs-`undefined`, not truthiness.
-
 ### Bitwise / Boolean Value Operators
 
 Symbol operators that work on the values themselves. On booleans they perform boolean algebra, on numbers they perform bitwise operations:
@@ -222,7 +199,7 @@ true | false               // true
 user.can-edit = user.is-admin & ~user.is-suspended
 ```
 
-The distinction: **words** (`and`, `or`) operate on **existence**. **Symbols** (`&`, `|`, `^`, `~`) operate on **values**.
+The distinction: **words** (`and`, `or`, `nor`) operate on **existence**. **Symbols** (`&`, `|`, `^`, `~`) operate on **values**.
 
 ### Operator Precedence
 
@@ -234,10 +211,11 @@ Highest to lowest:
 | 2     | `-x` `~x`                   | unary                   |
 | 3     | `*` `/` `%`                 | multiplicative          |
 | 4     | `+` `-`                     | additive                |
-| 5     | `&` `^` `\|`                | bitwise / boolean value |
+| 5     | `..`                        | range                   |
 | 6     | `==` `!=` `>` `>=` `<` `<=` | comparison              |
-| 7     | `and` `or`                  | existence               |
-| 8     | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` | assignment |
+| 7     | `&` `^` `\|`                | bitwise / boolean value |
+| 8     | `and` `or` `nor`            | existence               |
+| 9     | `:=` `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` | assignment |
 
 Use `()` to override:
 
@@ -307,6 +285,33 @@ else
 end
 ```
 
+### Short Circuit Operators
+
+`and`, `or`, and `nor` short-circuit based on existence (defined vs `undefined`). They return actual values, not booleans:
+
+| Operator  | Returns                                          |
+|-----------|--------------------------------------------------|
+| `a and b` | `b` if both defined, first `undefined` otherwise |
+| `a or b`  | first defined value, `undefined` otherwise       |
+| `a nor b` | `b` if `a` is undefined, `undefined` otherwise   |
+
+```rex
+// or — first defined value (nullish coalescing)
+user.preferred-name or user.name or "anonymous"
+
+// and — last value if all defined
+user and user.name and user.email
+
+// nor — pass value only if guard is absent
+composites.(n) nor n
+```
+
+`and` and `or` are variadic in the bytecode, but in infix they chain naturally with standard left-to-right evaluation. `nor` is the binary form of `unless a do b end` (without self binding).
+
+If you want a ternary expression `a ? b : c`, you can use `a and b or c` when `a` is an existence-style condition and `b` is known to be defined, otherwise use `when a do b else c end`.
+
+For boolean conditions, compare explicitly (for example `when flag == true do ... end`) since `when` checks defined-vs-`undefined`, not truthiness.
+
 ## Iteration
 
 ### `for` Loops
@@ -339,18 +344,41 @@ end
 
 In `in` forms, `self` is set to the current value. In `of` forms, `self` is set to the current key.
 
+### Ranges
+
+The `..` operator creates a range that evaluates to an array of integers:
+
+```rex
+1..5          // → [1, 2, 3, 4, 5]  (inclusive both ends)
+0..4          // → [0, 1, 2, 3, 4]
+5..1          // → [5, 4, 3, 2, 1]  (auto-descending)
+3..3          // → [3]
+```
+
+Ranges work in any expression position — iteration, assignment, indexing:
+
+```rex
+for i in 1..10 do
+  process(i)
+end
+
+evens = [self % 2 == 0 and self for v in 1..100]
+digits = 0..9
+```
+
+The `..` operator has lower precedence than arithmetic, so `1 + 2 .. n - 1` means `(1+2)..(n-1)`.
+
 ### Iterable Types
 
-`for` works on arrays, objects, strings, and numbers:
+`for` works on arrays, objects, and strings:
 
 | Input | Keys (k) | Values (v) |
 |---|---|---|
 | `[10, 20, 30]` | `0, 1, 2` | `10, 20, 30` |
 | `{a: 1, b: 2}` | `"a", "b"` | `1, 2` |
 | `"Hello"` | `0, 1, 2, 3, 4` | `"H", "e", "l", "l", "o"` |
-| `5` | `0, 1, 2, 3, 4` | `1, 2, 3, 4, 5` |
 
-Number values are 1-based (counting to N). Keys are always 0-based.
+Use `..` to iterate over a range of integers (see above).
 
 Domain extensions can add new iterable types — for example, URL paths that iterate over segments or domain names that iterate over subdomains.
 
@@ -373,8 +401,8 @@ Comprehensions build new collections. The body expression comes first, followed 
 #### Array Comprehensions
 
 ```rex
-// Implicit self
-[self % 2 > 0 and self % 3 > 0 and self % 5 > 0 in 100]
+// Implicit self with range
+[self % 2 > 0 and self % 3 > 0 and self % 5 > 0 in 1..100]
 // → [1, 7, 11, 13, 17, 19, 23, 29, 31, ...]
 
 // Named value
@@ -657,7 +685,7 @@ end
 
 **Literals:** `true`, `false`, `null`, `undefined`, `self`
 
-**Control flow:** `when`, `unless`, `for`, `in`, `of`, `do`, `else`, `end`, `break`, `continue`, `and`, `or`
+**Control flow:** `when`, `unless`, `for`, `in`, `of`, `do`, `else`, `end`, `break`, `continue`, `and`, `or`, `nor`
 
 **Place operations:** `delete`
 

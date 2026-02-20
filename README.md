@@ -8,9 +8,9 @@
 
 Programmable JSON. Small arms, big bite.
 
-Rex is a compact expression language for configuration and data-driven logic. It is a superset of JSON with high-level infix syntax (`when`, `unless`, `and`, `or`, assignment, loops, comprehensions) that compiles to a compact bytecode string format called `rexc`.
+Rex is a compact expression language for configuration and data-driven logic. It is a superset of JSON with high-level syntax (`when`, `unless`, `and`, `or`, assignment, loops, comprehensions) that compiles to a compact bytecode string format called `rexc`.
 
-If you need data-first configs with just enough logic—without embedding a full scripting runtime—Rex is built for that.
+If you need data-first configs with just enough logic — without embedding a full scripting runtime — Rex is built for that.
 
 ## Why Rex
 
@@ -24,86 +24,32 @@ Rex keeps the model data-oriented and explicit:
 
 - JSON-like literals and object/array ergonomics
 - Existence-based control flow (`undefined` means absence)
-- Compact, serializable `rexc` output
+- Compact, serializable `rexc` bytecode output
 - Domain-agnostic core language
 
-## Quick Start
+## Existence Semantics
 
-Install CLI once:
-
-```sh
-bun add -g @creationix/rex
-```
-
-Compile Rex directly:
-
-```sh
-rex --expr "when x do y end"
-rex --file input.rex
-cat input.rex | rex
-rex --expr "a and b" --ir
-```
-
-Run without global install:
-
-```sh
-bunx @creationix/rex --help
-bunx @creationix/rex --expr "when x do y end"
-
-npx -y @creationix/rex -- --help
-npx -y @creationix/rex -- --expr "when x do y end"
-```
-
-Or, from repo root, use workspace scripts:
-
-```sh
-bun run rex:compile --expr "when x do y end"
-bun run rex:compile --file input.rex
-cat input.rex | bun run rex:compile
-bun run rex:compile --expr "a and b" --ir
-```
-
-## Language Snapshot
-
-Rex uses **existence semantics** (defined vs `undefined`), not truthiness.
+Rex uses **existence** instead of truthiness. There is no concept of "falsy" — `false`, `null`, `0`, and `""` are all ordinary values. Only `undefined` represents absence:
 
 ```rex
-0 or "fallback"         // => 0
-false or "fallback"     // => false
-null or "fallback"      // => null
-undefined or "fallback" // => "fallback"
+0 or "fallback"         // => 0         (zero is a value)
+false or "fallback"     // => false     (false is a value)
+null or "fallback"      // => null      (null is a value)
+undefined or "fallback" // => "fallback" (undefined IS absence)
 ```
 
-Core forms:
+This single idea drives the entire language:
 
-```rex
-// conditionals
-when cond do expr end
-unless cond do expr else other end
+- **Comparisons** return the left-hand value on success, `undefined` on failure
+- **`when`/`unless`** branch on whether a value is defined
+- **`and`/`or`/`nor`** short-circuit on existence, not truthiness
+- **Type predicates** return the value if it matches, `undefined` otherwise
 
-// assignment
-x = 42
-obj.key += 1
+Because there's no truthiness, there are no truthiness bugs.
 
-// existence operators
-a and b
-a or b
+## Quick Example
 
-// value operators (boolean/bitwise depending on type)
-a & b
-~a
-
-// depth-aware self
-self
-self@2
-
-// loops and comprehensions
-for v in items do v end
-[v in items ; v * 2]
-{k, v in obj ; (k): v}
-```
-
-## Example: table-driven routing
+Table-driven routing — look up an action in a map and set a header:
 
 ```rex
 actions = {
@@ -117,27 +63,206 @@ when handler = actions.(headers.x-action) do
 end
 ```
 
-Normal compile output (names preserved):
+This compiles to a single `rexc` bytecode string:
 
 ```rexc
 (%=actions$1p{create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profile}?(=handler$r(actions$(headers$x-action:))s=(headers$x-handler:)handler$))
 ```
 
-Optimized compile output:
+## Language Overview
 
-```rexc
-?(({create-user:c,users/createdelete-user:c,users/deleteupdate-profile:k,users/update-profile}(headers$x-action:))l=(headers$x-handler:)@)
+Rex is a superset of JSON. Every valid JSON document is already valid Rex.
+
+### Data Types
+
+```rex
+// Everything from JSON
+42   -3.14   "hello"   true   false   null
+[1, 2, 3]   {"name": "Rex", "age": 65}
+
+// Rex additions
+undefined                  // absence of value
+0xFF   0b1010              // hex and binary numbers
+{name: "Rex", age: 65}    // bare identifier keys
+[1 2 3]  {a: 1 b: 2}      // commas are optional
+{(field): "value"}         // computed key expressions
+```
+
+### Navigation
+
+Dots navigate into nested structures. Parenthesized expressions handle dynamic keys:
+
+```rex
+user.name                  // static key
+user.address.street        // nested
+map.(key)                  // dynamic key (variable)
+config.(headers.x-action)  // dynamic key (expression)
+self                       // implicit value in current scope
+self@2                     // parent scope's self
+```
+
+### Assignment
+
+```rex
+x = 42
+obj.key = "value"
+x += 1    x -= 5    x *= 2
+```
+
+### Operators
+
+```rex
+// Arithmetic
+x + y    x - y    x * y    x / y    x % y    -x
+
+// Comparison (returns value on success, undefined on failure)
+age > 18    age <= 65    x == y    x != y
+
+// Existence (short-circuit on defined vs undefined)
+a and b       // b if both defined
+a or b        // first defined value
+a nor b       // b if a is undefined
+
+// Value operators (boolean algebra / bitwise)
+a & b    a | b    a ^ b    ~a
+```
+
+### Control Flow
+
+```rex
+when age > 18 do
+  allow(self)
+end
+
+unless authorized do
+  deny()
+end
+
+when string(value) do
+  handle-string(self)
+else when number(value) do
+  handle-number(self)
+else
+  handle-other()
+end
+```
+
+### Iteration
+
+```rex
+// For loops
+for v in [1, 2, 3] do process(v) end
+for k, v in obj do log(k, v) end
+
+// Ranges
+1..10              // [1, 2, 3, ..., 10]
+
+// Array comprehension
+[v * 2 for v in [1, 2, 3]]           // [2, 4, 6]
+
+// Object comprehension
+{(k): v * 10 for k, v in {a: 1, b: 2}}  // {a: 10, b: 20}
+
+// Filtering (undefined values are excluded)
+[v % 2 == 0 and v for v in 1..10]    // [2, 4, 6, 8, 10]
+```
+
+### Type Predicates
+
+Return the value if it matches the type, `undefined` otherwise:
+
+```rex
+when n = number(input) do
+  total += n
+else when s = string(input) do
+  log("got string: " + s)
+end
+```
+
+For the complete syntax and semantics, see the [Language Reference](language.md).
+
+## Example Programs
+
+### Fibonacci
+
+```rex
+max = max or 100
+
+fibs = []
+i = 0
+a = 1
+b = 1
+while a <= max do
+  fibs.(i) = a
+  i += 1
+  c = a + b
+  a = b
+  b = c
+end
+
+fibs
+```
+
+### Sieve of Eratosthenes
+
+```rex
+max = max or 100
+
+composites = {}
+n = 2
+while n * n <= max do
+  unless composites.(n) do
+    m = n * n
+    while m <= max do
+      composites.(m) = true
+      m += n
+    end
+  end
+  n += 1
+end
+
+[composites.(self) nor self in 2..max]
+```
+
+## Compilation
+
+Rex compiles to `rexc` — a compact bytecode that serializes as a UTF-8 string. You can store it in JSON, diff it, and transmit it like any other string data. Interpreters execute `rexc` directly.
+
+For the full bytecode specification, see the [Bytecode Format](rexc-bytecode.md).
+
+## Getting Started
+
+Install the CLI:
+
+```sh
+bun add -g @creationix/rex
+```
+
+Use it:
+
+```sh
+rex fibonacci.rex                    # evaluate and output JSON result
+rex -e 'max = 200' fibonacci.rex     # set a variable before running
+rex -c --expr "when x do y end"      # compile to rexc bytecode
+rex --expr "a and b" --ir            # show lowered IR
+```
+
+Zero-install alternatives:
+
+```sh
+bunx @creationix/rex --expr "when x do y end"
+npx -y @creationix/rex -- --expr "when x do y end"
 ```
 
 ## Programmatic API
 
 ```ts
-import { compile, parseToIR, optimizeIR, encodeIR } from "./packages/rex-lang/rex.ts";
+import { compile, parseToIR, optimizeIR, encodeIR } from "@creationix/rex";
 
 const source = "when x do y else z end";
 
 const encoded = compile(source);
-const optimizedEncoded = compile(source, { optimize: true });
+const optimized = compile(source, { optimize: true });
 
 const ir = parseToIR(source);
 const optimizedIR = optimizeIR(ir);
@@ -146,81 +271,17 @@ const reEncoded = encodeIR(optimizedIR);
 
 ## Tooling
 
-### Rex compiler package
+### VS Code Extension
 
-- Location: `packages/rex-lang`
-- Includes grammar, parser/lowering, optimizer, and encoder
+The [Rex for VS Code](packages/vscode-rex) extension provides:
 
-Useful commands:
+- Syntax highlighting for `.rex` and `.rexc` files
+- Parser-backed diagnostics
+- Outline, Go to Definition, and Find References
+- Domain-aware completion and hover via `.config.rex`
 
-```sh
-cd packages/rex-lang
-bun test
-bun run build:grammar
-```
+## Documentation
 
-### VS Code extension
-
-- Location: `packages/vscode-rex`
-- Adds syntax highlighting for `.rex` and `.rexc`
-
-Useful commands:
-
-```sh
-cd packages/vscode-rex
-bun test
-bun run build
-bun run reinstall
-```
-
-## Repo Layout
-
-- `packages/rex-lang` — language/compiler implementation
-- `packages/vscode-rex` — VS Code grammar + tokenizer + extension
-- `high-level.md` — complete high-level language reference
-- `encoding.md` — `rexc` encoding format reference
-
-## Development Workflow
-
-From repo root:
-
-```sh
-bun run rex:compile --expr "when x do y end"
-bun run rex:verify-docs
-```
-
-Installable CLI (`rex`):
-
-```sh
-bun add -g @creationix/rex
-rex --help
-rex --expr "when x do y end"
-rex --expr "a and b" --ir
-```
-
-Zero-install CLI:
-
-```sh
-bunx @creationix/rex --expr "when x do y end"
-npx -y @creationix/rex -- --expr "when x do y end"
-```
-
-When editing grammar (`packages/rex-lang/rex.ohm`):
-
-```sh
-cd packages/rex-lang
-bun run build:grammar
-bun test
-```
-
-When editing VS Code grammar/tokenizer:
-
-```sh
-cd packages/vscode-rex
-bun test
-bun run build
-```
-
-## Status
-
-Rex now uses high-level infix syntax as the primary source form. The old s-expression-style representation is no longer the user-facing language in this repo.
+- [Language Reference](language.md) — complete syntax and semantics
+- [Bytecode Format](rexc-bytecode.md) — `rexc` encoding specification
+- [Contributing](CONTRIBUTING.md) — repo layout, development workflow, architecture
