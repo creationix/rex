@@ -344,6 +344,8 @@ export function tokenize(text: string): Token[] {
 
 			// Set operator — fixed arity 2 (place, value)
 			case "=":
+			// Swap-set operator — fixed arity 2 (place, value)
+			case "/":
 				if (pos > prefixStart)
 					emit(prefixLine, prefixCol, pos - prefixStart, T.byteLength);
 				advance();
