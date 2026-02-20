@@ -139,4 +139,14 @@ describe("Rex encoding backend", () => {
 		expect(compile("not x")).toBe("!(x$tr')");
 		expect(compile("not not x")).toBe("!(!(x$tr')tr')");
 	});
+
+	test("encodes type predicate calls as opcodes", () => {
+		expect(compile("number(x)")).toBe("(nm%x$)");
+		expect(compile("string(x)")).toBe("(st%x$)");
+		expect(compile("boolean(x)")).toBe("(bt%x$)");
+		expect(compile("array(x)")).toBe("(ar%x$)");
+		expect(compile("object(x)")).toBe("(ob%x$)");
+		expect(compile("number(42)")).toBe("(nm%1k+)");
+		expect(compile('string("hello")')).toBe("(st%hello:)");
+	});
 });

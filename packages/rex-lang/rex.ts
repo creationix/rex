@@ -137,6 +137,9 @@ const OPCODE_IDS = {
 
 type OpcodeName = keyof typeof OPCODE_IDS;
 
+// Type predicate keywords that are reserved in the grammar and compile to opcodes when called.
+const TYPE_PREDICATE_OPCODES: ReadonlySet<string> = new Set(["boolean", "number", "string", "array", "object"]);
+
 type EncodeOptions = {
 	domainRefs?: Record<string, string>;
 	domainOpcodes?: Record<string, string>;
@@ -577,8 +580,14 @@ function encodeNode(node: IRNode): string {
 		}
 		case "navigation":
 			return encodeNavigation(node);
-		case "call":
+		case "call": {
+			// Type predicate keywords (boolean, number, string, array, object) are parsed
+			// as identifier nodes but must be encoded as opcode calls, not variable navigation.
+			if (node.callee.type === "identifier" && TYPE_PREDICATE_OPCODES.has(node.callee.name)) {
+				return encodeCallParts([encodeOpcode(node.callee.name as OpcodeName), ...node.args.map((arg) => encodeNode(arg))]);
+			}
 			return encodeCallParts([encodeNode(node.callee), ...node.args.map((arg) => encodeNode(arg))]);
+		}
 		case "conditional": {
 			const opener = node.head === "when" ? "?(" : "!(";
 			const cond = encodeNode(node.condition);

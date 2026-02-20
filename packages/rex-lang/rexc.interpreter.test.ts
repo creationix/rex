@@ -245,4 +245,23 @@ describe("rexc interpreter (streaming)", () => {
 	test("supports reference place mutation", () => {
 		expect(evaluateRexc("(%=5'k+5')", { refs: { 5: 0 } }).value).toBe(10);
 	});
+
+	test("supports type predicate calls through evaluateSource", () => {
+		expect(evaluateSource("number(42)").value).toBe(42);
+		expect(evaluateSource('number("hello")').value).toBeUndefined();
+		expect(evaluateSource('string("hello")').value).toBe("hello");
+		expect(evaluateSource("string(42)").value).toBeUndefined();
+		expect(evaluateSource("boolean(true)").value).toBe(true);
+		expect(evaluateSource("boolean(42)").value).toBeUndefined();
+		expect(evaluateSource("array([1, 2])").value).toEqual([1, 2]);
+		expect(evaluateSource("array(42)").value).toBeUndefined();
+		expect(evaluateSource("object({x: 1})").value).toEqual({ x: 1 });
+		expect(evaluateSource("object(42)").value).toBeUndefined();
+	});
+
+	test("type predicates compose with when for type dispatch", () => {
+		expect(evaluateSource('when n = number(42) do n + 1 end').value).toBe(43);
+		expect(evaluateSource('when n = number("hi") do n + 1 else "not a number" end').value).toBe("not a number");
+		expect(evaluateSource('x = 42 when string(x) do "string" else when number(x) do "number" else "other" end').value).toBe("number");
+	});
 });
