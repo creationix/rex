@@ -14,6 +14,7 @@ Rex {
   ExistenceExpr
     = ExistenceExpr AndKw BitExpr    -- and
     | ExistenceExpr OrKw BitExpr     -- or
+    | ExistenceExpr NorKw BitExpr    -- nor
     | BitExpr                        -- value
 
   BitExpr
@@ -23,7 +24,11 @@ Rex {
     | CompareExpr                    -- value
 
   CompareExpr
-    = AddExpr CompareOp AddExpr      -- binary
+    = RangeExpr CompareOp RangeExpr  -- binary
+    | RangeExpr                      -- value
+
+  RangeExpr
+    = AddExpr ".." AddExpr           -- range
     | AddExpr                        -- value
 
   AddExpr
@@ -40,6 +45,7 @@ Rex {
   UnaryExpr
     = "-" ~digit ~infTok UnaryExpr    -- neg
     | "~" UnaryExpr                  -- not
+    | NotKw UnaryExpr                -- logicalNot
     | DeleteKw Place                 -- delete
     | PostfixExpr                    -- value
 
@@ -120,6 +126,7 @@ Rex {
   Array
     = "[" "]"                                              -- empty
     | "[" Expr ForKw IterBinding "]"                       -- forComprehension
+    | "[" Expr WhileKw Expr "]"                            -- whileComprehension
     | "[" Expr inTok Expr "]"                              -- inComprehension
     | "[" Expr ofTok Expr "]"                              -- ofComprehension
     | "[" Elements<Expr> "]"                               -- values
@@ -127,6 +134,7 @@ Rex {
   Object
     = "{" "}"                                              -- empty
     | "{" ObjKey ":" Expr ForKw IterBinding "}"            -- forComprehension
+    | "{" ObjKey ":" Expr WhileKw Expr "}"                 -- whileComprehension
     | "{" ObjKey ":" Expr inTok Expr "}"                   -- inComprehension
     | "{" ObjKey ":" Expr ofTok Expr "}"                   -- ofComprehension
     | "{" Elements<Pair> "}"                               -- pairs
@@ -156,7 +164,8 @@ Rex {
     | "<"
 
   AssignOp
-    = "="
+    = ":="
+    | "="
     | "+="
     | "-="
     | "*="
@@ -203,6 +212,8 @@ Rex {
     | continueTok
     | andTok
     | orTok
+    | norTok
+    | notTok
     | deleteTok
     | stringTok
     | numberTok
@@ -257,6 +268,12 @@ Rex {
 
   OrKw
     = orTok
+
+  NorKw
+    = norTok
+
+  NotKw
+    = notTok
 
   DeleteKw
     = deleteTok
@@ -335,6 +352,12 @@ Rex {
 
   orTok
     = "or" ~nameTail
+
+  norTok
+    = "nor" ~nameTail
+
+  notTok
+    = "not" ~nameTail
 
   deleteTok
     = "delete" ~nameTail

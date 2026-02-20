@@ -84,8 +84,8 @@ async function checkFile(filePath: string): Promise<DocCheckResult> {
 async function main() {
 	const args = Bun.argv.slice(2);
 	const scriptDir = new URL(".", import.meta.url);
-	const defaultHighLevel = fileURLToPath(new URL("../../high-level.md", scriptDir));
-	const defaultEncoding = fileURLToPath(new URL("../../encoding.md", scriptDir));
+	const defaultHighLevel = fileURLToPath(new URL("../../language.md", scriptDir));
+	const defaultEncoding = fileURLToPath(new URL("../../rexc-bytecode.md", scriptDir));
 	const files = args.length > 0
 		? args.map(toPosixPath)
 		: [toPosixPath(defaultHighLevel), toPosixPath(defaultEncoding)];

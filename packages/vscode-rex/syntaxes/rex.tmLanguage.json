@@ -17,6 +17,7 @@
 				{ "include": "#existence-operator" },
 				{ "include": "#comparison-operator" },
 				{ "include": "#assignment-operator" },
+				{ "include": "#range-operator" },
 				{ "include": "#value-operator" },
 				{ "include": "#comma-separator" },
 				{ "include": "#container-paren" },
@@ -131,7 +132,7 @@
 			"name": "variable.language.self.rex"
 		},
 		"existence-operator": {
-			"match": "\\b(and|or)\\b",
+			"match": "\\b(and|or|nor)\\b",
 			"name": "keyword.operator.logical.rex"
 		},
 		"comparison-operator": {
@@ -139,8 +140,12 @@
 			"name": "keyword.operator.comparison.rex"
 		},
 		"assignment-operator": {
-			"match": "\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=",
+			"match": ":=|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=",
 			"name": "keyword.operator.assignment.rex"
+		},
+		"range-operator": {
+			"match": "\\.\\.",
+			"name": "keyword.operator.range.rex"
 		},
 		"value-operator": {
 			"match": "[+\\-*/%^&|~]",

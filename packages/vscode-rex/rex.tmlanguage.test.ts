@@ -30,7 +30,7 @@ describe("rex TextMate grammar", () => {
 		expect(grammar.repository["control-keyword"]?.match).toContain(
 			"(when|unless|else|while|for|in|of|do|end|break|continue)",
 		);
-		expect(grammar.repository["existence-operator"]?.match).toContain("(and|or)");
+		expect(grammar.repository["existence-operator"]?.match).toContain("(and|or|nor)");
 		expect(grammar.repository["self-depth"]?.match).toContain("self(?:@[1-9][0-9]*)?");
 		expect(grammar.repository["assignment-operator"]?.match).toContain("\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=");
 		expect(grammar.repository["navigation-dynamic"]?.match).toContain("\\.\\(");
