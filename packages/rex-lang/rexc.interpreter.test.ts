@@ -42,6 +42,16 @@ describe("rexc interpreter (streaming)", () => {
 		expect(evaluateSource("for in 1..5 do break end").value).toBeUndefined();
 	});
 
+	test("supports size for arrays and strings", () => {
+		expect(evaluateSource("size([1, 2, 3])").value).toBe(3);
+		expect(evaluateSource('size("a💡")').value).toBe(2);
+		expect(evaluateSource("size({a: 1})").value).toBe(1);
+	});
+
+	test("iterates strings by Unicode code points", () => {
+		expect(evaluateSource('[self in "a💡"]').value).toEqual(["a", "💡"]);
+	});
+
 	test("supports in/of binding forms and key/value bindings", () => {
 		expect(evaluateSource("[k for k of {a: 1, b: 2}]").value).toEqual(["a", "b"]);
 		expect(evaluateSource("[k for k in {a: 1, b: 2}]").value).toEqual([1, 2]);

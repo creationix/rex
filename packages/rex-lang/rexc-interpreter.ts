@@ -27,6 +27,7 @@ const OPCODES = {
 	mod: "md",
 	neg: "ng",
 	range: "rn",
+	size: "sz",
 } as const;
 
 export type RexcContext = {
@@ -171,6 +172,20 @@ class CursorInterpreter {
 		return { start, end, value: decodePrefix(this.text, start, end), raw: this.text.slice(start, end) };
 	}
 
+	private advanceByBytes(start: number, byteCount: number): number {
+		if (byteCount <= 0) return start;
+		let bytes = 0;
+		let index = start;
+		for (const char of this.text.slice(start)) {
+			const charBytes = Buffer.byteLength(char);
+			if (bytes + charBytes > byteCount) break;
+			bytes += charBytes;
+			index += char.length;
+			if (bytes === byteCount) return index;
+		}
+		throw new Error("String container overflows input");
+	}
+
 	private ensure(char: string) {
 		if (this.text[this.pos] !== char) throw new Error(`Expected '${char}' at ${this.pos}`);
 		this.pos += 1;
@@ -232,15 +247,14 @@ class CursorInterpreter {
 			case ",": {
 				this.pos += 1;
 				const start = this.pos;
-				const end = start + prefix.value;
-				if (end > this.text.length) throw new Error("String container overflows input");
+				const end = this.advanceByBytes(start, prefix.value);
 				const value = this.text.slice(start, end);
 				this.pos = end;
 				return value;
 			}
 			case "^": {
 				this.pos += 1;
-				const target = this.pos + prefix.value;
+				const target = this.advanceByBytes(this.pos, prefix.value);
 				if (this.pointerCache.has(target)) return this.pointerCache.get(target);
 				const save = this.pos;
 				this.pos = target;
@@ -500,6 +514,11 @@ class CursorInterpreter {
 			const entries = Object.entries(iterable as Record<string, unknown>);
 			if (keysOnly) return entries.map(([key]) => ({ key, value: key }));
 			return entries.map(([key, value]) => ({ key, value }));
+		}
+		if (typeof iterable === "string") {
+			const entries = Array.from(iterable);
+			if (keysOnly) return entries.map((_value, index) => ({ key: index, value: index }));
+			return entries.map((value, index) => ({ key: index, value }));
 		}
 		return [];
 	}
@@ -789,6 +808,13 @@ class CursorInterpreter {
 					out.push(v);
 				return out;
 			}
+			case OPCODES.size: {
+				const target = args[0];
+				if (Array.isArray(target)) return target.length;
+				if (typeof target === "string") return Array.from(target).length;
+				if (target && typeof target === "object") return Object.keys(target as Record<string, unknown>).length;
+				return undefined;
+			}
 			default:
 				throw new Error(`Unknown opcode ${id}`);
 		}
@@ -927,7 +953,7 @@ class CursorInterpreter {
 		}
 
 		if (tag === ",") {
-			this.pos += 1 + prefix.value;
+			this.pos = this.advanceByBytes(this.pos + 1, prefix.value);
 			const end = this.pos;
 			this.pos = save;
 			return end;
@@ -967,7 +993,8 @@ class CursorInterpreter {
 		if (opener && "([{".includes(opener)) {
 			const close = opener === "(" ? ")" : opener === "[" ? "]" : "}";
 			if (prefix.value > 0) {
-				this.pos += 1 + prefix.value + 1;
+				const bodyEnd = this.advanceByBytes(this.pos + 1, prefix.value);
+				this.pos = bodyEnd + 1;
 				const end = this.pos;
 				this.pos = save;
 				return end;

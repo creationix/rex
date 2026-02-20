@@ -164,7 +164,7 @@ Opcodes use short mnemonic string keys. The digit prefix is the raw key string (
 | `lte`  | `le%` |  | `object`  | `ob%` |
 | `gt`   | `gt%` |  | `mod`     | `md%` |
 | `gte`  | `ge%` |  | `neg`     | `ng%` |
-| `range`| `rn%` |  |           |       |
+| `range`| `rn%` |  | `size`    | `sz%` |
 
 Domain functions also compile as opcodes with their own short codes (e.g., `jp%` for `json.parse`).
 
