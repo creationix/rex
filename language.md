@@ -478,6 +478,33 @@ Return `undefined` to exclude an element from the result:
 // → new object without null values
 ```
 
+#### Map/Filter Operations
+
+Array and object comprehensions naturally support both map and filter operations in a single expression:
+
+- **Map**: Transform values by returning a new value
+```rex
+// Double each number
+[v * 2 for v in [1, 2, 3]]
+// → [2, 4, 6]
+```
+
+- **Filter**: Exclude values by returning `undefined`
+```rex
+// Only even numbers
+[v % 2 == 0 and v for v in [1, 2, 3, 4, 5]]
+// → [2, 4]
+```
+
+- **Combined Map/Filter**: Transform and filter in one expression
+```rex
+// Double even numbers only
+[v * 2 % 2 == 0 and v * 2 for v in [1, 2, 3, 4, 5]]
+// → [4, 8]
+```
+
+The key insight is that when a comprehension expression evaluates to `undefined`, the element is excluded from the result. This makes filtering very natural and concise.
+
 ## Type Predicates
 
 Type predicates return the value if it matches the type, `undefined` otherwise. They use keyword call syntax:
