@@ -618,11 +618,28 @@ function collectLogicalChain(node: IRNode, op: "and" | "or"): IRNode[] {
 	return [...collectLogicalChain(node.left, op), ...collectLogicalChain(node.right, op)];
 }
 
+type ParseFailure = { message?: string; getRightmostFailurePosition?: () => number };
+
+export function formatParseError(source: string, match: ParseFailure): string {
+	const message = match.message ?? "Parse failed";
+	const pos = match.getRightmostFailurePosition?.();
+	if (typeof pos !== "number" || !Number.isFinite(pos)) return message;
+
+	const safePos = Math.max(0, Math.min(source.length, pos));
+	const lineStart = source.lastIndexOf("\n", safePos - 1) + 1;
+	const lineEndIndex = source.indexOf("\n", safePos);
+	const lineEnd = lineEndIndex === -1 ? source.length : lineEndIndex;
+	const lineText = source.slice(lineStart, lineEnd);
+	const lineNumber = source.slice(0, lineStart).split("\n").length;
+	const columnNumber = safePos - lineStart + 1;
+	const caret = `${" ".repeat(Math.max(0, columnNumber - 1))}^`;
+	return `${message}\n  ${lineText}\n  ${caret}`;
+}
+
 export function parseToIR(source: string): IRNode {
 	const match = grammar.match(source);
 	if (!match.succeeded()) {
-		const failure = match as unknown as { message?: string };
-		throw new Error(failure.message ?? "Parse failed");
+		throw new Error(formatParseError(source, match as ParseFailure));
 	}
 	return semantics(match).toIR() as IRNode;
 }
