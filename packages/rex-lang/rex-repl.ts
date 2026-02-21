@@ -30,14 +30,14 @@ function createColors(enabled: boolean) {
 		reset: "\x1b[0m",
 		bold: "\x1b[1m",
 		dim: "\x1b[2m",
-		red: "\x1b[31m",
-		green: "\x1b[32m",
-		yellow: "\x1b[33m",
-		blue: "\x1b[34m",
-		magenta: "\x1b[35m",
-		cyan: "\x1b[36m",
-		gray: "\x1b[90m",
-		boldBlue: "\x1b[1;34m",
+		red: "\x1b[38;5;203m",
+		green: "\x1b[38;5;114m",
+		yellow: "\x1b[38;5;179m",
+		blue: "\x1b[38;5;75m",
+		magenta: "\x1b[38;5;141m",
+		cyan: "\x1b[38;5;81m",
+		gray: "\x1b[38;5;245m",
+		boldBlue: "\x1b[1;38;5;33m",
 	};
 }
 
@@ -72,7 +72,7 @@ function normalizeJsonValue(value: unknown, inArray: boolean): unknown {
 // ── Syntax highlighting ───────────────────────────────────────
 
 const TOKEN_RE =
-	/(?<blockComment>\/\*[\s\S]*?(?:\*\/|$))|(?<lineComment>\/\/[^\n]*)|(?<dstring>"(?:[^"\\]|\\.)*"?)|(?<sstring>'(?:[^'\\]|\\.)*'?)|(?<objKey>\b[A-Za-z_][A-Za-z0-9_-]*\b)(?=\s*:)|(?<keyword>\b(?:when|unless|while|for|do|end|in|of|and|or|nor|else|break|continue|delete|self)(?![a-zA-Z0-9_-]))|(?<literal>\b(?:true|false|null|undefined|nan)(?![a-zA-Z0-9_-])|-?\binf\b)|(?<typePred>\b(?:string|number|object|array|boolean|size)(?![a-zA-Z0-9_-]))|(?<num>\b(?:0x[0-9a-fA-F]+|0b[01]+|(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)/g;
+	/(?<blockComment>\/\*[\s\S]*?(?:\*\/|$))|(?<lineComment>\/\/[^\n]*)|(?<dstring>"(?:[^"\\]|\\.)*"?)|(?<sstring>'(?:[^'\\]|\\.)*'?)|(?<objKey>\b[A-Za-z_][A-Za-z0-9_-]*\b)(?=\s*:)|(?<keyword>\b(?:when|unless|while|for|do|end|in|of|and|or|nor|else|break|continue|delete|self)(?![a-zA-Z0-9_-]))|(?<literal>\b(?:true|false|null|undefined|nan)(?![a-zA-Z0-9_-])|-?\binf\b)|(?<typePred>\b(?:string|number|object|array|boolean|size)(?![a-zA-Z0-9_-]))|(?<num>\b(?:0x[0-9a-fA-F]+|0b[01]+|(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)|(?<identifier>\b[A-Za-z_][A-Za-z0-9_.-]*\b)/g;
 
 export function highlightLine(line: string): string {
 	let result = "";
@@ -97,6 +97,8 @@ export function highlightLine(line: string): string {
 			result += C.cyan + text + C.reset;
 		} else if (g.num) {
 			result += C.cyan + text + C.reset;
+		} else if (g.identifier) {
+			result += C.blue + text + C.reset;
 		} else {
 			result += text;
 		}
@@ -229,6 +231,20 @@ export function highlightRexc(text: string): string {
 		}
 	}
 	return out;
+}
+
+export function highlightAuto(text: string, hint?: "rex" | "rexc"): string {
+	if (hint === "rexc") return highlightRexc(text);
+	if (hint === "rex") return text.split("\n").map((line) => highlightLine(line)).join("\n");
+	try {
+		const match = grammar.match(text);
+		if (match.succeeded()) {
+			return text.split("\n").map((line) => highlightLine(line)).join("\n");
+		}
+	} catch {
+		// fall through
+	}
+	return highlightRexc(text);
 }
 
 // ── JSON IR highlighting ─────────────────────────────────────
