@@ -58,11 +58,28 @@ for (const mode of MODES) {
 		expect(evaluateRexc(compile("plain.visible"), { vars: { plain } }).value).toBe(2);
 	});
 
-	test("supports comprehensions and loop control scalar", () => {
-		expect(evaluateSource("[v + 1 for v in [1, 2, 3]]").value).toEqual([2, 3, 4]);
-		expect(evaluateSource("{(v): v * 10 for v in [1, 2]}").value).toEqual({ "1": 10, "2": 20 });
-		expect(evaluateSource("for in 1..5 do break end").value).toBeUndefined();
-	});
+		test("supports comprehensions and loop control scalar", () => {
+			expect(evaluateSource("[v + 1 for v in [1, 2, 3]]").value).toEqual([2, 3, 4]);
+			expect(evaluateSource("{(v): v * 10 for v in [1, 2]}").value).toEqual({ "1": 10, "2": 20 });
+			expect(evaluateSource("for in 1..5 do break end").value).toBeUndefined();
+		});
+
+		test("supports array concatenation with +", () => {
+			expect(evaluateSource("[1, 2] + [3, 4]").value).toEqual([1, 2, 3, 4]);
+			expect(evaluateSource("a = [1] a += [2, 3] a").value).toEqual([1, 2, 3]);
+		});
+
+		test("supports object merge with +", () => {
+			expect(evaluateSource("{a: 1} + {b: 2}").value).toEqual({ a: 1, b: 2 });
+			expect(evaluateSource("{a: 1} + {a: 2, b: 3}").value).toEqual({ a: 2, b: 3 });
+			expect(evaluateSource("obj = {a: 1} obj += {b: 2} obj").value).toEqual({ a: 1, b: 2 });
+		});
+
+		test("returns undefined for mixed-type add", () => {
+			expect(evaluateSource("1 + \"2\"").value).toBeUndefined();
+			expect(evaluateSource("[1] + 2").value).toBeUndefined();
+			expect(evaluateSource("{a: 1} + 2").value).toBeUndefined();
+		});
 
 	test("supports size for arrays and strings", () => {
 		expect(evaluateSource("size([1, 2, 3])").value).toBe(3);
