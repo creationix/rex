@@ -81,11 +81,30 @@ for (const mode of MODES) {
 			expect(evaluateSource("{a: 1} + 2").value).toBeUndefined();
 		});
 
-	test("supports size for arrays and strings", () => {
-		expect(evaluateSource("size([1, 2, 3])").value).toBe(3);
-		expect(evaluateSource('size("a💡")').value).toBe(2);
-		expect(evaluateSource("size({a: 1})").value).toBe(1);
-	});
+		test("supports array methods", () => {
+			expect(evaluateSource("[1, 2].push(3)").value).toEqual([1, 2, 3]);
+			expect(evaluateSource("[1, 2].unshift(0)").value).toEqual([0, 1, 2]);
+			expect(evaluateSource("[1, 2].pop()").value).toBe(2);
+			expect(evaluateSource("[1, 2].shift()").value).toBe(1);
+			expect(evaluateSource("[1, 2, 3, 4].slice(1, 3)").value).toEqual([2, 3]);
+			expect(evaluateSource("[1, 2, 3].join('-')").value).toBe("1-2-3");
+			expect(evaluateSource("[1].size").value).toBe(1);
+		});
+
+		test("supports string methods", () => {
+			expect(evaluateSource("'a,b'.split(',')").value).toEqual(["a", "b"]);
+			expect(evaluateSource("'ab'.join('-')").value).toBe("a-b");
+			expect(evaluateSource("'hello'.slice(1, 4)").value).toBe("ell");
+			expect(evaluateSource("'hello'.starts-with('he')").value).toBe(true);
+			expect(evaluateSource("'hello'.ends-with('lo')").value).toBe(true);
+			expect(evaluateSource("'hi'.size").value).toBe(2);
+		});
+
+		test("supports size for arrays and strings", () => {
+			expect(evaluateSource("[1, 2, 3].size").value).toBe(3);
+			expect(evaluateSource('"a💡".size').value).toBe(2);
+			expect(evaluateSource("{a: 1}.size").value).toBeUndefined();
+		});
 
 	test("iterates strings by Unicode code points", () => {
 		expect(evaluateSource('[self in "a💡"]').value).toEqual(["a", "💡"]);

@@ -27,7 +27,6 @@ const OPCODES = {
 	mod: "md",
 	neg: "ng",
 	range: "rn",
-	size: "sz",
 } as const;
 
 export type RexcContext = {
@@ -47,7 +46,7 @@ export type RexcRuntimeState = {
 
 type LoopControl = { kind: "break" | "continue"; depth: number };
 
-type OpcodeMarker = { __opcode: string };
+type OpcodeMarker = { __opcode: string; __receiver?: unknown };
 
 function decodePrefix(text: string, start: number, end: number): number {
 	let value = 0;
@@ -328,7 +327,9 @@ class CursorInterpreter {
 		this.ensure(")");
 
 		if (typeof callee === "object" && callee && "__opcode" in callee) {
-			return this.applyOpcode((callee as OpcodeMarker).__opcode as string, args);
+			const marker = callee as OpcodeMarker;
+			const opArgs = marker.__receiver !== undefined ? [marker.__receiver, ...args] : args;
+			return this.applyOpcode(marker.__opcode as string, opArgs);
 		}
 		return this.navigate(callee, args);
 	}
@@ -824,12 +825,74 @@ class CursorInterpreter {
 					out.push(v);
 				return out;
 			}
-			case OPCODES.size: {
+			case "array:push": {
 				const target = args[0];
-				if (Array.isArray(target)) return target.length;
-				if (typeof target === "string") return Array.from(target).length;
-				if (target && typeof target === "object") return Object.keys(target as Record<string, unknown>).length;
-				return undefined;
+				if (!Array.isArray(target)) return undefined;
+				const next = target.slice();
+				for (let i = 1; i < args.length; i += 1) next.push(args[i]);
+				return next;
+			}
+			case "array:pop": {
+				const target = args[0];
+				if (!Array.isArray(target) || target.length === 0) return undefined;
+				return target[target.length - 1];
+			}
+			case "array:unshift": {
+				const target = args[0];
+				if (!Array.isArray(target)) return undefined;
+				const next = target.slice();
+				for (let i = args.length - 1; i >= 1; i -= 1) next.unshift(args[i]);
+				return next;
+			}
+			case "array:shift": {
+				const target = args[0];
+				if (!Array.isArray(target) || target.length === 0) return undefined;
+				return target[0];
+			}
+			case "array:slice": {
+				const target = args[0];
+				if (!Array.isArray(target)) return undefined;
+				const start = args.length > 1 && args[1] !== undefined ? Number(args[1]) : undefined;
+				const end = args.length > 2 && args[2] !== undefined ? Number(args[2]) : undefined;
+				return target.slice(start, end);
+			}
+			case "array:join": {
+				const target = args[0];
+				if (!Array.isArray(target)) return undefined;
+				const sep = args.length > 1 && args[1] !== undefined ? String(args[1]) : ",";
+				return target.map((item) => String(item)).join(sep);
+			}
+			case "string:split": {
+				const target = args[0];
+				if (typeof target !== "string") return undefined;
+				if (args.length < 2 || args[1] === undefined) return [target];
+				return target.split(String(args[1]));
+			}
+			case "string:join": {
+				const target = args[0];
+				if (typeof target !== "string") return undefined;
+				const parts = Array.from(target);
+				const sep = args.length > 1 && args[1] !== undefined ? String(args[1]) : "";
+				return parts.join(sep);
+			}
+			case "string:slice": {
+				const target = args[0];
+				if (typeof target !== "string") return undefined;
+				const start = args.length > 1 && args[1] !== undefined ? Number(args[1]) : undefined;
+				const end = args.length > 2 && args[2] !== undefined ? Number(args[2]) : undefined;
+				return Array.from(target).slice(start, end).join("");
+			}
+			case "string:starts-with": {
+				const target = args[0];
+				if (typeof target !== "string") return undefined;
+				const prefix = args.length > 1 && args[1] !== undefined ? String(args[1]) : "";
+				return target.startsWith(prefix);
+			}
+			case "string:ends-with": {
+				const target = args[0];
+				if (typeof target !== "string") return undefined;
+				const suffix = args.length > 1 && args[1] !== undefined ? String(args[1]) : "";
+				return target.endsWith(suffix);
 			}
 			default:
 				throw new Error(`Unknown opcode ${id}`);
@@ -847,14 +910,20 @@ class CursorInterpreter {
 	}
 
 	private readProperty(target: unknown, key: unknown): unknown {
+		if (typeof key === "string" && key === "size") {
+			if (Array.isArray(target)) return target.length;
+			if (typeof target === "string") return Array.from(target).length;
+		}
 		const index = this.parseIndexKey(key);
 		if (Array.isArray(target)) {
-			if (index === undefined) return undefined;
-			return target[index];
+			if (index !== undefined) return target[index];
+			if (typeof key === "string") return this.resolveArrayMethod(target, key);
+			return undefined;
 		}
 		if (typeof target === "string") {
-			if (index === undefined) return undefined;
-			return Array.from(target)[index];
+			if (index !== undefined) return Array.from(target)[index];
+			if (typeof key === "string") return this.resolveStringMethod(target, key);
+			return undefined;
 		}
 		if (this.isPlainObject(target)) {
 			const prop = String(key);
@@ -862,6 +931,42 @@ class CursorInterpreter {
 			return (target as Record<string, unknown>)[prop];
 		}
 		return undefined;
+	}
+
+	private resolveArrayMethod(target: unknown[], key: string): OpcodeMarker | undefined {
+		switch (key) {
+			case "push":
+				return { __opcode: "array:push", __receiver: target };
+			case "pop":
+				return { __opcode: "array:pop", __receiver: target };
+			case "unshift":
+				return { __opcode: "array:unshift", __receiver: target };
+			case "shift":
+				return { __opcode: "array:shift", __receiver: target };
+			case "slice":
+				return { __opcode: "array:slice", __receiver: target };
+			case "join":
+				return { __opcode: "array:join", __receiver: target };
+			default:
+				return undefined;
+		}
+	}
+
+	private resolveStringMethod(target: string, key: string): OpcodeMarker | undefined {
+		switch (key) {
+			case "split":
+				return { __opcode: "string:split", __receiver: target };
+			case "join":
+				return { __opcode: "string:join", __receiver: target };
+			case "slice":
+				return { __opcode: "string:slice", __receiver: target };
+			case "starts-with":
+				return { __opcode: "string:starts-with", __receiver: target };
+			case "ends-with":
+				return { __opcode: "string:ends-with", __receiver: target };
+			default:
+				return undefined;
+		}
 	}
 
 	private canWriteProperty(target: unknown, key: unknown): { kind: "array"; index: number } | { kind: "object" } | undefined {

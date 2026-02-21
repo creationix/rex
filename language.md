@@ -536,15 +536,31 @@ else
 end
 ```
 
-## Size
+## Array Methods
 
-`size(expr)` returns the number of elements in arrays, the number of Unicode code points in strings, and the number of key/value pairs in objects. For other values it returns `undefined`.
+Arrays expose methods for common operations.
 
 ```rex
-size([1, 2, 3])     // → 3
-size("hello")       // → 5
-size({a: 1, b: 2})  // → 2
-size(123)           // → undefined
+[1, 2].push(3)          // → [1 2 3]
+[1, 2].unshift(0)       // → [0 1 2]
+[1, 2].pop()            // → 2
+[1, 2].shift()          // → 1
+[1, 2, 3].slice(1, 3)   // → [2 3]
+[1, 2, 3].join("-")     // → "1-2-3"
+[1, 2].size            // → 2
+```
+
+## String Methods
+
+Strings expose methods for splitting, slicing, and predicates.
+
+```rex
+"a,b".split(",")        // → ["a" "b"]
+"ab".join("-")         // → "a-b"
+"hello".slice(1, 4)     // → "ell"
+"hello".starts-with("he") // → true
+"hello".ends-with("lo")   // → true
+"hi".size             // → 2
 ```
 
 ## Delete
