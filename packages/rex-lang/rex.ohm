@@ -121,12 +121,17 @@ Rex {
     | inTok Expr                             -- bareIn
     | ofTok Expr                             -- bareOf
 
+  IterBindingComprehension
+    = identifier "," identifier inTok Expr   -- keyValueIn
+    | identifier inTok Expr                  -- valueIn
+    | identifier ofTok Expr                  -- keyOf
+
   Block
     = Expr*
 
   Array
     = "[" "]"                                              -- empty
-    | "[" Expr ForKw IterBinding "]"                       -- forComprehension
+    | "[" Expr ForKw IterBindingComprehension "]"          -- forComprehension
     | "[" Expr WhileKw Expr "]"                            -- whileComprehension
     | "[" Expr inTok Expr "]"                              -- inComprehension
     | "[" Expr ofTok Expr "]"                              -- ofComprehension
@@ -134,7 +139,7 @@ Rex {
 
   Object
     = "{" "}"                                              -- empty
-    | "{" ObjKey ":" Expr ForKw IterBinding "}"            -- forComprehension
+    | "{" ObjKey ":" Expr ForKw IterBindingComprehension "}" -- forComprehension
     | "{" ObjKey ":" Expr WhileKw Expr "}"                 -- whileComprehension
     | "{" ObjKey ":" Expr inTok Expr "}"                   -- inComprehension
     | "{" ObjKey ":" Expr ofTok Expr "}"                   -- ofComprehension

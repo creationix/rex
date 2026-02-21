@@ -2630,6 +2630,28 @@ semantics.addOperation("toIR", {
 			source: source.toIR(),
 		} satisfies IRBinding;
 	},
+	IterBindingComprehension_keyValueIn(key, _comma, value, _in, source) {
+		return {
+			type: "binding:keyValueIn",
+			key: key.sourceString,
+			value: value.sourceString,
+			source: source.toIR(),
+		} satisfies IRBinding;
+	},
+	IterBindingComprehension_valueIn(value, _in, source) {
+		return {
+			type: "binding:valueIn",
+			value: value.sourceString,
+			source: source.toIR(),
+		} satisfies IRBinding;
+	},
+	IterBindingComprehension_keyOf(key, _of, source) {
+		return {
+			type: "binding:keyOf",
+			key: key.sourceString,
+			source: source.toIR(),
+		} satisfies IRBinding;
+	},
 
 	Pair(key, _colon, value) {
 		return { key: key.toIR(), value: value.toIR() };

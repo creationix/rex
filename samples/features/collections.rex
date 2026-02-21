@@ -2,8 +2,8 @@
 // rex samples/features/collections.rex
 
 items = [1 2 3 4 5]
-squares = [self * self for in items]
-evens = [self % 2 == 0 and self for in items]
+squares = [self * self in items]
+evens = [self % 2 == 0 and self in items]
 
 users = [
   {name: "Ada" score: 95}
