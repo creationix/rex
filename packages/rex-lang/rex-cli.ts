@@ -1,5 +1,6 @@
 import { compile, parse, parseToIR, stringify } from "./rex.ts";
 import { evaluateSource } from "./rexc-interpreter.ts";
+import { highlightLine, highlightJSON, setColorEnabled } from "./rex-repl.ts";
 import { dirname, resolve } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -14,6 +15,14 @@ type CliOptions = {
 	dedupeValues: boolean;
 	dedupeMinBytes?: number;
 	help: boolean;
+	showExpr: boolean;
+	showIR: boolean;
+	showRexc: boolean;
+	showVars: boolean;
+	color: boolean;
+	colorExplicit: boolean;
+	showExprExplicit: boolean;
+	format: "rex" | "json";
 };
 
 function parseArgs(argv: string[]): CliOptions {
@@ -24,12 +33,64 @@ function parseArgs(argv: string[]): CliOptions {
 		minifyNames: false,
 		dedupeValues: false,
 		help: false,
+		showExpr: true,
+		showIR: false,
+		showRexc: false,
+		showVars: false,
+		color: process.stdout.isTTY,
+		colorExplicit: false,
+		showExprExplicit: false,
+		format: "rex",
 	};
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
 		if (!arg) continue;
 		if (arg === "--help" || arg === "-h") {
 			options.help = true;
+			continue;
+		}
+		if (arg === "--show-expr") {
+			options.showExpr = true;
+			options.showExprExplicit = true;
+			continue;
+		}
+		if (arg === "--no-expr") {
+			options.showExpr = false;
+			options.showExprExplicit = true;
+			continue;
+		}
+		if (arg === "--show-ir") {
+			options.showIR = true;
+			continue;
+		}
+		if (arg === "--show-rexc") {
+			options.showRexc = true;
+			continue;
+		}
+		if (arg === "--show-vars") {
+			options.showVars = true;
+			continue;
+		}
+		if (arg === "--json") {
+			options.format = "json";
+			continue;
+		}
+		if (arg === "--format") {
+			const value = argv[index + 1];
+			if (!value) throw new Error("Missing value for --format");
+			if (value !== "rex" && value !== "json") throw new Error("--format must be 'rex' or 'json'");
+			options.format = value;
+			index += 1;
+			continue;
+		}
+		if (arg === "--color") {
+			options.color = true;
+			options.colorExplicit = true;
+			continue;
+		}
+		if (arg === "--no-color") {
+			options.color = false;
+			options.colorExplicit = true;
 			continue;
 		}
 		if (arg === "--compile" || arg === "-c") {
@@ -112,9 +173,24 @@ function usage() {
 		"  They are concatenated in the order they appear on the command line.",
 		"",
 		"Output mode:",
-		"  (default)             Evaluate and output result as JSON",
-		"  -c, --compile         Compile to rexc bytecode",
-		"      --ir              Output lowered IR as JSON",
+		"  (default)             Evaluate and output result",
+		"  -c, --compile         Show rexc only (same as --show-rexc --no-expr)",
+		"      --ir              Show IR only (same as --show-ir --no-expr)",
+		"      --show-expr       Show expression result",
+		"      --no-expr         Hide expression result",
+		"      --show-ir         Show IR JSON",
+		"      --show-rexc       Show rexc bytecode",
+		"      --show-vars       Show variable state",
+		"",
+		"Output formatting:",
+		"      --format <type>   Output format: rex|json (default: rex)",
+		"      --json            Shortcut for --format json",
+		"      --color           Force color output",
+		"      --no-color        Disable color output",
+		"",
+		"TTY vs non-TTY:",
+		"  TTY output prints labeled blocks when multiple outputs are selected.",
+		"  Non-TTY output emits a single value (object if multiple outputs).",
 		"",
 		"Compile options:",
 		"  -m, --minify-names    Minify local variable names",
@@ -174,12 +250,33 @@ async function resolveDomainConfig(options: CliOptions): Promise<unknown | undef
 	return loadDomainConfigFromFolder(baseFolder);
 }
 
+function formatJson(value: unknown, indent = 2): string {
+	const normalized = normalizeJsonValue(value, false);
+	const text = JSON.stringify(normalized, null, indent);
+	return text ?? "null";
+}
+
+function normalizeJsonValue(value: unknown, inArray: boolean): unknown {
+	if (value === undefined) return inArray ? null : undefined;
+	if (value === null || typeof value !== "object") return value;
+	if (Array.isArray(value)) {
+		return value.map((item) => normalizeJsonValue(item, true));
+	}
+	const out: Record<string, unknown> = {};
+	for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+		const normalized = normalizeJsonValue(val, false);
+		if (normalized !== undefined) out[key] = normalized;
+	}
+	return out;
+}
+
 async function main() {
 	const options = parseArgs(process.argv.slice(2));
 	if (options.help) {
 		console.log(usage());
 		return;
 	}
+	setColorEnabled(options.color);
 
 	// No source provided on a TTY → launch interactive REPL
 	const hasSource = options.sources.length > 0 || !process.stdin.isTTY;
@@ -189,22 +286,91 @@ async function main() {
 		return;
 	}
 
-	const source = await resolveSource(options);
-
-	let output: string;
+	if (options.compile) {
+		options.showRexc = true;
+		if (!options.showExprExplicit) options.showExpr = false;
+	}
 	if (options.ir) {
-		output = JSON.stringify(parseToIR(source), null, 2);
-	} else if (options.compile) {
+		options.showIR = true;
+		if (!options.showExprExplicit) options.showExpr = false;
+	}
+
+	const outputFlags = [options.showExpr, options.showIR, options.showRexc, options.showVars].filter(Boolean).length;
+	if (outputFlags === 0) {
+		throw new Error("No output selected. Use --show-expr, --show-ir, --show-rexc, or --show-vars.");
+	}
+
+	const source = await resolveSource(options);
+	const humanMode = process.stdout.isTTY && options.color;
+type OutputKey = "ir" | "rexc" | "vars" | "result";
+	const outputs: Partial<Record<OutputKey, unknown>> = {};
+
+	if (options.showIR) {
+		outputs.ir = parseToIR(source);
+	}
+
+	if (options.showRexc) {
 		const domainConfig = await resolveDomainConfig(options);
-		output = compile(source, {
+		outputs.rexc = compile(source, {
 			minifyNames: options.minifyNames,
 			dedupeValues: options.dedupeValues,
 			dedupeMinBytes: options.dedupeMinBytes,
 			domainConfig,
 		});
+	}
+
+	if (options.showExpr || options.showVars) {
+		const { value, state } = evaluateSource(source);
+		if (options.showExpr) outputs.result = value;
+		if (options.showVars) outputs.vars = state.vars;
+	}
+
+	const order: OutputKey[] = ["ir", "rexc", "vars", "result"];
+	const selected = order.filter((key) => outputs[key] !== undefined);
+
+	function formatValue(value: unknown, kind: "ir" | "rexc" | "vars" | "result"): string {
+		if (kind === "rexc" && humanMode) {
+			const raw = String(value ?? "");
+			return options.color ? highlightLine(raw) : raw;
+		}
+		if (options.format === "json") {
+			const raw = formatJson(value, 2);
+			return humanMode && options.color ? highlightJSON(raw) : raw;
+		}
+		if (kind === "rexc") {
+			const raw = stringify(String(value ?? ""));
+			return humanMode && options.color ? highlightLine(raw) : raw;
+		}
+		const raw = stringify(value);
+		return humanMode && options.color ? highlightLine(raw) : raw;
+	}
+
+	let output: string;
+	if (humanMode) {
+		const header = options.color ? "\x1b[90m" : "";
+		const reset = options.color ? "\x1b[0m" : "";
+		const lines: string[] = [];
+		for (const key of order) {
+			const value = outputs[key];
+			if (value === undefined) continue;
+			lines.push(`${header}${key}:${reset} ${formatValue(value, key)}`);
+		}
+		output = lines.join("\n");
 	} else {
-		const { value } = evaluateSource(source);
-		output = stringify(value);
+		let value: unknown;
+		if (selected.length === 1) {
+			const only = selected[0];
+			if (!only) throw new Error("No output selected.");
+			value = outputs[only];
+		} else {
+			const out: Record<string, unknown> = {};
+			for (const key of order) {
+				const v = outputs[key];
+				if (v !== undefined) out[key] = v;
+			}
+			value = out;
+		}
+		output = options.format === "json" ? formatJson(value, 2) : stringify(value);
 	}
 
 	if (options.out) {
