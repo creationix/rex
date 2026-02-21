@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { readdirSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { homedir } from "node:os";
-import { grammar, stringify, parseToIR, optimizeIR, compile } from "./rex.ts";
+import { grammar, stringify, parseToIR, optimizeIR, compile, formatParseError } from "./rex.ts";
 import { evaluateRexc } from "./rexc-interpreter.ts";
 
 const req = createRequire(import.meta.url);
@@ -760,7 +760,8 @@ export async function startRepl(): Promise<void> {
 	function runSource(source: string) {
 		const match = grammar.match(source);
 		if (!match.succeeded()) {
-			console.log(`${C.red}  ${match.message}${C.reset}`);
+			const message = formatParseError(source, match as { message?: string; getRightmostFailurePosition?: () => number });
+			console.log(`${C.red}  ${message}${C.reset}`);
 			return;
 		}
 
