@@ -20,7 +20,7 @@ for i, value in inputs do
   end
 end
 
-filtered = [self != null and self for in inputs]
+filtered = [self != null and self in inputs]
 
 {
   tags: tags

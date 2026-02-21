@@ -127,6 +127,8 @@ describe("Rex grammar", () => {
 		expectParses("[self of items]");
 		expectParses("[self while next-item()]");
 		expectParses("[self * 2 while pop(queue)]");
+		expectFails("[self for in items]");
+		expectFails("[self for of items]");
 	});
 
 	test("parses object comprehensions", () => {
