@@ -73,7 +73,7 @@ function normalizeJsonValue(value: unknown, inArray: boolean): unknown {
 // ── Syntax highlighting ───────────────────────────────────────
 
 const TOKEN_RE =
-	/(?<blockComment>\/\*[\s\S]*?(?:\*\/|$))|(?<lineComment>\/\/[^\n]*)|(?<dstring>"(?:[^"\\]|\\.)*"?)|(?<sstring>'(?:[^'\\]|\\.)*'?)|(?<objKey>\b[A-Za-z_][A-Za-z0-9_-]*\b)(?=\s*:)|(?<keyword>\b(?:when|unless|while|for|do|end|in|of|and|or|nor|else|break|continue|delete|self)(?![a-zA-Z0-9_-]))|(?<literal>\b(?:true|false|null|undefined|nan)(?![a-zA-Z0-9_-])|-?\binf\b)|(?<typePred>\b(?:string|number|object|array|boolean|size)(?![a-zA-Z0-9_-]))|(?<num>\b(?:0x[0-9a-fA-F]+|0b[01]+|(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)|(?<identifier>\b[A-Za-z_][A-Za-z0-9_.-]*\b)/g;
+	/(?<blockComment>\/\*[\s\S]*?(?:\*\/|$))|(?<lineComment>\/\/[^\n]*)|(?<dstring>"(?:[^"\\]|\\.)*"?)|(?<sstring>'(?:[^'\\]|\\.)*'?)|(?<objKey>\b[A-Za-z_][A-Za-z0-9_-]*\b)(?=\s*:)|(?<keyword>\b(?:when|unless|while|for|do|end|in|of|and|or|nor|else|break|continue|delete|self)(?![a-zA-Z0-9_-]))|(?<literal>\b(?:true|false|null|undefined|nan)(?![a-zA-Z0-9_-])|-?\binf\b)|(?<typePred>\b(?:string|number|object|array|boolean)(?![a-zA-Z0-9_-]))|(?<num>\b(?:0x[0-9a-fA-F]+|0b[01]+|(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)|(?<identifier>\b[A-Za-z_][A-Za-z0-9_.-]*\b)/g;
 
 export function highlightLine(line: string): string {
 	let result = "";
@@ -397,7 +397,7 @@ const KEYWORDS = [
 	"when", "unless", "while", "for", "do", "end", "in", "of",
 	"and", "or", "nor", "else", "break", "continue", "delete",
 	"self", "true", "false", "null", "undefined", "nan", "inf",
-	"string", "number", "object", "array", "boolean", "size",
+	"string", "number", "object", "array", "boolean",
 ];
 
 const DOT_COMMANDS = [

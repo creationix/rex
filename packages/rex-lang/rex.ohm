@@ -73,7 +73,6 @@ Rex {
     | ObjectKw                       -- objectPred
     | ArrayKw                        -- arrayPred
     | BooleanKw                      -- booleanPred
-    | SizeKw                         -- size
     | TrueKw                         -- true
     | FalseKw                        -- false
     | NullKw                         -- null
@@ -226,7 +225,6 @@ Rex {
     | objectTok
     | arrayTok
     | booleanTok
-    | sizeTok
 
   TrueKw
     = trueTok
@@ -300,8 +298,6 @@ Rex {
   BooleanKw
     = booleanTok
 
-  SizeKw
-    = sizeTok
 
   trueTok
     = "true" ~nameTail
@@ -387,8 +383,6 @@ Rex {
   booleanTok
     = "boolean" ~nameTail
 
-  sizeTok
-    = "size" ~nameTail
 
   String
     = DQuotedString

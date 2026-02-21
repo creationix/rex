@@ -59,19 +59,19 @@ for subj in subjects do
   for student in results do
     sum += student.grades.(subj).curved
   end
-  subject-averages.(subj) = sum / size(results)
+  subject-averages.(subj) = sum / results.size
 end
 
 class-total = 0
 for in results do
   class-total += self.average
 end
-class-avg = class-total / size(results)
+class-avg = class-total / results.size
 
 {
   honors: honors
   at-risk: at-risk
   subject-averages: subject-averages
   class-average: class-avg
-  student-count: size(results)
+  student-count: results.size
 }
