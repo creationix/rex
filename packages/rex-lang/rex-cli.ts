@@ -1,6 +1,6 @@
 import { compile, parse, parseToIR, stringify } from "./rex.ts";
 import { evaluateSource } from "./rexc-interpreter.ts";
-import { highlightLine, highlightJSON, setColorEnabled } from "./rex-repl.ts";
+import { highlightLine, highlightJSON, highlightAuto, setColorEnabled } from "./rex-repl.ts";
 import { dirname, resolve } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -15,6 +15,7 @@ type CliOptions = {
 	dedupeValues: boolean;
 	dedupeMinBytes?: number;
 	help: boolean;
+	cat: boolean;
 	showExpr: boolean;
 	showIR: boolean;
 	showRexc: boolean;
@@ -33,6 +34,7 @@ function parseArgs(argv: string[]): CliOptions {
 		minifyNames: false,
 		dedupeValues: false,
 		help: false,
+		cat: false,
 		showExpr: true,
 		showIR: false,
 		showRexc: false,
@@ -47,6 +49,10 @@ function parseArgs(argv: string[]): CliOptions {
 		if (!arg) continue;
 		if (arg === "--help" || arg === "-h") {
 			options.help = true;
+			continue;
+		}
+		if (arg === "--cat") {
+			options.cat = true;
 			continue;
 		}
 		if (arg === "--show-expr") {
@@ -176,6 +182,7 @@ function usage() {
 		"  (default)             Evaluate and output result",
 		"  -c, --compile         Show rexc only (same as --show-rexc --no-expr)",
 		"      --ir              Show IR only (same as --show-ir --no-expr)",
+		"      --cat             Print input with Rex highlighting",
 		"      --show-expr       Show expression result",
 		"      --no-expr         Hide expression result",
 		"      --show-ir         Show IR JSON",
@@ -277,6 +284,21 @@ async function main() {
 		return;
 	}
 	setColorEnabled(options.color);
+	if (options.cat) {
+		const source = await resolveSource(options);
+		const hasRexc = options.sources.some((seg) => seg.type === "file" && seg.path.endsWith(".rexc"));
+		const hasRex = options.sources.some((seg) => seg.type === "file" && seg.path.endsWith(".rex"));
+		const hint = hasRexc && !hasRex ? "rexc" : hasRex && !hasRexc ? "rex" : undefined;
+		const output = (process.stdout.isTTY && options.color)
+			? highlightAuto(source, hint)
+			: source;
+		if (options.out) {
+			await writeFile(options.out, `${output}\n`, "utf8");
+			return;
+		}
+		console.log(output);
+		return;
+	}
 
 	// No source provided on a TTY → launch interactive REPL
 	const hasSource = options.sources.length > 0 || !process.stdin.isTTY;
