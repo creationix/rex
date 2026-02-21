@@ -2,7 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { compile } from "./rex.ts";
 import { evaluateRexc, evaluateSource } from "./rexc-interpreter.ts";
 
-describe("rexc interpreter (streaming)", () => {
+type EvalSource = (source: string, ctx?: Parameters<typeof evaluateSource>[1]) => ReturnType<typeof evaluateSource>;
+
+const MODES: Array<{ name: string; evalSource: EvalSource }> = [
+	{ name: "unoptimized", evalSource: (source, ctx) => evaluateSource(source, ctx) },
+	{ name: "optimized", evalSource: (source, ctx) => evaluateRexc(compile(source, { optimize: true }), ctx) },
+];
+
+for (const mode of MODES) {
+	describe(`rexc interpreter (${mode.name})`, () => {
+		const evaluateSource = mode.evalSource;
 	test("evaluates arithmetic and comparisons", () => {
 		expect(evaluateSource("1 + 2").value).toBe(3);
 		expect(evaluateSource("10 > 3").value).toBe(10);
@@ -287,4 +296,5 @@ describe("rexc interpreter (streaming)", () => {
 		expect(evaluateSource('when n = number("hi") do n + 1 else "not a number" end').value).toBe("not a number");
 		expect(evaluateSource('x = 42 when string(x) do "string" else when number(x) do "number" else "other" end').value).toBe("number");
 	});
-});
+	});
+}

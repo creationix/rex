@@ -1,5 +1,5 @@
-import { compile, parse, parseToIR, stringify } from "./rex.ts";
-import { evaluateSource } from "./rexc-interpreter.ts";
+import { compile, parse, parseToIR, stringify, grammar } from "./rex.ts";
+import { evaluateRexc, evaluateSource } from "./rexc-interpreter.ts";
 import { highlightLine, highlightJSON, highlightAuto, setColorEnabled } from "./rex-repl.ts";
 import { dirname, resolve } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
@@ -16,6 +16,7 @@ type CliOptions = {
 	dedupeMinBytes?: number;
 	help: boolean;
 	cat: boolean;
+	showSource: boolean;
 	showExpr: boolean;
 	showIR: boolean;
 	showRexc: boolean;
@@ -35,6 +36,7 @@ function parseArgs(argv: string[]): CliOptions {
 		dedupeValues: false,
 		help: false,
 		cat: false,
+		showSource: false,
 		showExpr: true,
 		showIR: false,
 		showRexc: false,
@@ -53,6 +55,10 @@ function parseArgs(argv: string[]): CliOptions {
 		}
 		if (arg === "--cat") {
 			options.cat = true;
+			continue;
+		}
+		if (arg === "--show-source") {
+			options.showSource = true;
 			continue;
 		}
 		if (arg === "--show-expr") {
@@ -183,6 +189,7 @@ function usage() {
 		"  -c, --compile         Show rexc only (same as --show-rexc --no-expr)",
 		"      --ir              Show IR only (same as --show-ir --no-expr)",
 		"      --cat             Print input with Rex highlighting",
+		"      --show-source     Show input source text",
 		"      --show-expr       Show expression result",
 		"      --no-expr         Hide expression result",
 		"      --show-ir         Show IR JSON",
@@ -277,6 +284,14 @@ function normalizeJsonValue(value: unknown, inArray: boolean): unknown {
 	return out;
 }
 
+function isRexSource(source: string): boolean {
+	try {
+		return grammar.match(source).succeeded();
+	} catch {
+		return false;
+	}
+}
+
 async function main() {
 	const options = parseArgs(process.argv.slice(2));
 	if (options.help) {
@@ -308,24 +323,31 @@ async function main() {
 		return;
 	}
 
+	const source = await resolveSource(options);
+	const sourceIsRex = isRexSource(source);
+
 	if (options.compile) {
+		if (!sourceIsRex) throw new Error("--compile requires Rex source");
 		options.showRexc = true;
 		if (!options.showExprExplicit) options.showExpr = false;
 	}
 	if (options.ir) {
+		if (!sourceIsRex) throw new Error("--ir requires Rex source");
 		options.showIR = true;
 		if (!options.showExprExplicit) options.showExpr = false;
 	}
 
-	const outputFlags = [options.showExpr, options.showIR, options.showRexc, options.showVars].filter(Boolean).length;
+	const outputFlags = [options.showSource, options.showExpr, options.showIR, options.showRexc, options.showVars].filter(Boolean).length;
 	if (outputFlags === 0) {
-		throw new Error("No output selected. Use --show-expr, --show-ir, --show-rexc, or --show-vars.");
+		throw new Error("No output selected. Use --show-source, --show-expr, --show-ir, --show-rexc, or --show-vars.");
 	}
-
-	const source = await resolveSource(options);
 	const humanMode = process.stdout.isTTY && options.color;
-type OutputKey = "ir" | "rexc" | "vars" | "result";
+	type OutputKey = "source" | "ir" | "rexc" | "vars" | "result";
 	const outputs: Partial<Record<OutputKey, unknown>> = {};
+	if (options.showSource) outputs.source = source;
+	if (!sourceIsRex && options.showIR) {
+		throw new Error("--show-ir is only available for Rex source");
+	}
 
 	if (options.showIR) {
 		outputs.ir = parseToIR(source);
@@ -333,27 +355,37 @@ type OutputKey = "ir" | "rexc" | "vars" | "result";
 
 	if (options.showRexc) {
 		const domainConfig = await resolveDomainConfig(options);
-		outputs.rexc = compile(source, {
-			minifyNames: options.minifyNames,
-			dedupeValues: options.dedupeValues,
-			dedupeMinBytes: options.dedupeMinBytes,
-			domainConfig,
-		});
+		outputs.rexc = sourceIsRex
+			? compile(source, {
+				minifyNames: options.minifyNames,
+				dedupeValues: options.dedupeValues,
+				dedupeMinBytes: options.dedupeMinBytes,
+				domainConfig,
+			})
+			: source;
 	}
 
 	if (options.showExpr || options.showVars) {
-		const { value, state } = evaluateSource(source);
-		if (options.showExpr) outputs.result = value;
-		if (options.showVars) outputs.vars = state.vars;
+		const result = sourceIsRex ? evaluateSource(source) : evaluateRexc(source);
+		if (options.showExpr) outputs.result = result.value;
+		if (options.showVars) outputs.vars = result.state.vars;
 	}
 
-	const order: OutputKey[] = ["ir", "rexc", "vars", "result"];
+	const order: OutputKey[] = ["source", "ir", "rexc", "vars", "result"];
 	const selected = order.filter((key) => outputs[key] !== undefined);
 
-	function formatValue(value: unknown, kind: "ir" | "rexc" | "vars" | "result"): string {
+	function formatValue(value: unknown, kind: OutputKey): string {
+		if (kind === "source") {
+			const raw = String(value ?? "");
+			if (options.format === "json") {
+				const json = formatJson(raw, 2);
+				return humanMode && options.color ? highlightJSON(json) : json;
+			}
+			return humanMode && options.color ? highlightAuto(raw) : raw;
+		}
 		if (kind === "rexc" && humanMode) {
 			const raw = String(value ?? "");
-			return options.color ? highlightLine(raw) : raw;
+			return options.color ? highlightAuto(raw, "rexc") : raw;
 		}
 		if (options.format === "json") {
 			const raw = formatJson(value, 2);

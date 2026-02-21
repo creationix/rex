@@ -23,7 +23,7 @@ async function main() {
 	for (const filePath of files) {
 		const source = await readFile(filePath, "utf8");
 		const debugOut = compile(source, { domainConfig });
-		const optimizedOut = compile(source, { optimize: true, minifyNames: true, dedupeValues: true, domainConfig });
+		const optimizedOut = compile(source, { optimize: true, minifyNames: true, domainConfig });
 
 		const outBase = filePath.slice(0, -extname(filePath).length);
 		await writeFile(`${outBase}.rexc`, `${debugOut}\n`, "utf8");

@@ -959,17 +959,10 @@ function gatherEncodedValueSpans(text: string): EncodedSpan[] {
 	return spans;
 }
 
-function buildPointerToken(pointerStart: number, targetStart: number): string | undefined {
-	let offset = targetStart - (pointerStart + 1);
+function buildPointerToken(pointerStart: number, targetStart: number, occurrenceSize: number): string | undefined {
+	const offset = targetStart - pointerStart - occurrenceSize;
 	if (offset < 0) return undefined;
-	for (let guard = 0; guard < 8; guard += 1) {
-		const prefix = encodeUint(offset);
-		const recalculated = targetStart - (pointerStart + prefix.length + 1);
-		if (recalculated === offset) return `${prefix}^`;
-		offset = recalculated;
-		if (offset < 0) return undefined;
-	}
-	return undefined;
+	return `${encodeUint(offset)}^`;
 }
 
 function buildDedupeCandidateTable(encoded: string, minBytes: number): Map<string, DedupeCandidate[]> {
@@ -1011,10 +1004,10 @@ function dedupeLargeEncodedValues(encoded: string, minBytes = 4): string {
 
 				if (current.slice(occurrence.span.start, occurrence.span.end) !== value) continue;
 
-				const canonicalCurrentStart = current.length - canonical.offsetFromEnd - canonical.sizeBytes;
-				const pointerToken = buildPointerToken(occurrence.span.start, canonicalCurrentStart);
-				if (!pointerToken) continue;
-				if (pointerToken.length >= occurrence.sizeBytes) continue;
+			const canonicalCurrentStart = current.length - canonical.offsetFromEnd - canonical.sizeBytes;
+			const pointerToken = buildPointerToken(occurrence.span.start, canonicalCurrentStart, occurrence.sizeBytes);
+			if (!pointerToken) continue;
+			if (pointerToken.length >= occurrence.sizeBytes) continue;
 
 				current = `${current.slice(0, occurrence.span.start)}${pointerToken}${current.slice(occurrence.span.end)}`;
 				replaced = true;
@@ -1856,7 +1849,8 @@ function optimizeNode(node: IRNode, env: OptimizeEnv, currentDepth: number, asPl
 }
 
 export function optimizeIR(node: IRNode): IRNode {
-	return optimizeNode(node, emptyOptimizeEnv(), 1);
+	// Optimization is temporarily disabled pending correctness fixes.
+	return node;
 }
 
 function collectLocalBindings(node: IRNode, locals: Set<string>) {

@@ -23,7 +23,7 @@ function createColors(enabled: boolean) {
 			magenta: "",
 			cyan: "",
 			gray: "",
-			boldBlue: "",
+			keyword: "",
 		};
 	}
 	return {
@@ -37,7 +37,7 @@ function createColors(enabled: boolean) {
 		magenta: "\x1b[38;5;141m",
 		cyan: "\x1b[38;5;81m",
 		gray: "\x1b[38;5;245m",
-		boldBlue: "\x1b[1;38;5;33m",
+		keyword: "\x1b[1;38;5;208m",
 	};
 }
 
@@ -90,7 +90,7 @@ export function highlightLine(line: string): string {
 		} else if (g.objKey) {
 			result += C.magenta + text + C.reset;
 		} else if (g.keyword) {
-			result += C.boldBlue + text + C.reset;
+			result += C.keyword + text + C.reset;
 		} else if (g.literal) {
 			result += C.yellow + text + C.reset;
 		} else if (g.typePred) {
@@ -170,7 +170,7 @@ export function highlightRexc(text: string): string {
 				i++;
 				break;
 			case "%": // opcode
-				out += C.boldBlue + prefix + tag + C.reset;
+				out += C.keyword + prefix + tag + C.reset;
 				i++;
 				break;
 			case "$": // variable
@@ -207,11 +207,11 @@ export function highlightRexc(text: string): string {
 			case ">": // for
 			case "<": // for-keys
 			case "#": // while
-				out += C.boldBlue + prefix + tag + C.reset;
+				out += C.keyword + prefix + tag + C.reset;
 				i++;
 				break;
 			case ";": // break/continue
-				out += C.boldBlue + prefix + tag + C.reset;
+				out += C.keyword + prefix + tag + C.reset;
 				i++;
 				break;
 			case "^": // pointer
@@ -377,9 +377,12 @@ export function formatVarState(vars: Record<string, unknown>, format: OutputForm
 	return `${C.dim}  ${parts.join(", ")}${C.reset}`;
 }
 
-function renderValue(value: unknown, format: OutputFormat, kind: "ir" | "rexc" | "vars" | "result"): string {
+function renderValue(value: unknown, format: OutputFormat, kind: OutputKey): string {
 	if (format === "json") {
 		return highlightJSON(formatJson(value, 2));
+	}
+	if (kind === "source") {
+		return highlightAuto(String(value ?? ""));
 	}
 	if (kind === "rexc") {
 		return highlightRexc(String(value ?? ""));
@@ -470,10 +473,12 @@ async function handleDotCommand(
 		case ".help":
 			console.log(
 				[
-					`${C.boldBlue}Rex REPL Commands:${C.reset}`,
+					`${C.keyword}Rex REPL Commands:${C.reset}`,
 					"  .help         Show this help message",
 					"  .file <path>  Load and execute a Rex file",
+					"  .cat <path>   Print a Rex/rexc file with highlighting",
 					"  .expr         Toggle showing expression results",
+					"  .source       Toggle showing input source",
 					"  .vars         Toggle showing variable summary",
 					"  .vars!        Show all current variables",
 					"  .clear        Clear all variables",
@@ -497,6 +502,11 @@ async function handleDotCommand(
 		case ".expr":
 			state.showExpr = !state.showExpr;
 			console.log(`${C.dim}  Expression output: ${toggleLabel(state.showExpr)}${C.reset}`);
+			return "handled";
+
+		case ".source":
+			state.showSource = !state.showSource;
+			console.log(`${C.dim}  Source output: ${toggleLabel(state.showSource)}${C.reset}`);
 			return "handled";
 
 		case ".vars":
@@ -561,6 +571,23 @@ async function handleDotCommand(
 			return "handled-noprompt";
 
 		default:
+			if (cmd.startsWith(".cat ")) {
+				const rawPath = cmd.slice(5).trim();
+				if (!rawPath) {
+					console.log(`${C.red}  Missing file path. Usage: .cat <path>${C.reset}`);
+					return "handled";
+				}
+				const filePath = resolve(stripQuotes(rawPath));
+				try {
+					const source = readFileSync(filePath, "utf8");
+					const hint = filePath.endsWith(".rexc") ? "rexc" : filePath.endsWith(".rex") ? "rex" : undefined;
+					console.log(highlightAuto(source, hint));
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					console.log(`${C.red}  File error: ${message}${C.reset}`);
+				}
+				return "handled";
+			}
 			if (cmd.startsWith(".file ")) {
 				const rawPath = cmd.slice(6).trim();
 				if (!rawPath) {
@@ -595,10 +622,11 @@ type ReplState = {
 	optimize: boolean;
 	showExpr: boolean;
 	showVars: boolean;
+	showSource: boolean;
 	outputFormat: OutputFormat;
 };
 
-type OutputKey = "ir" | "rexc" | "vars" | "result";
+type OutputKey = "source" | "ir" | "rexc" | "vars" | "result";
 
 // ── Gas limit for loop safety ─────────────────────────────────
 
@@ -615,6 +643,7 @@ export async function startRepl(): Promise<void> {
 		optimize: false,
 		showExpr: true,
 		showVars: false,
+		showSource: false,
 		outputFormat: "rex",
 	};
 	let multiLineBuffer = "";
@@ -628,14 +657,14 @@ export async function startRepl(): Promise<void> {
 	let styledCont = "";
 
 	function updatePromptStyles() {
-		styledPrimary = `${C.boldBlue}rex${C.reset}> `;
+		styledPrimary = `${C.keyword}rex${C.reset}> `;
 		styledCont = `${C.dim}...${C.reset}  `;
 		styledPrompt = currentPrompt === PRIMARY_PROMPT ? styledPrimary : styledCont;
 	}
 
 	updatePromptStyles();
 
-	console.log(`${C.boldBlue}Rex${C.reset} v${version} — type ${C.dim}.help${C.reset} for commands`);
+	console.log(`${C.keyword}Rex${C.reset} v${version} — type ${C.dim}.help${C.reset} for commands`);
 
 	const rl = readline.createInterface({
 		input: process.stdin,
@@ -699,15 +728,18 @@ export async function startRepl(): Promise<void> {
 		}
 
 		try {
-			const ir = parseToIR(source);
-			const lowered = state.optimize ? optimizeIR(ir) : ir;
 			const outputs: Partial<Record<OutputKey, unknown>> = {};
-
-			if (state.showIR) {
+			if (state.showSource) outputs.source = source;
+			const isRex = grammar.match(source).succeeded();
+			if (!isRex && state.showIR) {
+				console.log(`${C.red}  IR output is only available for Rex source.${C.reset}`);
+			}
+			const rexc = isRex ? compile(source, { optimize: state.optimize }) : source;
+			if (state.showIR && isRex) {
+				const ir = parseToIR(source);
+				const lowered = state.optimize ? optimizeIR(ir) : ir;
 				outputs.ir = lowered;
 			}
-
-			const rexc = compile(source, { optimize: state.optimize });
 			if (state.showRexc) outputs.rexc = rexc;
 
 			const result = evaluateRexc(rexc, {
@@ -720,7 +752,7 @@ export async function startRepl(): Promise<void> {
 			if (state.showExpr) outputs.result = result.value;
 			if (state.showVars) outputs.vars = state.vars;
 
-			const order: OutputKey[] = ["ir", "rexc", "vars", "result"];
+			const order: OutputKey[] = ["source", "ir", "rexc", "vars", "result"];
 			for (const key of order) {
 				const value = outputs[key];
 				if (value === undefined) continue;
