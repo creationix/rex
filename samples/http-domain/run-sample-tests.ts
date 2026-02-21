@@ -42,7 +42,10 @@ async function main() {
 		const relName = testFile.slice(samplesDir.length).replace(/^[/\\]/, "");
 		const { programPath, cases } = await loadTestDoc(testFile);
 		const programSource = await readFile(programPath, "utf8");
-		const programRexc = compile(programSource, { domainConfig });
+		const programRexc = compile(programSource, { domainConfig, optimize: true });
+		const { rexcPath, optRexcPath } = toRexcPaths(programPath);
+		const programRexcFile = await readOptionalFile(rexcPath);
+		const programOptRexcFile = await readOptionalFile(optRexcPath);
 
 		for (let index = 0; index < cases.length; index += 1) {
 			const testCase = cases[index] ?? {};
@@ -65,7 +68,20 @@ async function main() {
 				selfStack: testCase.input?.selfStack,
 			};
 
-			const { value, state } = evaluateRexc(programRexc, ctx);
+			const compiledResult = evaluateRexc(programRexc, ctx);
+			const { value, state } = compiledResult;
+
+			const compareErrors: string[] = [];
+			if (programRexcFile) {
+				compareErrors.push(
+					...compareRexcOutput(programRexcFile, ctx, compiledResult, "rexc"),
+				);
+			}
+			if (programOptRexcFile) {
+				compareErrors.push(
+					...compareRexcOutput(programOptRexcFile, ctx, compiledResult, "opt.rexc"),
+				);
+			}
 
 			const checks: string[] = [];
 			if (testCase.expect && "value" in testCase.expect) {
@@ -98,6 +114,7 @@ async function main() {
 				}
 			}
 
+			checks.push(...compareErrors);
 			if (checks.length === 0) {
 				console.log(`PASS ${relName} :: ${label}`);
 				passed += 1;
@@ -129,6 +146,45 @@ async function loadTestDoc(testFilePath: string): Promise<{ programPath: string;
 	}
 
 	return { programPath, cases };
+}
+
+function toRexcPaths(programPath: string): { rexcPath: string; optRexcPath: string } {
+	const base = programPath.replace(/\.rex$/, "");
+	return { rexcPath: `${base}.rexc`, optRexcPath: `${base}.opt.rexc` };
+}
+
+async function readOptionalFile(filePath: string): Promise<string | undefined> {
+	try {
+		return await readFile(filePath, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+function compareRexcOutput(
+	program: string,
+	ctx: { vars?: Record<string, unknown>; refs?: Record<string, unknown>; self?: unknown; selfStack?: unknown[] },
+	baseline: { value: unknown; state: { vars: Record<string, unknown>; refs: Record<string, unknown> } },
+	label: string,
+): string[] {
+	try {
+		const result = evaluateRexc(program, ctx);
+		const checks: string[] = [];
+		if (!isDeepStrictEqual(normalizeComparable(result.value), normalizeComparable(baseline.value))) {
+			checks.push(`${label} value mismatch (expected compiled output)`);
+		}
+		if (!isDeepStrictEqual(normalizeComparable(result.state.vars), normalizeComparable(baseline.state.vars))) {
+			checks.push(`${label} vars mismatch (expected compiled output)`);
+		}
+		if (!isDeepStrictEqual(normalizeComparable(result.state.refs), normalizeComparable(baseline.state.refs))) {
+			checks.push(`${label} refs mismatch (expected compiled output)`);
+		}
+		return checks;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return [`${label} failed to execute: ${message}`];
+	}
 }
 
 async function loadDomainConfig(dirPath: string): Promise<unknown> {
