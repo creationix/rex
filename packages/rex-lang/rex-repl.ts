@@ -1,7 +1,8 @@
 import * as readline from "node:readline";
 import { createRequire } from "node:module";
-import { readdirSync, statSync, readFileSync } from "node:fs";
+import { readdirSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
+import { homedir } from "node:os";
 import { grammar, stringify, parseToIR, optimizeIR, compile } from "./rex.ts";
 import { evaluateRexc } from "./rexc-interpreter.ts";
 
@@ -656,6 +657,8 @@ type OutputKey = "source" | "ir" | "rexc" | "vars" | "result";
 // ── Gas limit for loop safety ─────────────────────────────────
 
 const GAS_LIMIT = 10_000_000;
+const HISTORY_LIMIT = 1000;
+const HISTORY_PATH = resolve(homedir(), ".rex_history");
 
 // ── Main REPL entry point ─────────────────────────────────────
 
@@ -695,10 +698,19 @@ export async function startRepl(): Promise<void> {
 		input: process.stdin,
 		output: process.stdout,
 		prompt: PRIMARY_PROMPT,
-		historySize: 500,
+		historySize: HISTORY_LIMIT,
 		completer: completer(state),
 		terminal: true,
 	});
+
+	try {
+		const historyText = readFileSync(HISTORY_PATH, "utf8");
+		const lines = historyText.split(/\r?\n/).filter((line) => line.trim().length > 0);
+		const recent = lines.slice(-HISTORY_LIMIT);
+		(rl as readline.Interface & { history: string[] }).history = recent.reverse();
+	} catch {
+		// ignore missing history
+	}
 
 	// ── Syntax highlighting via keypress redraw ──
 	process.stdin.on("keypress", () => {
@@ -836,6 +848,17 @@ export async function startRepl(): Promise<void> {
 
 	// ── Exit ──
 	rl.on("close", () => {
+		try {
+			const history = (rl as readline.Interface & { history: string[] }).history ?? [];
+			const trimmed = history
+				.slice()
+				.reverse()
+				.filter((line) => line.trim().length > 0)
+				.slice(-HISTORY_LIMIT);
+			writeFileSync(HISTORY_PATH, `${trimmed.join("\n")}\n`, "utf8");
+		} catch {
+			// ignore history write errors
+		}
 		process.exit(0);
 	});
 
