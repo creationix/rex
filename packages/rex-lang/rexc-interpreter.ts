@@ -737,10 +737,26 @@ class CursorInterpreter {
 				return args.length ? args[args.length - 1] : undefined;
 			case OPCODES.add:
 					if (args[0] === undefined || args[1] === undefined) return undefined;
-					if (typeof args[0] === "string" || typeof args[1] === "string") {
-						return String(args[0]) + String(args[1]);
+					if (Array.isArray(args[0]) && Array.isArray(args[1])) {
+						return [...args[0], ...args[1]];
 					}
-					return Number(args[0]) + Number(args[1]);
+					if (
+						args[0]
+						&& args[1]
+						&& typeof args[0] === "object"
+						&& typeof args[1] === "object"
+						&& !Array.isArray(args[0])
+						&& !Array.isArray(args[1])
+					) {
+						return { ...(args[0] as Record<string, unknown>), ...(args[1] as Record<string, unknown>) };
+					}
+					if (typeof args[0] === "string" && typeof args[1] === "string") {
+						return args[0] + args[1];
+					}
+					if (typeof args[0] === "number" && typeof args[1] === "number") {
+						return args[0] + args[1];
+					}
+					return undefined;
 			case OPCODES.sub:
 				if (args[0] === undefined || args[1] === undefined) return undefined;
 				return Number(args[0]) - Number(args[1]);
