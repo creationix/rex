@@ -11,7 +11,7 @@
 	],
 	"type": "module",
 	"bin": {
-		"rex": "./rex-cli.js"
+		"rex": "rex-cli.js"
 	},
 	"main": "rex.js",
 	"types": "./rex.ts",
@@ -48,7 +48,7 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/creationix/rex",
+		"url": "git+https://github.com/creationix/rex.git",
 		"directory": "packages/rex-lang"
 	},
 	"license": "MIT",
