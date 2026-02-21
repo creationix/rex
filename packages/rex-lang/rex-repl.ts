@@ -399,10 +399,35 @@ const KEYWORDS = [
 	"string", "number", "object", "array", "boolean", "size",
 ];
 
+const DOT_COMMANDS = [
+	".help",
+	".file",
+	".cat",
+	".expr",
+	".source",
+	".vars",
+	".vars!",
+	".clear",
+	".ir",
+	".rexc",
+	".opt",
+	".json",
+	".color",
+	".exit",
+];
+
 function completer(state: ReplState): (line: string) => [string[], string] {
 	return (line: string) => {
 		if (line.startsWith(".file ")) {
-			return completeFilePath(line);
+			return completeFilePath(line, 6);
+		}
+		if (line.startsWith(".cat ")) {
+			return completeFilePath(line, 5);
+		}
+		if (line.startsWith(".") && !line.includes(" ")) {
+			const partial = line.trim();
+			const matches = DOT_COMMANDS.filter((cmd) => cmd.startsWith(partial));
+			return [matches, line];
 		}
 		const match = line.match(/[a-zA-Z_][a-zA-Z0-9_.-]*$/);
 		const partial = match ? match[0] : "";
@@ -415,8 +440,8 @@ function completer(state: ReplState): (line: string) => [string[], string] {
 	};
 }
 
-function completeFilePath(line: string): [string[], string] {
-	const raw = line.slice(6);
+function completeFilePath(line: string, prefixLength: number): [string[], string] {
+	const raw = line.slice(prefixLength);
 	const trimmed = raw.trimStart();
 	const quote = trimmed.startsWith("\"") || trimmed.startsWith("'") ? trimmed[0]! : "";
 	const pathPart = quote ? trimmed.slice(1) : trimmed;
