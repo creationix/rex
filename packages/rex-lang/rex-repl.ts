@@ -1,7 +1,6 @@
 import * as readline from "node:readline";
 import { createRequire } from "node:module";
-import { readFile } from "node:fs/promises";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync, readFileSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { grammar, stringify, parseToIR, optimizeIR, compile } from "./rex.ts";
 import { evaluateRexc } from "./rexc-interpreter.ts";
@@ -438,13 +437,15 @@ function stripQuotes(value: string): string {
 	return value;
 }
 
+type DotCommandResult = "handled" | "handled-noprompt" | "unhandled";
+
 async function handleDotCommand(
 	cmd: string,
 	state: ReplState,
 	rl: readline.Interface,
 	runSource: (source: string) => void,
 	updatePromptStyles: () => void,
-): Promise<boolean> {
+): Promise<DotCommandResult> {
 	function toggleLabel(on: boolean): string {
 		return on ? `${C.green}on${C.reset}` : `${C.dim}off${C.reset}`;
 	}
@@ -475,17 +476,17 @@ async function handleDotCommand(
 					"Outputs are printed as labeled blocks when enabled.",
 				].join("\n"),
 			);
-			return true;
+			return "handled";
 
 		case ".expr":
 			state.showExpr = !state.showExpr;
 			console.log(`${C.dim}  Expression output: ${toggleLabel(state.showExpr)}${C.reset}`);
-			return true;
+			return "handled";
 
 		case ".vars":
 			state.showVars = !state.showVars;
 			console.log(`${C.dim}  Variable summary: ${toggleLabel(state.showVars)}${C.reset}`);
-			return true;
+			return "handled";
 
 		case ".vars!": {
 			const entries = Object.entries(state.vars);
@@ -504,67 +505,67 @@ async function handleDotCommand(
 					console.log(`  ${key} = ${highlightLine(valStr)}`);
 				}
 			}
-			return true;
+			return "handled";
 		}
 
 		case ".ir":
 			state.showIR = !state.showIR;
 			console.log(`${C.dim}  IR display: ${toggleLabel(state.showIR)}${C.reset}`);
-			return true;
+			return "handled";
 
 		case ".rexc":
 			state.showRexc = !state.showRexc;
 			console.log(`${C.dim}  Rexc display: ${toggleLabel(state.showRexc)}${C.reset}`);
-			return true;
+			return "handled";
 
 		case ".opt":
 			state.optimize = !state.optimize;
 			console.log(`${C.dim}  Optimizations: ${toggleLabel(state.optimize)}${C.reset}`);
-			return true;
+			return "handled";
 
 		case ".json":
 			state.outputFormat = state.outputFormat === "json" ? "rex" : "json";
 			console.log(`${C.dim}  Output format: ${state.outputFormat}${C.reset}`);
-			return true;
+			return "handled";
 
 		case ".color":
 			setColorEnabled(!colorEnabled);
 			updatePromptStyles();
 			console.log(`${C.dim}  Color output: ${toggleLabel(colorEnabled)}${C.reset}`);
-			return true;
+			return "handled";
 
 		case ".clear":
 			state.vars = {};
 			state.refs = {};
 			console.log(`${C.dim}  Variables cleared.${C.reset}`);
-			return true;
+			return "handled";
 
 		case ".exit":
 			rl.close();
-			return true;
+			return "handled-noprompt";
 
 		default:
 			if (cmd.startsWith(".file ")) {
 				const rawPath = cmd.slice(6).trim();
 				if (!rawPath) {
 					console.log(`${C.red}  Missing file path. Usage: .file <path>${C.reset}`);
-					return true;
+					return "handled";
 				}
 				const filePath = resolve(stripQuotes(rawPath));
 				try {
-					const source = await readFile(filePath, "utf8");
+					const source = readFileSync(filePath, "utf8");
 					runSource(source);
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					console.log(`${C.red}  File error: ${message}${C.reset}`);
 				}
-				return true;
+				return "handled";
 			}
 			if (cmd.startsWith(".")) {
 				console.log(`${C.red}  Unknown command: ${cmd}. Type .help for available commands.${C.reset}`);
-				return true;
+				return "handled";
 			}
-			return false;
+			return "unhandled";
 	}
 }
 
@@ -724,10 +725,12 @@ export async function startRepl(): Promise<void> {
 
 		// Dot commands (only when not accumulating multi-line)
 		if (!multiLineBuffer && trimmed.startsWith(".")) {
-			if (await handleDotCommand(trimmed, state, rl, runSource, updatePromptStyles)) {
+			const result = await handleDotCommand(trimmed, state, rl, runSource, updatePromptStyles);
+			if (result === "handled") {
 				rl.prompt();
 				return;
 			}
+			if (result === "handled-noprompt") return;
 		}
 
 		// Accumulate
