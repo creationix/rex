@@ -18,3 +18,13 @@ end
 
 // Collect object values into an array
 fibs
+
+// Alternative: Build fibonacci sequence using array keys
+a = 0
+b = 1
+[ when true do c = a + b
+  a = b
+  b = c
+  end
+ while a <= max
+]
