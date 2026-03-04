@@ -1,8 +1,6 @@
 import { write } from "bun";
 
 export interface RexCEncodeOptions {
-	/** If set, pretty-print using this as the indentation token. `true` defaults to two spaces. */
-	pretty?: boolean | string;
 
 	/** Encode in reverse mode (which enables streaming writers). */
 	reverse?: boolean;
@@ -44,7 +42,6 @@ export interface RexCDecodeOptions {
 }
 
 const ENCODE_DEFAULTS = {
-	pretty: false,
 	reverse: false,
 	randomAccess: true,
 	pathChains: true,
@@ -218,6 +215,7 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 	const randomAccess = opts.randomAccess
 	const pointers = opts.pointers
 	const schemas = opts.schemas
+	const pathChains = opts.pathChains
 	// Map from value identity to encoded offset, used for pointers
 	const seenOffsets: Record<string, number> = {};
 	// Map from schema identity to offset of either array of object with same shape
@@ -228,6 +226,42 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 		unsigned: writeUnsigned,
 		signed: writeSigned
 	} = reverse ? reverseEncoders : forwardEncoders;
+
+	// Pre-scan the dataset to find reused path prefixes
+	const duplicatePrefixes = new Set<string>();
+	if (pathChains && pointers) {
+		const seenPrefixes = new Set<string>();
+		scanPrefixes(rootValue)
+		function scanPrefixes(value: unknown) {
+			if (typeof value === "string" && value[0] === "/") {
+				let offset = 0
+				if (!seenPrefixes.has(value)) {
+					while (offset < value.length) {
+						const nextSlash = value.indexOf("/", offset + 1);
+						if (nextSlash === -1) break;
+						const prefix = value.slice(0, nextSlash);
+						if (seenPrefixes.has(prefix)) {
+							duplicatePrefixes.add(prefix);
+						} else {
+							seenPrefixes.add(prefix);
+						}
+						offset = nextSlash;
+					}
+				}
+			} else if (value && typeof value === "object") {
+				if (Array.isArray(value)) {
+					for (const item of value) {
+						scanPrefixes(item);
+					}
+				} else {
+					for (const [key, val] of Object.entries(value)) {
+						scanPrefixes(key);
+						scanPrefixes(val);
+					}
+				}
+			}
+		}
+	}
 
 	writeAny(rootValue)
 
@@ -300,6 +334,44 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 	function writeString(value: string) {
 		if (b64Regex.test(value)) {
 			return pushString(writeStringPair(':', value));
+		}
+		if (pathChains && value[0] === '/' && value.length > 1) {
+			if (pointers) {
+				if (value === "/") {
+					// Special case for root path
+					return pushString("/");
+				}
+				if (duplicatePrefixes.has(value) && value.lastIndexOf("/") === 0) {
+					// TODO: allow this when the shorted prefix contains a slash
+					const before = byteLength;
+					writeAny(value.substring(1));
+					const size = byteLength - before;
+					return pushString(writeUnsigned('/', size));
+				}
+				// We need to write the string last-segments first, but only split when needed
+				let offset = value.length;
+				let head: string | undefined
+				let tail: string | undefined
+				while (offset > 0) {
+					offset = value.lastIndexOf("/", offset - 1);
+					if (offset <= 0) break;
+					const prefix = value.slice(0, offset);
+					if (duplicatePrefixes.has(prefix)) {
+						// Grab head and tail 
+						// (removing leading slashes since the pathChain format implies them between segments)
+						head = prefix;
+						tail = value.substring(offset + 1);
+						break;
+					}
+				}
+				if (head && tail) {
+					const before = byteLength;
+					writeAny(tail);
+					writeAny(head);
+					const size = byteLength - before;
+					return pushString(writeUnsigned("/", size));
+				}
+			}
 		}
 		const utf8 = new TextEncoder().encode(value);
 		pushBytes(utf8);

@@ -469,6 +469,101 @@ describe("rexc stringify", () => {
 		});
 	});
 
+	describe("path chains", () => {
+		// Non-repeated prefixes should not use pathChains optimization
+		expect(stringify("/", { pathChains: false })).toBe("1,/");
+		expect(stringify("/about", { pathChains: false })).toBe("6,/about");
+		expect(stringify("/", { pathChains: true })).toBe("1,/");
+		expect(stringify("/about", { pathChains: true })).toBe("6,/about");
+		const paths = [
+			"/foo/bar/baz",
+			"/foo/bar/qux",
+			"/foo/quux",
+		]
+		// `/foo` is pointed to twice via `/foo/bar` and `/foo/quux`.
+		// `/foo/bar/` is pointed to twice via `/foo/bar/baz` and `/foo/bar/qux`.
+		// Therefore we should have prefixes for both of them
+		// This inner `/foo` is encoded as `4/foo:`
+		// Then the outer `/foo/bar` could point to it or inline if possible
+		//
+		// In this case we write `/foo/quux` first so `/foo` is a standalone target
+		// `/foo/quux` then becomes `b/4/foo:quux:`
+		// And now we have pointer targets for both `/foo` and `/foo/quux`
+		//
+		// Next we encode `/foo/bar/qux` which contains `/foo/bar` that we want to make a target, 
+		// and that recursively depends on / points to `/foo` from the previous entry
+		// so we write `??/??^bar:` for `/foo/bar`, but will calculate `??` later
+		// The entire chain is then `??/??/??^bar:qux:`
+		// So when combined with the previous line, we can calculate all pointers and lengths
+		// this gives us `c/6/a^bar:qux:b/4/foo:quux:`
+		//
+		// Now we finally encode `/foo/bar/baz` which can point to `/foo/bar` and then append `baz:`
+		// This is `??/??^baz:`
+		// now combining to the other we can calculate the `??` slots
+		// And we finally get `6/6^baz:c/6/a^bar:qux:b/4/foo:quux:` for the 3 strings
+		//
+		// The array wrapping is a root object and doesn't need to be skippable so it's just wrapping in `[]`
+
+		expect(stringify(paths, { pathChains: true, pointers: true, schemas: false, reverse: false }))
+			.toBe("[6/6^baz:c/6/a^bar:qux:b/4/foo:quux:]")
+		// Reverse mode is the same thing in reverse
+		expect(stringify(paths, { pathChains: true, pointers: true, schemas: false, reverse: true }))
+			.toBe("[:quux:foo/4/b:qux:bar^a/6/c:baz^6/6]")
+
+		// The current implementaion breaks out `/foo` as a "duplicated" prefix.
+		// But technically we could stop at `/foo/bar` as the root prefix, 
+		// but that requires changing the duplicate prefix detector to be more complex and cancel nested prefixes.
+		// Also this form writes cleaner encodings since most path segments are b64 friendly.
+		// The inner `/foo/bar` is currently `a/4/foo:bar:` when it could be `9/7,foo/bar`.
+		// The "optimized" form is one less character and one less concat layer, but more ugly.
+		const prefixedPaths = [
+			"/foo/bar/baz",
+			"/foo/bar/qux",
+		]
+		expect(stringify(prefixedPaths, { pathChains: true, pointers: true, schemas: false, reverse: false }))
+			.toBe("[6/6^baz:g/a/4/foo:bar:qux:]")
+		// Reverse mode is the same thing in reverse
+		expect(stringify(prefixedPaths, { pathChains: true, pointers: true, schemas: false, reverse: true }))
+			.toBe("[:qux:bar:foo/4/a/g:baz^6/6]")
+	})
+
+	describe("website manifest", () => {
+		const doc = {
+			"/": { name: "Home", method: "GET" },
+			"/about": { name: "About", method: "GET" },
+			"/contact": { name: "Contact", method: "POST" },
+			"/blog": { name: "Blog", method: "GET" },
+			"/blog/post": { name: "Blog Post", method: "GET" },
+			"/blog/post/comment": { name: "Comment", method: "POST" },
+			"/api/data": { name: "API Data", method: "GET" },
+			"/api/update": { name: "API Update", method: "POST" },
+			"/admin": { name: "Admin", method: "GET" },
+			"/admin/settings": { name: "Admin Settings", method: "POST" },
+			"/admin/users": { name: "Admin Users", method: "GET" },
+			"/admin/users/add": { name: "Add User", method: "POST" },
+			"/admin/users/remove": { name: "Remove User", method: "POST" },
+			"/admin/logs": { name: "Admin Logs", method: "GET" },
+			"/admin/logs/clear": { name: "Clear Logs", method: "POST" },
+			"/admin/logs/export": { name: "Export Logs", method: "GET" },
+			"/admin/logs/export/json": { name: "Export Logs as JSON", method: "GET" },
+			"/admin/logs/export/csv": { name: "Export Logs as CSV", method: "GET" },
+		};
+		test("byte counts are accurate with different options", () => {
+			expect(stringify(doc, { pathChains: true, randomAccess: false, pointers: true, schemas: true, reverse: false }))
+				.toBe("{1,/{7H^Home:84^}6,/about{7m^About:7K^}8,/contact{6-^Contact:5j^}H^{6I^Blog:75^}7/q^post:{6m^9,Blog Post6F^}l/5/blog:c,post/comment{5I^Comment:41^}7/p^data:{5j^8,API Data5D^}d/4/api:update:{4O^a,API Update33^}47^{4r^Admin:4P^}c/3Q^settings:{3_^e,Admin Settings2c^}N^{3B^b,Admin Users3S^}6/o^add:{38^8,Add User1r^}i/9/2r^users:remove:{2y^b,Remove UserP^}1R^{2b^a,Admin Logs2t^}9/1s^clear:{1I^a,Clear LogsPOST:}Y^{1k^b,Export Logs1B^}7/z^json:{T^j,Export Logs as JSON10^}s/m/d/6/admin:logs:export:csv:{name:i,Export Logs as CSVmethod:GET:}}");
+			expect(stringify(doc, { pathChains: true, randomAccess: false, pointers: true, schemas: true, reverse: true }))
+				.toBe("{{:GET:methodExport Logs as CSV,i:name}:csv:export:logs:admin/6/d/m/s{^10Export Logs as JSON,j^T}:json^z/7{^1BExport Logs,b^1k}^Y{:POSTClear Logs,a^1I}:clear^1s/9{^2tAdmin Logs,a^2b}^1R{^PRemove User,b^2y}:remove:users^2r/9/i{^1rAdd User,8^38}:add^o/6{^3SAdmin Users,b^3B}^N{^2cAdmin Settings,e^3_}:settings^3Q/c{^4P:Admin^4r}^47{^33API Update,a^4O}:update:api/4/d{^5DAPI Data,8^5j}:data^p/7{^41:Comment^5I}post/comment,c:blog/5/l{^6FBlog Post,9^6m}:post^q/7{^75:Blog^6I}^H{^5j:Contact^6-}/contact,8{^7K:About^7m}/about,6{^84:Home^7H}/,1}");
+			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: true, reverse: false }))
+				.toBe("{1,/b{7X^Home:8l^}6,/aboutc{7B^About:7-^}8,/contacte{7c^Contact:5v^}J^b{6V^Blog:7j^}7/r^post:h{6y^9,Blog Post6S^}l/5/blog:c,post/commente{5T^Comment:4a^}7/q^data:g{5t^8,API Data5O^}d/4/api:update:i{4X^a,API Update3a^}4g^c{4z^Admin:4Y^}c/3Y^settings:m{46^e,Admin Settings2h^}P^j{3H^b,Admin Users3Z^}6/p^add:g{3d^8,Add User1u^}i/9/2w^users:remove:i{2C^b,Remove UserR^}1V^i{2e^a,Admin Logs2x^}9/1v^clear:k{1K^a,Clear LogsPOST:}-^j{1l^b,Export Logs1D^}7/A^json:q{T^j,Export Logs as JSON11^}s/m/d/6/admin:logs:export:csv:A{name:i,Export Logs as CSVmethod:GET:}}");
+			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: true, reverse: true }))
+				.toBe("{{:GET:methodExport Logs as CSV,i:name}A:csv:export:logs:admin/6/d/m/s{^11Export Logs as JSON,j^T}q:json^A/7{^1DExport Logs,b^1l}j^-{:POSTClear Logs,a^1K}k:clear^1v/9{^2xAdmin Logs,a^2e}i^1V{^RRemove User,b^2C}i:remove:users^2w/9/i{^1uAdd User,8^3d}g:add^p/6{^3ZAdmin Users,b^3H}j^P{^2hAdmin Settings,e^46}m:settings^3Y/c{^4Y:Admin^4z}c^4g{^3aAPI Update,a^4X}i:update:api/4/d{^5OAPI Data,8^5t}g:data^q/7{^4a:Comment^5T}epost/comment,c:blog/5/l{^6SBlog Post,9^6y}h:post^r/7{^7j:Blog^6V}b^J{^5v:Contact^7c}e/contact,8{^7-:About^7B}c/about,6{^8l:Home^7X}b/,1}");
+			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: false, reverse: false }))
+				.toBe("{1,/e{8M^Home:91^95^}6,/aboutf{8n^About:8D^8H^}8,/contacth{7X^Contact:89^63^}P^e{7B^Blog:7S^7W^}7/u^post:k{7b^9,Blog Post7m^7q^}l/5/blog:c,post/commenth{6t^Comment:6H^4B^}7/t^data:j{60^8,API Data6c^6g^}d/4/api:update:l{5r^a,API Update5B^3v^}4H^f{50^Admin:5g^5k^}c/4k^settings:p{4w^e,Admin Settings4C^2w^}V^m{42^b,Admin Users4b^4f^}6/s^add:j{3x^8,Add User3J^1D^}i/9/2L^users:remove:l{2T^b,Remove User30^X^}25^l{2s^a,Admin Logs2C^2G^}9/1E^clear:n{1V^a,Clear Logs23^POST:}13^m{1s^b,Export Logs1B^1F^}7/C^json:s{X^j,Export Logs as JSONZ^11^}s/m/d/6/admin:logs:export:csv:A{name:i,Export Logs as CSVmethod:GET:}}");
+			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: false, reverse: true }))
+				.toBe("{{:GET:methodExport Logs as CSV,i:name}A:csv:export:logs:admin/6/d/m/s{^11^ZExport Logs as JSON,j^X}s:json^C/7{^1F^1BExport Logs,b^1s}m^13{:POST^23Clear Logs,a^1V}n:clear^1E/9{^2G^2CAdmin Logs,a^2s}l^25{^X^30Remove User,b^2T}l:remove:users^2L/9/i{^1D^3JAdd User,8^3x}j:add^s/6{^4f^4bAdmin Users,b^42}m^V{^2w^4CAdmin Settings,e^4w}p:settings^4k/c{^5k^5g:Admin^50}f^4H{^3v^5BAPI Update,a^5r}l:update:api/4/d{^6g^6cAPI Data,8^60}j:data^t/7{^4B^6H:Comment^6t}hpost/comment,c:blog/5/l{^7q^7mBlog Post,9^7b}k:post^u/7{^7W^7S:Blog^7B}e^P{^63^89:Contact^7X}h/contact,8{^8H^8D:About^8n}f/about,6{^95^91:Home^8M}e/,1}");
+		})
+	})
+
 	describe("emoji party", () => {
 		const doc = {
 			"/emoji/🔥": { name: "fire", group: "travel-places" },
@@ -481,12 +576,20 @@ describe("rexc stringify", () => {
 			"/emoji/🏴‍☠️": { name: "pirate flag", group: "flags" },
 		};
 		test("byte counts are accurate with different options", () => {
-			expect(stringify(doc, { randomAccess: false, pointers: false, schemas: false, reverse: false }))
+			expect(stringify(doc, { pathChains: false, randomAccess: false, pointers: false, schemas: false, reverse: false }))
 				.toBe("{b,/emoji/🔥{name:fire:group:travel-places:}b,/emoji/💧{name:water:group:travel-places:}b,/emoji/🌱{name:seedling:group:animals-nature:}b,/emoji/🐍{name:snake:group:animals-nature:}b,/emoji/🎸{name:guitar:group:objects:}a,/emoji/⚽{name:b,soccer ballgroup:activities:}d,/emoji/❤️{name:9,red heartgroup:smileys-emotion:}k,/emoji/🏴‍☠️{name:b,pirate flaggroup:flags:}}");
-			expect(stringify(doc, { randomAccess: true, pointers: true, schemas: true, reverse: false }))
+			expect(stringify(doc, { pathChains: false, randomAccess: true, pointers: true, schemas: true, reverse: false }))
 				.toBe("{b,/emoji/🔥a{46^fire:p^}b,/emoji/💧n{3I^water:travel-places:}b,/emoji/🌱e{35^seedling:p^}b,/emoji/🐍o{2D^snake:animals-nature:}b,/emoji/🎸i{1_^guitar:objects:}a,/emoji/⚽r{1u^b,soccer ballactivities:}d,/emoji/❤️t{O^9,red heartsmileys-emotion:}k,/emoji/🏴‍☠️u{name:b,pirate flaggroup:flags:}}");
-			expect(stringify(doc, { randomAccess: true, pointers: true, schemas: true, reverse: true }))
+			expect(stringify(doc, { pathChains: false, randomAccess: true, pointers: true, schemas: true, reverse: true }))
 				.toBe("{{:flags:grouppirate flag,b:name}u/emoji/🏴‍☠️,k{:smileys-emotionred heart,9^O}t/emoji/❤️,d{:activitiessoccer ball,b^1u}r/emoji/⚽,a{:objects:guitar^1_}i/emoji/🎸,b{:animals-nature:snake^2D}o/emoji/🐍,b{^p:seedling^35}e/emoji/🌱,b{:travel-places:water^3I}n/emoji/💧,b{^p:fire^46}a/emoji/🔥,b}");
+			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: false, reverse: false }))
+				.toBe("{9/44^4,🔥d{4i^fire:4s^q^}9/3F^4,💧q{3T^water:40^travel-places:}9/31^4,🌱h{3f^seedling:3l^q^}9/2y^4,🐍r{2M^snake:2V^animals-nature:}9/1V^4,🎸l{27^guitar:2f^objects:}8/1m^3,⚽u{1B^b,soccer ball1D^activities:}a/I^6,❤️v{V^9,red heart-^smileys-emotion:}n/6/emoji:d,🏴‍☠️u{name:b,pirate flaggroup:flags:}}");
+			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: false, reverse: true }))
+				.toBe("{{:flags:grouppirate flag,b:name}u🏴‍☠️,d:emoji/6/n{:smileys-emotion^-red heart,9^V}v❤️,6^I/a{:activities^1Dsoccer ball,b^1B}u⚽,3^1m/8{:objects^2f:guitar^27}l🎸,4^1V/9{:animals-nature^2V:snake^2M}r🐍,4^2y/9{^q^3l:seedling^3f}h🌱,4^31/9{:travel-places^40:water^3T}q💧,4^3F/9{^q^4s:fire^4i}d🔥,4^44/9}");
+			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: true, reverse: false }))
+				.toBe("{9/3M^4,🔥a{3Y^fire:n^}9/3o^4,💧n{3A^water:travel-places:}9/2P^4,🌱e{2_^seedling:n^}9/2n^4,🐍o{2z^snake:animals-nature:}9/1N^4,🎸i{1Z^guitar:objects:}8/1h^3,⚽r{1u^b,soccer ballactivities:}a/G^6,❤️t{R^9,red heartsmileys-emotion:}n/6/emoji:d,🏴‍☠️u{name:b,pirate flaggroup:flags:}}");
+			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: true, reverse: true }))
+				.toBe("{{:flags:grouppirate flag,b:name}u🏴‍☠️,d:emoji/6/n{:smileys-emotionred heart,9^R}t❤️,6^G/a{:activitiessoccer ball,b^1u}r⚽,3^1h/8{:objects:guitar^1Z}i🎸,4^1N/9{:animals-nature:snake^2z}o🐍,4^2n/9{^n:seedling^2_}e🌱,4^2P/9{:travel-places:water^3A}n💧,4^3o/9{^n:fire^3Y}a🔥,4^3M/9}");
 		});
 	})
 
