@@ -1,57 +1,59 @@
 
 export interface RexCEncodeOptions {
-
-	/** Encode in reverse mode (which enables streaming writers). */
-	reverse?: boolean;
-
-	/** Stream to callback instead of returning buffer. Works in both modes, but forward mode requires the receiver to reverse values. */
-	onChunk?: (chunk: Uint8Array, offset: number) => void;
-
-	/** Encode to allow random-access reads (length prefixes on containers). */
+	// Allow bare strings (b64:)
+	bareStrings?: boolean;
+	// Add Length Prefixes for fast skipping
 	randomAccess?: boolean;
-
-	/** Enable path chains. */
-	pathChains?: boolean;
-
-	/** Enable pointers. */
+	// Enable pointers. (generic de-dupe)
 	pointers?: boolean;
-
-	/** Enable shared schemas. */
+	// Enable shared schemas. (object shape de-dupe, requires pointers)
 	schemas?: boolean;
-
-	/**
-	 * If an array or object has >= this many values, embed an index.
-	 * `false` or `Infinity` to disable, `true` defaults to 10.
-	 */
-	indexes?: boolean | number;
-
-	/** Extra refs after the builtins. */
-	refs?: unknown[];
+	// Enable path chains. (substring de-dupe in paths, requires pointers)
+	pathChains?: boolean;
+	// indexThreshold (lists/maps greater than or equal to this have indexes added))
+	indexThreshold?: number;
+	// Encode in reverse mode (which enables streaming writers).
+	reverse?: boolean;
+	// Stream to callback instead of returning buffer.
+	onChunk?: (chunk: Uint8Array, offset: number) => void;
+	// External dictionary of known values (UPPERCASE KEYS)
+	refs?: Record<string, unknown>;
 }
 
 export interface RexCDecodeOptions {
-	/** Indicates the input was encoded in reverse mode. */
+	// Decode reverse (start at end of buffer and read backwards).
 	reverse?: boolean;
-
-	/** Extra refs after the builtins. Must match exactly what the encoder used. */
-	refs?: unknown[];
-
-	/** When true, use Proxy to lazy decode properties on access. */
+	// Lazy parse on access using Proxy object
 	lazy?: boolean;
+	// External dictionary of known values, Must match encoder.
+	refs?: Record<string, unknown>;
+}
+
+const BUILTIN_REFS: Record<string, unknown> = {
+	"n": null,
+	"t": true,
+	"f": false,
+	"u": undefined,
+	"nan": NaN,
+	"inf": Infinity,
+	"nif": -Infinity,
 }
 
 const ENCODE_DEFAULTS = {
-	reverse: false,
+	bareStrings: true,
 	randomAccess: true,
-	pathChains: true,
 	pointers: true,
 	schemas: true,
-	indexes: 10,
+	pathChains: true,
+	indexThreshold: 10,
+	reverse: false,
+	refs: {},
 } as const satisfies Partial<RexCEncodeOptions>;
 
 const DECODE_DEFAULTS = {
 	reverse: false,
 	lazy: true,
+	refs: {},
 } as const satisfies Partial<RexCDecodeOptions>;
 
 // Encode a signed integer as an unsigned zigzag value
@@ -215,6 +217,8 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 	const pointers = opts.pointers
 	const schemas = opts.schemas
 	const pathChains = opts.pathChains
+	const bareStrings = opts.bareStrings
+	const refs = { ...opts.refs, ...BUILTIN_REFS } as Record<string, unknown>;
 	// Map from value identity to encoded offset, used for pointers
 	const seenOffsets: Record<string, number> = {};
 	// Map from schema identity to offset of either array of object with same shape
@@ -297,7 +301,7 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 
 	function writeAny(value: unknown, needsSkippable = false) {
 		if (!pointers) return writeAnyInner(value, needsSkippable);
-		const key = JSON.stringify(value);
+		const key = makeKey(value);
 		const seenOffset = seenOffsets[key];
 		if (seenOffset !== undefined) {
 			const delta = byteLength - seenOffset;
@@ -319,10 +323,10 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 		switch (typeof value) {
 			case "string": return writeString(value);
 			case "number": return writeNumber(value);
-			case "boolean": return pushString(writeStringPair("'", value ? 'tr' : 'fl'));
-			case "undefined": return pushString(writeStringPair("'", 'un'));
+			case "boolean": return pushString(writeStringPair("'", value ? 't' : 'f'));
+			case "undefined": return pushString(writeStringPair("'", 'u'));
 			case "object":
-				if (value === null) return pushString(writeStringPair("'", 'nl'));;
+				if (value === null) return pushString(writeStringPair("'", 'n'));;
 				if (Array.isArray(value)) return writeArray(value, needsSkippable);
 				return writeObject(value as Record<string, unknown>, needsSkippable);
 			default:
@@ -331,8 +335,8 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 	}
 
 	function writeString(value: string) {
-		if (b64Regex.test(value)) {
-			return pushString(writeStringPair(':', value));
+		if (bareStrings && b64Regex.test(value)) {
+			return pushString(writeStringPair('.', value));
 		}
 		if (pathChains && value[0] === '/' && value.length > 1) {
 			if (pointers) {
@@ -396,25 +400,33 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 	}
 
 	function writeArray(value: unknown[], needsSkippable = false) {
-		pushString(reverse ? '[' : ']');
+		if (value.length === 0) {
+			return pushString(';');
+		}
+		if (!needsSkippable) {
+			pushString(reverse ? '[' : ']');
+		}
 		const before = byteLength;
 		for (let i = value.length - 1; i >= 0; i--) {
 			writeAny(value[i], randomAccess);
 		}
 		const length = byteLength - before;
-		const tag = reverse ? ']' : '['
-		return pushString(needsSkippable ? writeUnsigned(tag, length) : tag);
+		return pushString(needsSkippable ? writeUnsigned(';', length) : reverse ? ']' : '[');
 	}
 
 	function writeObject(value: Record<string, unknown>, needsSkippable = false) {
-		pushString(reverse ? '{' : '}');
+		const keys = Object.keys(value);
+		if (keys.length === 0) {
+			return pushString('{}');
+		}
+		if (!needsSkippable) {
+			pushString(reverse ? '{' : '}');
+		}
 		const before = byteLength;
 		let schemaTarget: number | undefined;
-		let keys: string[] | undefined;
 		let keysKey: string | undefined;
 		if (schemas) {
-			keys = Object.keys(value);
-			keysKey = JSON.stringify(keys);
+			keysKey = makeKey(keys);
 			schemaTarget = schemaOffsets[keysKey];
 		}
 		if (schemaTarget !== undefined) {
@@ -432,8 +444,7 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 			}
 		}
 		const length = byteLength - before;
-		const tag = reverse ? '}' : '{'
-		const ret = pushString(needsSkippable ? writeUnsigned(tag, length) : tag);
+		const ret = pushString(needsSkippable ? writeUnsigned(':', length) : reverse ? '}' : '{');
 		if (schemas && keysKey && schemaTarget === undefined) {
 			schemaOffsets[keysKey] = byteLength
 		}
@@ -495,4 +506,18 @@ export function splitNumber(val: number): [number, number] {
 		return [b1, e1 + e2 + e3]
 	}
 	throw new Error(`Invalid number format: ${val}`)
+}
+
+// Map from object to JSON key
+const KeyMap = new WeakMap<object, string>()
+function makeKey(val: unknown): string {
+	if (val && typeof val === 'object') {
+		let key = KeyMap.get(val)
+		if (!key) {
+			key = JSON.stringify(val)
+			KeyMap.set(val, key)
+		}
+		return key
+	}
+	return JSON.stringify(val)
 }
