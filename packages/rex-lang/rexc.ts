@@ -1,4 +1,3 @@
-import { write } from "bun";
 
 export interface RexCEncodeOptions {
 
