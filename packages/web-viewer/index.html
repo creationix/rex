@@ -12,6 +12,9 @@
   #status { font-size: 12px; padding: 2px 8px; border-radius: 3px; }
   #status.ok { color: #4ec9b0; }
   #status.error { color: #f48771; }
+  .options { display: flex; align-items: center; gap: 12px; padding: 6px 16px; background: #252526; border-bottom: 1px solid #333; font-size: 11px; }
+  .options label { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+  .options input[type="checkbox"] { margin: 0; accent-color: #4ec9b0; }
   .panes { display: flex; flex: 1; min-height: 0; }
   .pane { flex: 1; display: flex; flex-direction: column; }
   .pane + .pane { border-left: 1px solid #333; }
@@ -28,6 +31,15 @@
   <h1>REXC Viewer</h1>
   <span id="status" class="ok">OK</span>
 </header>
+<div class="options">
+  <span style="color:#888">Encode:</span>
+  <label><input type="checkbox" id="opt-bareStrings" checked> bareStrings</label>
+  <label><input type="checkbox" id="opt-randomAccess" checked> randomAccess</label>
+  <label><input type="checkbox" id="opt-pointers" checked> pointers</label>
+  <label><input type="checkbox" id="opt-schemas" checked> schemas</label>
+  <label><input type="checkbox" id="opt-pathChains" checked> pathChains</label>
+  <label><input type="checkbox" id="opt-reverse"> reverse</label>
+</div>
 <div class="panes">
   <div class="pane">
     <label>REXC <span class="size" id="rexc-size">0 B</span></label>
@@ -46,6 +58,13 @@
   const statusEl = document.getElementById("status");
   const rexcSizeEl = document.getElementById("rexc-size");
   const jsonSizeEl = document.getElementById("json-size");
+
+  const optNames = ["bareStrings", "randomAccess", "pointers", "schemas", "pathChains", "reverse"];
+  const optEls = Object.fromEntries(optNames.map(n => [n, document.getElementById("opt-" + n)]));
+
+  function getOpts() {
+    return Object.fromEntries(optNames.map(n => [n, optEls[n].checked]));
+  }
 
   const encoder = new TextEncoder();
   function humanSize(bytes) {
@@ -69,12 +88,16 @@
   }
 
   function save() {
-    localStorage.setItem("rexc-viewer", JSON.stringify({ rexc: rexcEl.value, json: jsonEl.value }));
+    localStorage.setItem("rexc-viewer", JSON.stringify({ rexc: rexcEl.value, json: jsonEl.value, opts: getOpts() }));
   }
   function restore() {
     try {
       const s = JSON.parse(localStorage.getItem("rexc-viewer"));
-      if (s) { rexcEl.value = s.rexc || ""; jsonEl.value = s.json || ""; updateSizes(); }
+      if (s) {
+        rexcEl.value = s.rexc || ""; jsonEl.value = s.json || "";
+        if (s.opts) for (const n of optNames) if (n in s.opts) optEls[n].checked = s.opts[n];
+        updateSizes();
+      }
     } catch {}
   }
   restore();
@@ -115,6 +138,22 @@
     return values;
   }
 
+  function reencodeFromJson() {
+    try {
+      const value = jsonEl.value.trim();
+      if (!value) return;
+      const values = splitValues(value, JSON.parse);
+      updating = true;
+      rexcEl.value = values.map(v => stringify(v, getOpts())).join("\n");
+      updating = false;
+      updateSizes();
+      save();
+    } catch {}
+  }
+  for (const el of Object.values(optEls)) {
+    el.addEventListener("change", reencodeFromJson);
+  }
+
   rexcEl.addEventListener("input", () => {
     if (updating) return;
     updating = true;
@@ -143,7 +182,7 @@
       const value = jsonEl.value.trim();
       if (!value) { rexcEl.value = ""; setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonEl); save(); updating = false; return; }
       const values = splitValues(value, JSON.parse);
-      rexcEl.value = values.map(v => stringify(v)).join("\n");
+      rexcEl.value = values.map(v => stringify(v, getOpts())).join("\n");
       setStatus(true, "OK");
       markValid(rexcEl);
       markValid(jsonEl);
