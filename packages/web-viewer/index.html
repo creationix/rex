@@ -68,6 +68,17 @@
       : humanSize(jsonRaw);
   }
 
+  function save() {
+    localStorage.setItem("rexc-viewer", JSON.stringify({ rexc: rexcEl.value, json: jsonEl.value }));
+  }
+  function restore() {
+    try {
+      const s = JSON.parse(localStorage.getItem("rexc-viewer"));
+      if (s) { rexcEl.value = s.rexc || ""; jsonEl.value = s.json || ""; updateSizes(); }
+    } catch {}
+  }
+  restore();
+
   let updating = false;
 
   function setStatus(ok, msg) {
@@ -102,12 +113,13 @@
     updating = true;
     try {
       const value = rexcEl.value.trim();
-      if (!value) { jsonEl.value = ""; setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonEl); updating = false; return; }
+      if (!value) { jsonEl.value = ""; setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonEl); save(); updating = false; return; }
       const values = splitValues(value, parse);
       jsonEl.value = values.map(v => JSON.stringify(v, null, 2)).join("\n");
       setStatus(true, "OK");
       markValid(rexcEl);
       markValid(jsonEl);
+      save();
     } catch (e) {
       setStatus(false, "REXC: " + e.message);
       markError(rexcEl);
@@ -122,12 +134,13 @@
     updating = true;
     try {
       const value = jsonEl.value.trim();
-      if (!value) { rexcEl.value = ""; setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonEl); updating = false; return; }
+      if (!value) { rexcEl.value = ""; setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonEl); save(); updating = false; return; }
       const values = splitValues(value, JSON.parse);
       rexcEl.value = values.map(v => stringify(v)).join("\n");
       setStatus(true, "OK");
       markValid(rexcEl);
       markValid(jsonEl);
+      save();
     } catch (e) {
       setStatus(false, "JSON: " + e.message);
       markError(jsonEl);
