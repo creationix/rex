@@ -19,6 +19,8 @@
   .pane { flex: 1; display: flex; flex-direction: column; }
   .pane + .pane { border-left: 1px solid #333; }
   .pane label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 12px; background: #2d2d2d; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }
+  .pane label .name { cursor: pointer; }
+  .pane label .name:hover { color: #fff; }
   .pane label .size { text-transform: none; color: #888; }
   textarea { flex: 1; resize: none; border: none; outline: none; padding: 12px; font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 13px; line-height: 1.5; background: #1e1e1e; color: #d4d4d4; tab-size: 2; }
   textarea::placeholder { color: #555; }
@@ -42,11 +44,11 @@
 </div>
 <div class="panes">
   <div class="pane">
-    <label>REXC <span class="size" id="rexc-size">0 B</span></label>
+    <label><span class="name" id="copy-rexc">REXC</span> <span class="size" id="rexc-size">0 B</span></label>
     <textarea id="rexc" placeholder="Paste REXC here..." spellcheck="false"></textarea>
   </div>
   <div class="pane">
-    <label>JSON <span class="size" id="json-size">0 B</span></label>
+    <label><span class="name" id="copy-json">JSON</span> <span class="size" id="json-size">0 B</span></label>
     <textarea id="json" placeholder="Paste JSON here..." spellcheck="false"></textarea>
   </div>
 </div>
@@ -102,6 +104,40 @@
   }
   restore();
 
+  // Load from URL hash
+  let loadedFromHash = false;
+  if (location.hash.length > 1) {
+    const hash = location.hash.slice(1);
+    const eq = hash.indexOf("=");
+    if (eq !== -1) {
+      const key = hash.slice(0, eq);
+      const val = decodeURIComponent(hash.slice(eq + 1));
+      if (key === "rexc") { rexcEl.value = val; jsonEl.value = ""; loadedFromHash = true; }
+      else if (key === "json") { jsonEl.value = val; rexcEl.value = ""; loadedFromHash = true; }
+      if (loadedFromHash) updateSizes();
+    }
+  }
+
+  function clearHash() {
+    if (loadedFromHash) {
+      loadedFromHash = false;
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  }
+
+  function copyShareUrl(key, value) {
+    const hash = "#" + key + "=" + value.replace(/%/g, "%25").replace(/#/g, "%23");
+    history.replaceState(null, "", location.pathname + location.search + hash);
+    loadedFromHash = true;
+    navigator.clipboard.writeText(location.href).then(() => {
+      setStatus(true, "URL copied!");
+      setTimeout(() => setStatus(true, "OK"), 1500);
+    });
+  }
+
+  document.getElementById("copy-rexc").addEventListener("click", () => copyShareUrl("rexc", rexcEl.value));
+  document.getElementById("copy-json").addEventListener("click", () => copyShareUrl("json", jsonEl.value));
+
   let updating = false;
 
   function setStatus(ok, msg) {
@@ -156,6 +192,7 @@
 
   rexcEl.addEventListener("input", () => {
     if (updating) return;
+    clearHash();
     updating = true;
     try {
       const value = rexcEl.value.trim();
@@ -177,6 +214,7 @@
 
   jsonEl.addEventListener("input", () => {
     if (updating) return;
+    clearHash();
     updating = true;
     try {
       const value = jsonEl.value.trim();
