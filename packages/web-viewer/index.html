@@ -93,18 +93,25 @@
   // Split a multi-value document into individual values.
   // Greedily accumulates lines until parseFn succeeds, then starts the next value.
   function splitValues(text, parseFn) {
-    try { return [parseFn(text)]; } catch {}
-    const lines = text.split("\n");
+    try { return [parseFn(text)]; } catch (e) {
+      // If it doesn't split into multiple values, throw the original error
+      if (!/\n\S/.test(text)) throw e;
+      var firstError = e;
+    }
+    const chunks = text.split(/\n(?=\S)/);
     const values = [];
     let buf = "";
-    for (const line of lines) {
-      buf += (buf ? "\n" : "") + line;
+    for (const chunk of chunks) {
+      buf += (buf ? "\n" : "") + chunk;
       try {
         values.push(parseFn(buf));
         buf = "";
       } catch {}
     }
-    if (buf.trim()) throw new SyntaxError("Trailing unparseable content");
+    if (buf.trim()) {
+      if (values.length === 0) throw firstError;
+      throw new SyntaxError("Trailing unparseable content: " + firstError.message);
+    }
     return values;
   }
 
