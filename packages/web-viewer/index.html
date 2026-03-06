@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>REXC Viewer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #1e1e1e; color: #ccc; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; background: #252526; border-bottom: 1px solid #333; }
+  header h1 { font-size: 14px; font-weight: 600; }
+  #status { font-size: 12px; padding: 2px 8px; border-radius: 3px; }
+  #status.ok { color: #4ec9b0; }
+  #status.error { color: #f48771; }
+  .panes { display: flex; flex: 1; min-height: 0; }
+  .pane { flex: 1; display: flex; flex-direction: column; }
+  .pane + .pane { border-left: 1px solid #333; }
+  .pane label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 12px; background: #2d2d2d; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }
+  .pane label .size { text-transform: none; color: #888; }
+  textarea { flex: 1; resize: none; border: none; outline: none; padding: 12px; font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 13px; line-height: 1.5; background: #1e1e1e; color: #d4d4d4; tab-size: 2; }
+  textarea::placeholder { color: #555; }
+  textarea.valid { box-shadow: inset 0 0 0 2px #4ec9b0; }
+  textarea.error { box-shadow: inset 0 0 0 2px #f48771; }
+</style>
+</head>
+<body>
+<header>
+  <h1>REXC Viewer</h1>
+  <span id="status" class="ok">OK</span>
+</header>
+<div class="panes">
+  <div class="pane">
+    <label>REXC <span class="size" id="rexc-size">0 B</span></label>
+    <textarea id="rexc" placeholder="Paste REXC here..." spellcheck="false"></textarea>
+  </div>
+  <div class="pane">
+    <label>JSON <span class="size" id="json-size">0 B</span></label>
+    <textarea id="json" placeholder="Paste JSON here..." spellcheck="false"></textarea>
+  </div>
+</div>
+<script type="module">
+  import { stringify, parse } from "./rexc.js";
+
+  const rexcEl = document.getElementById("rexc");
+  const jsonEl = document.getElementById("json");
+  const statusEl = document.getElementById("status");
+  const rexcSizeEl = document.getElementById("rexc-size");
+  const jsonSizeEl = document.getElementById("json-size");
+
+  const encoder = new TextEncoder();
+  function humanSize(bytes) {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KiB";
+    return (bytes / (1024 * 1024)).toFixed(2) + " MiB";
+  }
+  function compactJsonSize(text) {
+    try {
+      const values = splitValues(text.trim(), JSON.parse);
+      return encoder.encode(values.map(v => JSON.stringify(v)).join("\n")).length;
+    } catch { return null; }
+  }
+  function updateSizes() {
+    rexcSizeEl.textContent = humanSize(encoder.encode(rexcEl.value).length);
+    const jsonRaw = encoder.encode(jsonEl.value).length;
+    const jsonCompact = compactJsonSize(jsonEl.value);
+    jsonSizeEl.textContent = jsonCompact !== null && jsonCompact !== jsonRaw
+      ? humanSize(jsonRaw) + " (" + humanSize(jsonCompact) + " compact)"
+      : humanSize(jsonRaw);
+  }
+
+  let updating = false;
+
+  function setStatus(ok, msg) {
+    statusEl.textContent = msg;
+    statusEl.className = ok ? "ok" : "error";
+  }
+
+  function markValid(el) { el.classList.remove("error"); el.classList.add("valid"); }
+  function markError(el) { el.classList.remove("valid"); el.classList.add("error"); }
+  function markNeutral(el) { el.classList.remove("valid", "error"); }
+
+  // Split a multi-value document into individual values.
+  // Greedily accumulates lines until parseFn succeeds, then starts the next value.
+  function splitValues(text, parseFn) {
+    try { return [parseFn(text)]; } catch {}
+    const lines = text.split("\n");
+    const values = [];
+    let buf = "";
+    for (const line of lines) {
+      buf += (buf ? "\n" : "") + line;
+      try {
+        values.push(parseFn(buf));
+        buf = "";
+      } catch {}
+    }
+    if (buf.trim()) throw new SyntaxError("Trailing unparseable content");
+    return values;
+  }
+
+  rexcEl.addEventListener("input", () => {
+    if (updating) return;
+    updating = true;
+    try {
+      const value = rexcEl.value.trim();
+      if (!value) { jsonEl.value = ""; setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonEl); updating = false; return; }
+      const values = splitValues(value, parse);
+      jsonEl.value = values.map(v => JSON.stringify(v, null, 2)).join("\n");
+      setStatus(true, "OK");
+      markValid(rexcEl);
+      markValid(jsonEl);
+    } catch (e) {
+      setStatus(false, "REXC: " + e.message);
+      markError(rexcEl);
+      markNeutral(jsonEl);
+    }
+    updateSizes();
+    updating = false;
+  });
+
+  jsonEl.addEventListener("input", () => {
+    if (updating) return;
+    updating = true;
+    try {
+      const value = jsonEl.value.trim();
+      if (!value) { rexcEl.value = ""; setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonEl); updating = false; return; }
+      const values = splitValues(value, JSON.parse);
+      rexcEl.value = values.map(v => stringify(v)).join("\n");
+      setStatus(true, "OK");
+      markValid(rexcEl);
+      markValid(jsonEl);
+    } catch (e) {
+      setStatus(false, "JSON: " + e.message);
+      markError(jsonEl);
+      markNeutral(rexcEl);
+    }
+    updateSizes();
+    updating = false;
+  });
+</script>
+</body>
+</html>
