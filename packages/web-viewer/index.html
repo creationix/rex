@@ -1,238 +1,570 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>REXC Viewer</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #1e1e1e; color: #ccc; }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; background: #252526; border-bottom: 1px solid #333; }
-  header h1 { font-size: 14px; font-weight: 600; }
-  #status { font-size: 12px; padding: 2px 8px; border-radius: 3px; }
-  #status.ok { color: #4ec9b0; }
-  #status.error { color: #f48771; }
-  .options { display: flex; align-items: center; gap: 12px; padding: 6px 16px; background: #252526; border-bottom: 1px solid #333; font-size: 11px; }
-  .options label { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
-  .options input[type="checkbox"] { margin: 0; accent-color: #4ec9b0; }
-  .panes { display: flex; flex: 1; min-height: 0; }
-  .pane { flex: 1; display: flex; flex-direction: column; }
-  .pane + .pane { border-left: 1px solid #333; }
-  .pane label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 12px; background: #2d2d2d; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }
-  .pane label .name { cursor: pointer; }
-  .pane label .name:hover { color: #fff; }
-  .pane label .size { text-transform: none; color: #888; }
-  textarea { flex: 1; resize: none; border: none; outline: none; padding: 12px; font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 13px; line-height: 1.5; background: #1e1e1e; color: #d4d4d4; tab-size: 2; }
-  textarea::placeholder { color: #555; }
-  textarea.valid { box-shadow: inset 0 0 0 2px #4ec9b0; }
-  textarea.error { box-shadow: inset 0 0 0 2px #f48771; }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>REXC Viewer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: system-ui, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: #1e1e1e;
+      color: #ccc;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: #252526;
+      border-bottom: 1px solid #333;
+    }
+
+    header h1 {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    #status {
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 3px;
+    }
+
+    #status.ok {
+      color: #4ec9b0;
+    }
+
+    #status.error {
+      color: #f48771;
+    }
+
+    .options {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 6px 16px;
+      background: #252526;
+      border-bottom: 1px solid #333;
+      font-size: 11px;
+    }
+
+    .options label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .options input[type="checkbox"] {
+      margin: 0;
+      accent-color: #4ec9b0;
+    }
+
+    .panes {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .pane+.pane {
+      border-left: 1px solid #333;
+    }
+
+    .pane label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 6px 12px;
+      background: #2d2d2d;
+      border-bottom: 1px solid #333;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .pane label .name {
+      cursor: pointer;
+    }
+
+    .pane label .name:hover {
+      color: #fff;
+    }
+
+    .pane label .size {
+      text-transform: none;
+      color: #888;
+    }
+
+    textarea {
+      flex: 1;
+      resize: none;
+      border: none;
+      outline: none;
+      padding: 12px;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      tab-size: 2;
+      overflow-wrap: break-word;
+      word-break: break-all;
+      hyphens: none;
+    }
+
+    textarea::placeholder {
+      color: #555;
+    }
+
+    textarea.valid {
+      box-shadow: inset 0 0 0 2px #4ec9b0;
+    }
+
+    textarea.error {
+      box-shadow: inset 0 0 0 2px #f48771;
+    }
+
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      z-index: 10;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-overlay.open {
+      display: flex;
+    }
+
+    .modal {
+      background: #252526;
+      border: 1px solid #444;
+      border-radius: 6px;
+      width: 560px;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 16px;
+      border-bottom: 1px solid #333;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .modal-header button {
+      background: none;
+      border: none;
+      color: #888;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 0 4px;
+    }
+
+    .modal-header button:hover {
+      color: #fff;
+    }
+
+    .modal-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .modal-body textarea {
+      flex: 1;
+      min-height: 200px;
+      border-radius: 0;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 16px;
+      border-top: 1px solid #333;
+      font-size: 11px;
+    }
+
+    .modal-footer .refs-status {
+      color: #888;
+    }
+
+    .modal-footer .refs-status.refs-error {
+      color: #f48771;
+    }
+
+    .refs-btn {
+      background: #333;
+      border: 1px solid #555;
+      color: #ccc;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .refs-btn:hover {
+      background: #444;
+      color: #fff;
+    }
+  </style>
 </head>
+
 <body>
-<header>
-  <h1>REXC Viewer</h1>
-  <span id="status" class="ok">OK</span>
-</header>
-<div class="options">
-  <span style="color:#888">Encode:</span>
-  <label><input type="checkbox" id="opt-bareStrings" checked> bareStrings</label>
-  <label><input type="checkbox" id="opt-randomAccess" checked> randomAccess</label>
-  <label><input type="checkbox" id="opt-pointers" checked> pointers</label>
-  <label><input type="checkbox" id="opt-schemas" checked> schemas</label>
-  <label><input type="checkbox" id="opt-pathChains" checked> pathChains</label>
-  <label><input type="checkbox" id="opt-reverse"> reverse</label>
-</div>
-<div class="panes">
-  <div class="pane">
-    <label><span class="name" id="copy-rexc">REXC</span> <span class="size" id="rexc-size">0 B</span></label>
-    <textarea id="rexc" placeholder="Paste REXC here..." spellcheck="false"></textarea>
+  <header>
+    <h1>REXC Viewer</h1>
+    <span id="status" class="ok">OK</span>
+  </header>
+  <div class="options">
+    <span style="color:#888">Encode:</span>
+    <label><input type="checkbox" id="opt-bareStrings" checked> bareStrings</label>
+    <label><input type="checkbox" id="opt-randomAccess" checked> randomAccess</label>
+    <label><input type="checkbox" id="opt-pointers" checked> pointers</label>
+    <label><input type="checkbox" id="opt-schemas" checked> schemas</label>
+    <label><input type="checkbox" id="opt-pathChains" checked> pathChains</label>
+    <label><input type="checkbox" id="opt-pretty"> pretty</label>
+    <label>idxThresh <input type="number" id="opt-indexThreshold" value="10" min="0"
+        style="width:40px; background:#333; color:#ccc; border:1px solid #555; border-radius:2px; padding:1px 4px; font-size:11px;"></label>
+    <span style="color:#555">|</span>
+    <label><input type="checkbox" id="opt-reverse"> reverse</label>
+    <label><input type="checkbox" id="opt-refsEnabled"> <button class="refs-btn" id="refs-btn">refs {}</button></label>
+    <span style="color:#555">|</span>
+    <span style="color:#888">Decode:</span>
+    <label><input type="checkbox" id="opt-lazy" checked> lazy</label>
   </div>
-  <div class="pane">
-    <label><span class="name" id="copy-json">JSON</span> <span class="size" id="json-size">0 B</span></label>
-    <textarea id="json" placeholder="Paste JSON here..." spellcheck="false"></textarea>
+  <div class="modal-overlay" id="refs-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <span>Edit refs (JSON object with b64 keys)</span>
+        <button id="refs-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <textarea id="refs-editor" spellcheck="false" placeholder="{}">{}</textarea>
+      </div>
+      <div class="modal-footer">
+        <span class="refs-status" id="refs-status">OK</span>
+        <button class="refs-btn" id="refs-apply">Apply &amp; Close</button>
+      </div>
+    </div>
   </div>
-</div>
-<script type="module">
-  import { stringify, parse } from "./rexc.js";
+  <div class="panes">
+    <div class="pane">
+      <label><span class="name" id="copy-rexc">REXC</span> <span class="size" id="rexc-size">0 B</span></label>
+      <textarea id="rexc" placeholder="Paste REXC here..." spellcheck="false"></textarea>
+    </div>
+    <div class="pane">
+      <label><span class="name" id="copy-json">JSON</span> <span class="size" id="json-size">0 B</span></label>
+      <textarea id="json" placeholder="Paste JSON here..." spellcheck="false"></textarea>
+    </div>
+  </div>
+  <script type="module">
+    import { stringify, parse, BUILTIN_REFS } from "./rexc.js"
 
-  const rexcEl = document.getElementById("rexc");
-  const jsonEl = document.getElementById("json");
-  const statusEl = document.getElementById("status");
-  const rexcSizeEl = document.getElementById("rexc-size");
-  const jsonSizeEl = document.getElementById("json-size");
+    const rexcEl = document.getElementById("rexc")
+    const jsonEl = document.getElementById("json")
+    const statusEl = document.getElementById("status")
+    const rexcSizeEl = document.getElementById("rexc-size")
+    const jsonSizeEl = document.getElementById("json-size")
 
-  const optNames = ["bareStrings", "randomAccess", "pointers", "schemas", "pathChains", "reverse"];
-  const optEls = Object.fromEntries(optNames.map(n => [n, document.getElementById("opt-" + n)]));
+    const encodeBoolNames = ["bareStrings", "randomAccess", "pointers", "schemas", "pathChains", "pretty"]
+    const encodeNumNames = ["indexThreshold"]
+    const decodeOptNames = ["lazy"]
+    const sharedOptNames = ["reverse"]
+    const allBoolNames = [...encodeBoolNames, ...decodeOptNames, ...sharedOptNames]
+    const allOptNames = [...allBoolNames, ...encodeNumNames]
+    const optEls = Object.fromEntries(allOptNames.map(n => [n, document.getElementById("opt-" + n)]))
 
-  function getOpts() {
-    return Object.fromEntries(optNames.map(n => [n, optEls[n].checked]));
-  }
+    // Refs modal
+    const refsBtn = document.getElementById("refs-btn")
+    const refsToggle = document.getElementById("opt-refsEnabled")
+    const refsModal = document.getElementById("refs-modal")
+    const refsEditor = document.getElementById("refs-editor")
+    const refsStatusEl = document.getElementById("refs-status")
+    const refsClose = document.getElementById("refs-close")
+    const refsApply = document.getElementById("refs-apply")
+    let currentRefs = {}
 
-  const encoder = new TextEncoder();
-  function humanSize(bytes) {
-    if (bytes < 1024) return bytes + " B";
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KiB";
-    return (bytes / (1024 * 1024)).toFixed(2) + " MiB";
-  }
-  function compactJsonSize(text) {
-    try {
-      const values = splitValues(text.trim(), JSON.parse);
-      return encoder.encode(values.map(v => JSON.stringify(v)).join("\n")).length;
-    } catch { return null; }
-  }
-  function updateSizes() {
-    rexcSizeEl.textContent = humanSize(encoder.encode(rexcEl.value).length);
-    const jsonRaw = encoder.encode(jsonEl.value).length;
-    const jsonCompact = compactJsonSize(jsonEl.value);
-    jsonSizeEl.textContent = jsonCompact !== null && jsonCompact !== jsonRaw
-      ? humanSize(jsonRaw) + " (" + humanSize(jsonCompact) + " compact)"
-      : humanSize(jsonRaw);
-  }
+    function getActiveRefs() { return refsToggle.checked ? currentRefs : {}; }
+    refsToggle.addEventListener("change", () => { reencodeFromJson(); save(); });
 
-  function save() {
-    localStorage.setItem("rexc-viewer", JSON.stringify({ rexc: rexcEl.value, json: jsonEl.value, opts: getOpts() }));
-  }
-  function restore() {
-    try {
-      const s = JSON.parse(localStorage.getItem("rexc-viewer"));
-      if (s) {
-        rexcEl.value = s.rexc || ""; jsonEl.value = s.json || "";
-        if (s.opts) for (const n of optNames) if (n in s.opts) optEls[n].checked = s.opts[n];
-        updateSizes();
+    function parseRefs(text) {
+      const trimmed = text.trim()
+      if (!trimmed) return {}
+      const val = JSON.parse(trimmed)
+      if (typeof val !== "object" || val === null || Array.isArray(val)) throw new Error("Must be a JSON object")
+      // Ensure all keys are b64 strings and none conflict with built-in refs
+      for (const k of Object.keys(val)) {
+        if (typeof k !== "string") throw new Error("All keys must be strings")
+        if (!/^[A-Za-z0-9_-]*$/.test(k)) throw new Error(`Invalid b64 key: ${k}`)
+        if (k in BUILTIN_REFS) throw new Error(`Key conflicts with built-in ref: ${k}`)
       }
-    } catch {}
-  }
-  restore();
-
-  // Load from URL hash
-  let loadedFromHash = false;
-  if (location.hash.length > 1) {
-    const hash = location.hash.slice(1);
-    const eq = hash.indexOf("=");
-    if (eq !== -1) {
-      const key = hash.slice(0, eq);
-      const val = decodeURIComponent(hash.slice(eq + 1));
-      if (key === "rexc") { rexcEl.value = val; jsonEl.value = ""; loadedFromHash = true; }
-      else if (key === "json") { jsonEl.value = val; rexcEl.value = ""; loadedFromHash = true; }
-      if (loadedFromHash) updateSizes();
+      return val
     }
-  }
 
-  function clearHash() {
-    if (loadedFromHash) {
-      loadedFromHash = false;
-      history.replaceState(null, "", location.pathname + location.search);
+    function updateRefsBtn() {
+      const n = Object.keys(currentRefs).length
+      refsBtn.textContent = n ? `refs {${n}}` : "refs {}"
     }
-  }
 
-  function copyShareUrl(key, value) {
-    const hash = "#" + key + "=" + value.replace(/%/g, "%25").replace(/#/g, "%23");
-    history.replaceState(null, "", location.pathname + location.search + hash);
-    loadedFromHash = true;
-    navigator.clipboard.writeText(location.href).then(() => {
-      setStatus(true, "URL copied!");
-      setTimeout(() => setStatus(true, "OK"), 1500);
-    });
-  }
+    refsBtn.addEventListener("click", () => {
+      refsEditor.value = Object.keys(currentRefs).length ? JSON.stringify(currentRefs, null, 2) : "{}"
+      refsStatusEl.textContent = "OK"
+      refsStatusEl.className = "refs-status"
+      refsModal.classList.add("open")
+      refsEditor.focus()
+    })
 
-  document.getElementById("copy-rexc").addEventListener("click", () => copyShareUrl("rexc", rexcEl.value));
-  document.getElementById("copy-json").addEventListener("click", () => copyShareUrl("json", jsonEl.value));
-
-  let updating = false;
-
-  function setStatus(ok, msg) {
-    statusEl.textContent = msg;
-    statusEl.className = ok ? "ok" : "error";
-  }
-
-  function markValid(el) { el.classList.remove("error"); el.classList.add("valid"); }
-  function markError(el) { el.classList.remove("valid"); el.classList.add("error"); }
-  function markNeutral(el) { el.classList.remove("valid", "error"); }
-
-  // Split a multi-value document into individual values.
-  // Greedily accumulates lines until parseFn succeeds, then starts the next value.
-  function splitValues(text, parseFn) {
-    try { return [parseFn(text)]; } catch (e) {
-      // If it doesn't split into multiple values, throw the original error
-      if (!/\n\S/.test(text)) throw e;
-      var firstError = e;
-    }
-    const chunks = text.split(/\n(?=\S)/);
-    const values = [];
-    let buf = "";
-    for (const chunk of chunks) {
-      buf += (buf ? "\n" : "") + chunk;
+    refsEditor.addEventListener("input", () => {
       try {
-        values.push(parseFn(buf));
-        buf = "";
-      } catch {}
-    }
-    if (buf.trim()) {
-      if (values.length === 0) throw firstError;
-      throw new SyntaxError("Trailing unparseable content: " + firstError.message);
-    }
-    return values;
-  }
+        parseRefs(refsEditor.value)
+        refsStatusEl.textContent = "OK"
+        refsStatusEl.className = "refs-status"
+      } catch (e) {
+        refsStatusEl.textContent = e.message
+        refsStatusEl.className = "refs-status refs-error"
+      }
+    })
 
-  function reencodeFromJson() {
-    try {
-      const value = jsonEl.value.trim();
-      if (!value) return;
-      const values = splitValues(value, JSON.parse);
-      updating = true;
-      rexcEl.value = values.map(v => stringify(v, getOpts())).join("\n");
-      updating = false;
-      updateSizes();
-      save();
-    } catch {}
-  }
-  for (const el of Object.values(optEls)) {
-    el.addEventListener("change", reencodeFromJson);
-  }
+    function closeRefsModal() { refsModal.classList.remove("open") }
+    refsClose.addEventListener("click", closeRefsModal)
+    refsModal.addEventListener("click", (e) => { if (e.target === refsModal) closeRefsModal() })
 
-  rexcEl.addEventListener("input", () => {
-    if (updating) return;
-    clearHash();
-    updating = true;
-    try {
-      const value = rexcEl.value.trim();
-      if (!value) { jsonEl.value = ""; setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonEl); save(); updating = false; return; }
-      const values = splitValues(value, parse);
-      jsonEl.value = values.map(v => JSON.stringify(v, null, 2)).join("\n");
-      setStatus(true, "OK");
-      markValid(rexcEl);
-      markValid(jsonEl);
-      save();
-    } catch (e) {
-      setStatus(false, "REXC: " + e.message);
-      markError(rexcEl);
-      markNeutral(jsonEl);
-    }
-    updateSizes();
-    updating = false;
-  });
+    refsApply.addEventListener("click", () => {
+      try {
+        currentRefs = parseRefs(refsEditor.value)
+        updateRefsBtn()
+        closeRefsModal()
+        reencodeFromJson()
+        save()
+      } catch (e) {
+        refsStatusEl.textContent = e.message
+        refsStatusEl.className = "refs-status refs-error"
+      }
+    })
 
-  jsonEl.addEventListener("input", () => {
-    if (updating) return;
-    clearHash();
-    updating = true;
-    try {
-      const value = jsonEl.value.trim();
-      if (!value) { rexcEl.value = ""; setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonEl); save(); updating = false; return; }
-      const values = splitValues(value, JSON.parse);
-      rexcEl.value = values.map(v => stringify(v, getOpts())).join("\n");
-      setStatus(true, "OK");
-      markValid(rexcEl);
-      markValid(jsonEl);
-      save();
-    } catch (e) {
-      setStatus(false, "JSON: " + e.message);
-      markError(jsonEl);
-      markNeutral(rexcEl);
+    function getEncodeOpts() {
+      const o = Object.fromEntries([...encodeBoolNames, ...sharedOptNames].map(n => [n, optEls[n].checked]))
+      for (const n of encodeNumNames) o[n] = parseInt(optEls[n].value, 10) || 0
+      o.refs = getActiveRefs()
+      return o
     }
-    updateSizes();
-    updating = false;
-  });
-</script>
+    function getDecodeOpts() {
+      const o = Object.fromEntries([...decodeOptNames, ...sharedOptNames].map(n => [n, optEls[n].checked]))
+      o.refs = getActiveRefs()
+      return o
+    }
+
+    const encoder = new TextEncoder()
+    function humanSize(bytes) {
+      if (bytes < 1024) return bytes + " B"
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KiB"
+      return (bytes / (1024 * 1024)).toFixed(2) + " MiB"
+    }
+    function compactJsonSize(text) {
+      try {
+        const values = splitValues(text.trim(), JSON.parse)
+        return encoder.encode(values.map(v => JSON.stringify(v)).join("\n")).length
+      } catch { return null }
+    }
+    function compactRexcSize(text) {
+      if (!optEls.pretty.checked) return null
+      try {
+        const opts = getEncodeOpts()
+        opts.pretty = false
+        const values = splitValues(text.trim(), v => parse(v, getDecodeOpts()))
+        return encoder.encode(values.map(v => stringify(v, opts)).join("\n")).length
+      } catch { return null }
+    }
+    function sizeLabel(raw, compact) {
+      return compact !== null && compact !== raw
+        ? humanSize(raw) + " (" + humanSize(compact) + " compact)"
+        : humanSize(raw)
+    }
+    function updateSizes() {
+      const rexcRaw = encoder.encode(rexcEl.value).length
+      rexcSizeEl.textContent = sizeLabel(rexcRaw, compactRexcSize(rexcEl.value))
+      const jsonRaw = encoder.encode(jsonEl.value).length
+      jsonSizeEl.textContent = sizeLabel(jsonRaw, compactJsonSize(jsonEl.value))
+    }
+
+    function save() {
+      const opts = Object.fromEntries(allBoolNames.map(n => [n, optEls[n].checked]))
+      for (const n of encodeNumNames) opts[n] = parseInt(optEls[n].value, 10) || 0
+      localStorage.setItem("rexc-viewer", JSON.stringify({ rexc: rexcEl.value, json: jsonEl.value, opts, refs: currentRefs, refsEnabled: refsToggle.checked }))
+    }
+    function restore() {
+      try {
+        const s = JSON.parse(localStorage.getItem("rexc-viewer"))
+        if (s) {
+          rexcEl.value = s.rexc || ""; jsonEl.value = s.json || ""
+          if (s.opts) {
+            for (const n of allBoolNames) if (n in s.opts) optEls[n].checked = s.opts[n]
+            for (const n of encodeNumNames) if (n in s.opts) optEls[n].value = s.opts[n]
+          }
+          if (s.refs && typeof s.refs === "object") { currentRefs = s.refs; updateRefsBtn() }
+          if ("refsEnabled" in s) refsToggle.checked = s.refsEnabled
+          updateSizes()
+        }
+      } catch { }
+    }
+    restore()
+
+    // Load from URL hash
+    let loadedFromHash = false
+    if (location.hash.length > 1) {
+      const hash = location.hash.slice(1)
+      const eq = hash.indexOf("=")
+      if (eq !== -1) {
+        const key = hash.slice(0, eq)
+        const val = decodeURIComponent(hash.slice(eq + 1))
+        if (key === "rexc") { rexcEl.value = val; jsonEl.value = ""; loadedFromHash = true }
+        else if (key === "json") { jsonEl.value = val; rexcEl.value = ""; loadedFromHash = true }
+        if (loadedFromHash) updateSizes()
+      }
+    }
+
+    function clearHash() {
+      if (loadedFromHash) {
+        loadedFromHash = false
+        history.replaceState(null, "", location.pathname + location.search)
+      }
+    }
+
+    function copyShareUrl(key, value) {
+      const hash = "#" + key + "=" + value.replace(/%/g, "%25").replace(/#/g, "%23").replace(/\n/g, "%0A").replace(/\r/g, "%0D")
+      history.replaceState(null, "", location.pathname + location.search + hash)
+      loadedFromHash = true
+      navigator.clipboard.writeText(location.href).then(() => {
+        setStatus(true, "URL copied!")
+        setTimeout(() => setStatus(true, "OK"), 1500)
+      })
+    }
+
+    document.getElementById("copy-rexc").addEventListener("click", () => copyShareUrl("rexc", rexcEl.value))
+    document.getElementById("copy-json").addEventListener("click", () => copyShareUrl("json", jsonEl.value))
+
+    let updating = false
+
+    function setStatus(ok, msg) {
+      statusEl.textContent = msg
+      statusEl.className = ok ? "ok" : "error"
+    }
+
+    function markValid(el) { el.classList.remove("error"); el.classList.add("valid") }
+    function markError(el) { el.classList.remove("valid"); el.classList.add("error") }
+    function markNeutral(el) { el.classList.remove("valid", "error") }
+
+    // Split a multi-value document into individual values.
+    // Greedily accumulates lines until parseFn succeeds, then starts the next value.
+    function splitValues(text, parseFn) {
+      try { return [parseFn(text)] } catch (e) {
+        // If it doesn't split into multiple values, throw the original error
+        if (!/\n\S/.test(text)) throw e
+        var firstError = e
+      }
+      const chunks = text.split(/\n(?=\S)/)
+      const values = []
+      let buf = ""
+      for (const chunk of chunks) {
+        buf += (buf ? "\n" : "") + chunk
+        try {
+          values.push(parseFn(buf))
+          buf = ""
+        } catch { }
+      }
+      if (buf.trim()) {
+        if (values.length === 0) throw firstError
+        throw new SyntaxError("Trailing unparseable content: " + firstError.message)
+      }
+      return values
+    }
+
+    function reencodeFromJson() {
+      try {
+        const value = jsonEl.value.trim()
+        if (!value) return
+        const values = splitValues(value, JSON.parse)
+        updating = true
+        rexcEl.value = values.map(v => stringify(v, getEncodeOpts())).join("\n")
+        updating = false
+        updateSizes()
+        save()
+      } catch { }
+    }
+    for (const el of Object.values(optEls)) {
+      el.addEventListener("change", reencodeFromJson)
+      el.addEventListener("input", reencodeFromJson)
+    }
+
+    rexcEl.addEventListener("input", () => {
+      if (updating) return
+      clearHash()
+      updating = true
+      try {
+        const value = rexcEl.value.trim()
+        if (!value) { jsonEl.value = ""; setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonEl); save(); updating = false; return }
+        const values = splitValues(value, v => parse(v, getDecodeOpts()))
+        jsonEl.value = values.map(v => JSON.stringify(v, null, 2)).join("\n")
+        setStatus(true, "OK")
+        markValid(rexcEl)
+        markValid(jsonEl)
+        save()
+      } catch (e) {
+        setStatus(false, "REXC: " + e.message)
+        markError(rexcEl)
+        markNeutral(jsonEl)
+      }
+      updateSizes()
+      updating = false
+    })
+
+    jsonEl.addEventListener("input", () => {
+      if (updating) return
+      clearHash()
+      updating = true
+      try {
+        const value = jsonEl.value.trim()
+        if (!value) { rexcEl.value = ""; setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonEl); save(); updating = false; return }
+        const values = splitValues(value, JSON.parse)
+        rexcEl.value = values.map(v => stringify(v, getEncodeOpts())).join("\n")
+        setStatus(true, "OK")
+        markValid(rexcEl)
+        markValid(jsonEl)
+        save()
+      } catch (e) {
+        setStatus(false, "JSON: " + e.message)
+        markError(jsonEl)
+        markNeutral(rexcEl)
+      }
+      updateSizes()
+      updating = false
+    });
+  </script>
 </body>
+
 </html>

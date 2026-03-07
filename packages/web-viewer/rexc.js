@@ -9,6 +9,7 @@ var BUILTIN_REFS = {
   nif: -Infinity
 };
 var ENCODE_DEFAULTS = {
+  pretty: false,
   bareStrings: true,
   randomAccess: true,
   pointers: true,
@@ -151,7 +152,9 @@ function encode(rootValue, options) {
   const schemas = opts.schemas;
   const pathChains = opts.pathChains;
   const bareStrings = opts.bareStrings;
-  const refs = { ...opts.refs, ...BUILTIN_REFS };
+  const refs = Object.fromEntries(Object.entries({ ...opts.refs }).map(([key, val]) => [makeKey(val), key]));
+  const pretty = opts.pretty;
+  let indentLevel = 0;
   const seenOffsets = {};
   const schemaOffsets = {};
   const seenCosts = {};
@@ -222,10 +225,18 @@ function encode(rootValue, options) {
     const bytes = new TextEncoder().encode(str);
     return pushBytes(bytes);
   }
+  function indent() {
+    pushString(`
+` + "  ".repeat(indentLevel));
+  }
   function writeAny(value, needsSkippable = false) {
     if (!pointers)
       return writeAnyInner(value, needsSkippable);
     const key = makeKey(value);
+    const refKey = refs[key];
+    if (refKey !== undefined) {
+      return pushString(writeStringPair("'", refKey));
+    }
     const seenOffset = seenOffsets[key];
     if (seenOffset !== undefined) {
       const delta = byteLength - seenOffset;
@@ -327,46 +338,111 @@ function encode(rootValue, options) {
     }
     if (!needsSkippable) {
       pushString(reverse ? "[" : "]");
+      if (pretty) {
+        indent();
+      }
     }
+    indentLevel++;
     const before = byteLength;
-    for (let i = value.length - 1;i >= 0; i--) {
+    for (let f = value.length - 1, i = f;i >= 0; i--) {
+      if (pretty && reverse) {
+        if (i === f) {
+          pushString("  ");
+        } else {
+          indent();
+        }
+      }
       writeAny(value[i], randomAccess);
+      if (pretty && !reverse) {
+        indent();
+      }
     }
     const length = byteLength - before;
+    indentLevel--;
+    if (pretty && reverse) {
+      indent();
+    }
     return pushString(needsSkippable ? writeUnsigned(";", length) : reverse ? "]" : "[");
   }
   function writeObject(value, needsSkippable = false) {
     const keys = Object.keys(value);
     if (keys.length === 0) {
-      return pushString("{}");
+      return pushString(":");
     }
     if (!needsSkippable) {
       pushString(reverse ? "{" : "}");
+      if (pretty) {
+        indent();
+      }
     }
+    indentLevel++;
     const before = byteLength;
-    let schemaTarget;
     let keysKey;
+    let schemaTarget;
+    let schemaRef;
     if (schemas) {
       keysKey = makeKey(keys);
-      schemaTarget = schemaOffsets[keysKey];
+      schemaRef = refs[keysKey];
+      schemaTarget = schemaOffsets[keysKey] ?? seenOffsets[keysKey];
     }
-    if (schemaTarget !== undefined) {
+    const useSchema = schemaRef !== undefined || schemaTarget !== undefined;
+    if (useSchema) {
       const values = Object.values(value);
-      for (let i = values.length - 1;i >= 0; i--) {
+      for (let f = values.length - 1, i = f;i >= 0; i--) {
+        if (pretty && reverse) {
+          if (i === f) {
+            pushString("  ");
+          } else {
+            indent();
+          }
+        }
         writeAny(values[i], randomAccess);
+        if (pretty && !reverse) {
+          indent();
+        }
       }
-      pushString(writeUnsigned("^", byteLength - schemaTarget));
+      if (pretty && reverse) {
+        indentLevel--;
+        indent();
+        indentLevel++;
+      }
+      if (schemaRef !== undefined) {
+        pushString(writeStringPair("'", schemaRef));
+      } else if (schemaTarget !== undefined) {
+        pushString(writeUnsigned("^", byteLength - schemaTarget));
+      } else {
+        writeAny(keys, randomAccess);
+      }
+      if (pretty) {
+        pushString(" ");
+      }
     } else {
       const entries = Object.entries(value);
-      for (let i = entries.length - 1;i >= 0; i--) {
+      for (let f = entries.length - 1, i = f;i >= 0; i--) {
         const [key, val] = entries[i];
+        if (pretty && reverse) {
+          if (i === f) {
+            pushString("  ");
+          } else {
+            indent();
+          }
+        }
         writeAny(val, randomAccess);
+        if (pretty)
+          pushString(" ");
         writeAny(key);
+        if (pretty && !reverse) {
+          indent();
+        }
       }
     }
     const length = byteLength - before;
+    indentLevel--;
+    if (pretty && reverse && !useSchema) {
+      indent();
+    }
     const ret = pushString(needsSkippable ? writeUnsigned(":", length) : reverse ? "}" : "{");
-    if (schemas && keysKey && schemaTarget === undefined) {
+    if (schemas && keysKey && !useSchema) {
       schemaOffsets[keysKey] = byteLength;
     }
     return ret;
@@ -439,5 +515,6 @@ export {
   fromB64,
   forwardEncoders,
   encode,
-  decode
+  decode,
+  BUILTIN_REFS
 };
