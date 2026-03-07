@@ -397,7 +397,7 @@ describe("rexc stringify", () => {
 		});
 
 		test("encodes empty object", () => {
-			expect(stringify({})).toBe("{}");
+			expect(stringify({})).toBe(":");
 		});
 
 		test("encodes objects with length prefix when randomAccess is true", () => {
@@ -409,11 +409,21 @@ describe("rexc stringify", () => {
 		});
 	});
 
-	describe.skip("indexes", () => {
+	describe("pretty print", () => {
+		test("pretty prints with indentation", () => {
+			const data = { name: "Alice", age: 30, hobbies: ["reading", "hiking"] };
+			expect(stringify(data, { pretty: true }))
+				.toBe('{\n  name. Alice.\n  age. Y+\n  hobbies. p;\n    reading.\n    hiking.\n}');
+			expect(stringify(data, { pretty: true, reverse: true }))
+				.toBe('{\n    .hiking\n    .reading\n  ;m .hobbies\n  +Y .age\n  .Alice .name\n}')
+		})
+	});
+
+	describe("indexes", () => {
 		test("embeds index for large arrays", () => {
 			const arr = Array.from({ length: 12 }, (_, i) => i);
 			const encoded = stringify(arr, { indexes: 10 });
-			expect(encoded).toContain("#");
+			expect(encoded).toBe("[#0,+2+4+6+8+a+c+e+g+i+k+m+]");
 		});
 
 		test("skips index for small arrays", () => {
@@ -445,6 +455,44 @@ describe("rexc stringify", () => {
 		test("does not deduplicate when pointers disabled", () => {
 			const encoded = stringify(["hello", "hello"], { pointers: false, randomAccess: false });
 			expect(encoded).toBe("[hello.hello.]");
+		});
+	});
+
+	describe("refs", () => {
+		test("encodes value matching a ref as ref shorthand", () => {
+			expect(stringify("hello", { refs: { H: "hello" }, pointers: true, randomAccess: false }))
+				.toBe("H'");
+		});
+
+		test("encodes number matching a ref", () => {
+			expect(stringify(42, { refs: { X: 42 }, pointers: true, randomAccess: false }))
+				.toBe("X'");
+		});
+
+		test("encodes refs inside arrays", () => {
+			expect(stringify(["hello", "world"], { refs: { H: "hello" }, pointers: true, randomAccess: false }))
+				.toBe("[H'world.]");
+		});
+
+		test("encodes multiple refs", () => {
+			expect(stringify(["hello", 42], { refs: { H: "hello", X: 42 }, pointers: true, randomAccess: false }))
+				.toBe("[H'X']");
+		});
+
+		test("encodes schema ref for repeated object shapes", () => {
+			const data = [{ a: 1, b: 2 }, { a: 3, b: 4 }];
+			expect(stringify(data, { refs: { S: ["a", "b"] }, pointers: true, schemas: true, randomAccess: false }))
+				.toBe("[{S'2+4+}{S'6+8+}]");
+		});
+
+		test("encodes refs in reverse mode", () => {
+			expect(stringify("hello", { refs: { H: "hello" }, pointers: true, randomAccess: false, reverse: true }))
+				.toBe("'H");
+		});
+
+		test("does not use refs when pointers are disabled", () => {
+			expect(stringify("hello", { refs: { H: "hello" }, pointers: false, randomAccess: false }))
+				.toBe("hello.");
 		});
 	});
 

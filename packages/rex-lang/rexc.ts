@@ -13,8 +13,8 @@ export interface RexCEncodeOptions {
 	schemas?: boolean;
 	// Enable path chains. (substring de-dupe in paths, requires pointers)
 	pathChains?: boolean;
-	// indexThreshold (lists/maps greater than or equal to this have indexes added))
-	indexThreshold?: number;
+	// indexes (lists/maps greater than or equal to this have indexes added))
+	indexes?: number;
 	// Encode in reverse mode (which enables streaming writers).
 	reverse?: boolean;
 	// Stream to callback instead of returning buffer.
@@ -49,7 +49,7 @@ const ENCODE_DEFAULTS = {
 	pointers: true,
 	schemas: true,
 	pathChains: true,
-	indexThreshold: 10,
+	indexes: 10,
 	reverse: false,
 	refs: {},
 } as const satisfies Partial<RexCEncodeOptions>;
@@ -226,6 +226,7 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 		(Object.entries({ ...opts.refs }) as [string, unknown][])
 			.map(([key, val]) => [makeKey(val), key]));
 	const pretty = opts.pretty
+	const indexes = opts.indexes
 	let indentLevel = 0;
 	// Map from value identity to encoded offset, used for pointers
 	const seenOffsets: Record<string, number> = {};
@@ -426,6 +427,7 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 			}
 		}
 		indentLevel++;
+		const offsets = []
 		const before = byteLength;
 		for (let f = value.length - 1, i = f; i >= 0; i--) {
 			if (pretty && reverse) {
@@ -436,11 +438,16 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 				}
 			}
 			writeAny(value[i], randomAccess);
+			offsets[i] = byteLength;
 			if (pretty && !reverse) {
 				indent()
 			}
 		}
 		const length = byteLength - before;
+		if (value.length > indexes) {
+			const width = Math.ceil(Math.log(byteLength - offsets[offsets.length - 1]! + 1) / Math.log(64));
+			console.log({ length, width, offsets })
+		}
 		indentLevel--;
 		if (pretty && reverse) {
 			indent()

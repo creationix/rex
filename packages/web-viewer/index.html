@@ -248,7 +248,7 @@
     <label><input type="checkbox" id="opt-schemas" checked> schemas</label>
     <label><input type="checkbox" id="opt-pathChains" checked> pathChains</label>
     <label><input type="checkbox" id="opt-pretty"> pretty</label>
-    <label>idxThresh <input type="number" id="opt-indexThreshold" value="10" min="0"
+    <label>idxThresh <input type="number" id="opt-indexes" value="10" min="0"
         style="width:40px; background:#333; color:#ccc; border:1px solid #555; border-radius:2px; padding:1px 4px; font-size:11px;"></label>
     <span style="color:#555">|</span>
     <label><input type="checkbox" id="opt-reverse"> reverse</label>
@@ -292,7 +292,7 @@
     const jsonSizeEl = document.getElementById("json-size")
 
     const encodeBoolNames = ["bareStrings", "randomAccess", "pointers", "schemas", "pathChains", "pretty"]
-    const encodeNumNames = ["indexThreshold"]
+    const encodeNumNames = ["indexes"]
     const decodeOptNames = ["lazy"]
     const sharedOptNames = ["reverse"]
     const allBoolNames = [...encodeBoolNames, ...decodeOptNames, ...sharedOptNames]
