@@ -313,12 +313,12 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 	}
 
 	function writeAny(value: unknown, needsSkippable = false) {
-		if (!pointers) return writeAnyInner(value, needsSkippable);
 		const key = makeKey(value);
 		const refKey = refs[key];
 		if (refKey !== undefined) {
 			return pushString(writeStringPair("'", refKey));
 		}
+		if (!pointers) return writeAnyInner(value, needsSkippable);
 		const seenOffset = seenOffsets[key];
 		if (seenOffset !== undefined) {
 			const delta = byteLength - seenOffset;
