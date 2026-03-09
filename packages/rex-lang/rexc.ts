@@ -14,7 +14,7 @@ export interface RexCEncodeOptions {
 	// Enable path chains. (substring de-dupe in paths, requires pointers)
 	pathChains?: boolean;
 	// indexes (lists/maps greater than or equal to this have indexes added))
-	indexes?: number;
+	indexes?: number | boolean;
 	// Encode in reverse mode (which enables streaming writers).
 	reverse?: boolean;
 	// Stream to callback instead of returning buffer.
@@ -226,7 +226,7 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 		(Object.entries({ ...opts.refs }) as [string, unknown][])
 			.map(([key, val]) => [makeKey(val), key]));
 	const pretty = opts.pretty
-	const indexes = opts.indexes
+	const indexThreshold = typeof opts.indexes === "number" ? opts.indexes : opts.indexes === true ? 10 : Infinity;
 	let indentLevel = 0;
 	// Map from value identity to encoded offset, used for pointers
 	const seenOffsets: Record<string, number> = {};
@@ -443,11 +443,20 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 				indent()
 			}
 		}
-		const length = byteLength - before;
-		if (value.length > indexes) {
-			const width = Math.ceil(Math.log(byteLength - offsets[offsets.length - 1]! + 1) / Math.log(64));
-			console.log({ length, width, offsets })
+		if (value.length > indexThreshold) {
+			const lastOffset = offsets[offsets.length - 1] as number
+			const width = Math.ceil(Math.log(byteLength - lastOffset + 1) / Math.log(64));
+			const pointers = offsets.map(offset => toB64(byteLength - offset).padStart(width, '0')).join('');
+			pushString(pointers)
+			if (width > 8) {
+				throw new Error(`Index width exceeds maximum of 8 characters: ${width}`);
+			}
+			pushString(writeUnsigned('#', (value.length << 3) | (width - 1)));
+			if (pretty) {
+				pushString(' ')
+			}
 		}
+		const length = byteLength - before;
 		indentLevel--;
 		if (pretty && reverse) {
 			indent()
