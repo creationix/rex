@@ -419,11 +419,21 @@ describe("rexc stringify", () => {
 		})
 	});
 
-	describe.skip("indexes", () => {
-		test("embeds index for large arrays", () => {
+	describe.only("indexes", () => {
+		test('embed index into small array', () => {
+			const arr = [1, 2, 3]
+			const encoded = stringify(arr, { indexes: 2 });
+			expect(encoded).toBe("[o#0242+4+6+]");
+		});
+		test("embeds index for medium arrays", () => {
 			const arr = Array.from({ length: 12 }, (_, i) => i);
 			const encoded = stringify(arr, { indexes: 10 });
-			expect(encoded).toBe("[#0,+2+4+6+8+a+c+e+g+i+k+m+]");
+			expect(encoded).toBe("[1w#013579bdfhjl+2+4+6+8+a+c+e+g+i+k+m+]");
+		});
+		test("embeds index for large arrays", () => {
+			const arr = Array.from({ length: 40 }, (_, i) => i);
+			const encoded = stringify(arr, { indexes: 30 });
+			expect(encoded).toBe("[51#0001030507090b0d0f0h0j0l0n0p0r0t0v0x0z0B0D0F0H0J0L0N0P0R0T0V0X0Z0_1215181b1e1h1k+2+4+6+8+a+c+e+g+i+k+m+o+q+s+u+w+y+A+C+E+G+I+K+M+O+Q+S+U+W+Y+-+10+12+14+16+18+1a+1c+1e+]");
 		});
 
 		test("skips index for small arrays", () => {
