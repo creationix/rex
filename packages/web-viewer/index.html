@@ -112,6 +112,23 @@
       color: #888;
     }
 
+    #rexc {
+      flex: 1;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 13px;
+      min-height: 0;
+    }
+
+    #rexc.valid {
+      box-shadow: inset 0 0 0 2px #4ec9b0;
+    }
+
+    #rexc.error {
+      box-shadow: inset 0 0 0 2px #f48771;
+    }
+
     textarea {
       flex: 1;
       resize: none;
@@ -124,21 +141,10 @@
       background: #1e1e1e;
       color: #d4d4d4;
       tab-size: 2;
-      overflow-wrap: break-word;
-      word-break: break-all;
-      hyphens: none;
     }
 
     textarea::placeholder {
       color: #555;
-    }
-
-    textarea.valid {
-      box-shadow: inset 0 0 0 2px #4ec9b0;
-    }
-
-    textarea.error {
-      box-shadow: inset 0 0 0 2px #f48771;
     }
 
     #json-editor {
@@ -273,7 +279,6 @@
   <div class="options">
     <span style="color:#888">Encode:</span>
     <label><input type="checkbox" id="opt-bareStrings" checked> bareStrings</label>
-    <label><input type="checkbox" id="opt-randomAccess" checked> randomAccess</label>
     <label><input type="checkbox" id="opt-pointers" checked> pointers</label>
     <label><input type="checkbox" id="opt-schemas" checked> schemas</label>
     <label><input type="checkbox" id="opt-pathChains" checked> pathChains</label>
@@ -304,7 +309,7 @@
   <div class="panes">
     <div class="pane">
       <label><span class="name" id="copy-rexc">REXC</span> <span class="size" id="rexc-size">0 B</span></label>
-      <textarea id="rexc" placeholder="Paste REXC here..." spellcheck="false"></textarea>
+      <div id="rexc"></div>
     </div>
     <div class="pane">
       <label><span class="name" id="copy-json">JSON</span> <span class="size" id="json-size">0 B</span></label>

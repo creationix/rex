@@ -1,0 +1,9 @@
+{
+	"name": "web-viewer",
+	"private": true,
+	"dependencies": {
+		"@codemirror/lang-json": "^6.0.2",
+		"@codemirror/theme-one-dark": "^6.1.3",
+		"codemirror": "^6.0.2"
+	}
+}

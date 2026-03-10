@@ -1,15 +1,199 @@
-import { stringify, parse, BUILTIN_REFS } from "../../rex-lang/rexc.ts"
+import { stringify, parse, BUILTIN_REFS, fromZigZag } from "../../rex-lang/rexc.ts"
 import { EditorView, basicSetup, json as jsonLang, oneDark } from "./codemirror.ts"
+import { RexcTreeView } from "./rexc-tree.ts"
+import type { RexcNode, RexcParser } from "./rexc-parser.ts"
 
-const rexcEl = document.getElementById("rexc") as HTMLTextAreaElement
+const textDecoder = new TextDecoder()
+
+function skipB64(input: Uint8Array, offset: number): number {
+  while (offset < input.length) {
+    const c = input[offset]!
+    if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) || (c >= 0x30 && c <= 0x39) || c === 0x2D || c === 0x5F) {
+      offset++
+    } else {
+      break
+    }
+  }
+  return offset
+}
+
+// Map a b64 ascii code to its 6-bit value, or -1 if it's not a valid b64 char
+// Order: 0-9 a-z A-Z - _
+function b64Value(input: number): number {
+  if (input >= 0x30 && input <= 0x39) return input - 0x30       // '0'-'9' → 0-9
+  if (input >= 0x61 && input <= 0x7A) return input - 0x61 + 10  // 'a'-'z' → 10-35
+  if (input >= 0x41 && input <= 0x5A) return input - 0x41 + 36  // 'A'-'Z' → 36-61
+  if (input === 0x2D) return 62                                  // '-' → 62
+  if (input === 0x5F) return 63                                  // '_' → 63
+  return -1
+}
+
+// start offset is inclusive, end offset is exclusive
+function parseB64(input: Uint8Array, start: number, end: number): number {
+  let val = 0
+  for (let i = start; i < end; i++) {
+    val = val * 64 + b64Value(input[i]!)
+  }
+  return val
+}
+
+let parseCache: Record<number, RexcNode> = {}
+
+// --- Stub parser (replace with real implementation) ---
+const stubParser: RexcParser = {
+  parseRoot(input) {
+    parseCache = {}
+    const root = parseAny(input, 0, input.length)
+    root.end ??= input.length
+    return root
+  },
+  parseChildren(input, parent): RexcNode[] {
+    let offset = parent.offset
+    const children: RexcNode[] = []
+    while (offset < parent.end) {
+      let key: string | undefined
+      if (parent.kind === "object") {
+        const keyNode = parseAny(input, offset, parent.end)
+        console.log({ keyNode })
+        if (keyNode.kind !== "string") {
+          throw new SyntaxError("Expected string key in object at offset " + offset)
+        }
+        key = keyNode.value
+        offset = keyNode.end ?? offset
+      }
+      console.log({ key })
+      const valueNode = parseAny(input, offset, parent.end)
+      valueNode.key = key
+      children.push(valueNode)
+      offset = valueNode.end
+    }
+    return children
+  }
+}
+
+function parseAny(input: Uint8Array, start: number, end: number): RexcNode {
+  const cached = parseCache[start]
+  if (cached) return cached
+  const value = parseAnyInner(input, start, end)
+  console.log({ start, end, value })
+  parseCache[start] = value
+  return value
+}
+
+function parseAnyInner(input: Uint8Array, offset: number, end: number): RexcNode {
+  const start = offset
+  const tagOffset = skipB64(input, offset)
+  if (tagOffset >= end) {
+    throw new SyntaxError("Unexpected end of input while parsing value")
+  }
+  const tag = input[tagOffset]
+  offset = tagOffset + 1
+  switch (tag) {
+    // ":" object
+    case 0x3A: {
+      const end = offset + parseB64(input, start, tagOffset)
+      return { kind: 'object', start, offset, end }
+    }
+    // ";" array
+    case 0x3B: {
+      const end = offset + parseB64(input, start, tagOffset)
+      return { kind: 'array', start, offset, end }
+    }
+    // "." bare string
+    case 0x2E: {
+      return {
+        kind: 'string',
+        start, end: offset,
+        value: textDecoder.decode(input.subarray(start, tagOffset))
+      }
+    }
+    // "," string
+    case 0x2C: {
+      const length = parseB64(input, start, tagOffset)
+      return {
+        kind: 'string',
+        start: start, end: offset + length,
+        value: textDecoder.decode(input.subarray(offset, offset + length))
+      }
+    }
+    // "+" zigzag integer
+    case 0x2B: {
+      return {
+        kind: 'number',
+        start, end: offset,
+        value: fromZigZag(parseB64(input, start, tagOffset))
+      }
+    }
+    // "/" Path Chain
+    case 0x2F: {
+      const end = offset + parseB64(input, start, tagOffset)
+      return {
+        kind: 'pathChain',
+        start, offset, end,
+      }
+    }
+    // "^" pointer
+    case 0x5E:
+      return {
+        kind: 'pointer',
+        start, end: offset,
+        targetOffset: offset + parseB64(input, start, tagOffset),
+      }
+    default:
+      console.warn("Unknown tag " + String.fromCharCode(tag) + " at offset " + offset)
+      return {
+        kind: 'error',
+        start, end: offset,
+        value: JSON.stringify(textDecoder.decode(input.subarray(start, end)))
+      }
+      throw new Error("TODO: implement real parser instead of stub")
+  }
+}
+
+// --- DOM elements ---
+const rexcContainer = document.getElementById("rexc")!
 const jsonWrap = document.getElementById("json-editor")!
 const statusEl = document.getElementById("status")!
 const rexcSizeEl = document.getElementById("rexc-size")!
 const jsonSizeEl = document.getElementById("json-size")!
 
+let rexcText = ''
 let updating = false
 
-// CodeMirror 6 JSON editor
+// --- REXC tree view ---
+const treeView = new RexcTreeView(rexcContainer, stubParser)
+
+function setRexc(text: string) {
+  rexcText = text
+  treeView.setValue(text)
+}
+
+treeView.onPaste = (text) => {
+  if (updating) return
+  clearHash()
+  updating = true
+  rexcText = text
+  treeView.setValue(text)
+  try {
+    const value = text.trim()
+    if (!value) { setJson(""); setStatus(true, "OK"); markNeutral(rexcContainer); markNeutral(jsonWrap); save(); updating = false; return }
+    const decoded = parse(value, getDecodeOpts())
+    setJson(JSON.stringify(decoded, null, 2))
+    setStatus(true, "OK")
+    markValid(rexcContainer)
+    markValid(jsonWrap)
+    save()
+  } catch (e: any) {
+    setStatus(false, "REXC: " + e.message)
+    treeView.setError(e.message)
+    markError(rexcContainer)
+    markNeutral(jsonWrap)
+  }
+  updateSizes()
+  updating = false
+}
+
+// --- CodeMirror 6 JSON editor ---
 const jsonEditor = new EditorView({
   parent: jsonWrap,
   extensions: [
@@ -28,7 +212,8 @@ function setJson(text: string) {
   jsonEditor.dispatch({ changes: { from: 0, to: jsonEditor.state.doc.length, insert: text } })
 }
 
-const encodeBoolNames = ["bareStrings", "randomAccess", "pointers", "schemas", "pathChains"]
+// --- Options ---
+const encodeBoolNames = ["bareStrings", "pointers", "schemas", "pathChains"]
 const encodeNumNames = ["indexes"]
 const decodeOptNames = ["lazy"]
 const sharedOptNames = ["reverse"]
@@ -36,7 +221,7 @@ const allBoolNames = [...encodeBoolNames, ...decodeOptNames, ...sharedOptNames]
 const allOptNames = [...allBoolNames, ...encodeNumNames]
 const optEls = Object.fromEntries(allOptNames.map(n => [n, document.getElementById("opt-" + n)])) as Record<string, HTMLInputElement>
 
-// Refs modal
+// --- Refs modal ---
 const refsBtn = document.getElementById("refs-btn")!
 const refsToggle = document.getElementById("opt-refsEnabled") as HTMLInputElement
 const refsModal = document.getElementById("refs-modal")!
@@ -103,19 +288,21 @@ refsApply.addEventListener("click", () => {
   }
 })
 
+// --- Encode/decode opts ---
 function getEncodeOpts() {
-  const o: any = Object.fromEntries([...encodeBoolNames, ...sharedOptNames].map(n => [n, optEls[n].checked]))
-  for (const n of encodeNumNames) o[n] = parseInt(optEls[n].value, 10) || 0
+  const o: any = Object.fromEntries([...encodeBoolNames, ...sharedOptNames].map(n => [n, optEls[n]!.checked]))
+  for (const n of encodeNumNames) o[n] = parseInt(optEls[n]!.value, 10) || 0
   o.refs = getActiveRefs()
   return o
 }
 function getDecodeOpts() {
-  const o: any = Object.fromEntries([...decodeOptNames, ...sharedOptNames].map(n => [n, optEls[n].checked]))
+  const o: any = Object.fromEntries([...decodeOptNames, ...sharedOptNames].map(n => [n, optEls[n]!.checked]))
   o.refs = getActiveRefs()
   return o
 }
 
-const encoder = new TextEncoder()
+// --- Size display ---
+const textEncoder = new TextEncoder()
 function humanSize(bytes: number) {
   if (bytes < 1024) return bytes + " B"
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KiB"
@@ -123,8 +310,7 @@ function humanSize(bytes: number) {
 }
 function compactJsonSize(text: string) {
   try {
-    const values = splitValues(text.trim(), JSON.parse)
-    return encoder.encode(values.map(v => JSON.stringify(v)).join("\n")).length
+    return textEncoder.encode(JSON.stringify(JSON.parse(text.trim()))).length
   } catch { return null }
 }
 function sizeLabel(raw: number, compact: number | null) {
@@ -133,27 +319,29 @@ function sizeLabel(raw: number, compact: number | null) {
     : humanSize(raw)
 }
 function updateSizes() {
-  const rexcRaw = encoder.encode(rexcEl.value).length
+  const rexcRaw = textEncoder.encode(rexcText).length
   rexcSizeEl.textContent = sizeLabel(rexcRaw, rexcRaw)
   const jsonText = getJson()
-  const jsonRaw = encoder.encode(jsonText).length
+  const jsonRaw = textEncoder.encode(jsonText).length
   jsonSizeEl.textContent = sizeLabel(jsonRaw, compactJsonSize(jsonText))
 }
 
+// --- Persistence ---
 function save() {
-  const opts = Object.fromEntries(allBoolNames.map(n => [n, optEls[n].checked]))
-  for (const n of encodeNumNames) (opts as any)[n] = parseInt(optEls[n].value, 10) || 0
-  localStorage.setItem("rexc-viewer", JSON.stringify({ rexc: rexcEl.value, json: getJson(), opts, refs: currentRefs, refsEnabled: refsToggle.checked }))
+  const opts = Object.fromEntries(allBoolNames.map(n => [n, optEls[n]!.checked]))
+  for (const n of encodeNumNames) (opts as any)[n] = parseInt(optEls[n]!.value, 10) || 0
+  localStorage.setItem("rexc-viewer", JSON.stringify({ rexc: rexcText, json: getJson(), opts, refs: currentRefs, refsEnabled: refsToggle.checked }))
 }
 function restore() {
   try {
     const s = JSON.parse(localStorage.getItem("rexc-viewer")!)
     if (s) {
-      rexcEl.value = s.rexc || ""
+      rexcText = s.rexc || ""
+      treeView.setValue(rexcText)
       updating = true; setJson(s.json || ""); updating = false
       if (s.opts) {
-        for (const n of allBoolNames) if (n in s.opts) optEls[n].checked = s.opts[n]
-        for (const n of encodeNumNames) if (n in s.opts) optEls[n].value = s.opts[n]
+        for (const n of allBoolNames) if (n in s.opts) optEls[n]!.checked = s.opts[n]
+        for (const n of encodeNumNames) if (n in s.opts) optEls[n]!.value = s.opts[n]
       }
       if (s.refs && typeof s.refs === "object") { currentRefs = s.refs; updateRefsBtn() }
       if ("refsEnabled" in s) refsToggle.checked = s.refsEnabled
@@ -163,7 +351,7 @@ function restore() {
 }
 restore()
 
-// Load from URL hash
+// --- URL hash loading ---
 let loadedFromHash = false
 if (location.hash.length > 1) {
   const hash = location.hash.slice(1)
@@ -171,8 +359,8 @@ if (location.hash.length > 1) {
   if (eq !== -1) {
     const key = hash.slice(0, eq)
     const val = decodeURIComponent(hash.slice(eq + 1))
-    if (key === "rexc") { rexcEl.value = val; updating = true; setJson(""); updating = false; loadedFromHash = true }
-    else if (key === "json") { updating = true; setJson(val); updating = false; rexcEl.value = ""; loadedFromHash = true }
+    if (key === "rexc") { setRexc(val); updating = true; setJson(""); updating = false; loadedFromHash = true }
+    else if (key === "json") { updating = true; setJson(val); updating = false; setRexc(""); loadedFromHash = true }
     if (loadedFromHash) updateSizes()
   }
 }
@@ -194,9 +382,10 @@ function copyShareUrl(key: string, value: string) {
   })
 }
 
-document.getElementById("copy-rexc")!.addEventListener("click", () => copyShareUrl("rexc", rexcEl.value))
+document.getElementById("copy-rexc")!.addEventListener("click", () => copyShareUrl("rexc", rexcText))
 document.getElementById("copy-json")!.addEventListener("click", () => copyShareUrl("json", getJson()))
 
+// --- Status + validation ---
 function setStatus(ok: boolean, msg: string) {
   statusEl.textContent = msg
   statusEl.className = ok ? "ok" : "error"
@@ -206,38 +395,15 @@ function markValid(el: Element) { el.classList.remove("error"); el.classList.add
 function markError(el: Element) { el.classList.remove("valid"); el.classList.add("error") }
 function markNeutral(el: Element) { el.classList.remove("valid", "error") }
 
-// Split a multi-value document into individual values.
-// Greedily accumulates lines until parseFn succeeds, then starts the next value.
-function splitValues(text: string, parseFn: (s: string) => unknown) {
-  try { return [parseFn(text)] } catch (e) {
-    // If it doesn't split into multiple values, throw the original error
-    if (!/\n\S/.test(text)) throw e
-    var firstError = e as Error
-  }
-  const chunks = text.split(/\n(?=\S)/)
-  const values: unknown[] = []
-  let buf = ""
-  for (const chunk of chunks) {
-    buf += (buf ? "\n" : "") + chunk
-    try {
-      values.push(parseFn(buf))
-      buf = ""
-    } catch { }
-  }
-  if (buf.trim()) {
-    if (values.length === 0) throw firstError
-    throw new SyntaxError("Trailing unparseable content: " + firstError!.message)
-  }
-  return values
-}
-
+// --- JSON → REXC ---
 function reencodeFromJson() {
   try {
     const value = getJson().trim()
     if (!value) return
-    const values = splitValues(value, JSON.parse)
+    const parsed = JSON.parse(value)
     updating = true
-    rexcEl.value = values.map(v => stringify(v, getEncodeOpts())).join("\n")
+    rexcText = stringify(parsed, getEncodeOpts()) ?? ''
+    treeView.setValue(rexcText)
     updating = false
     updateSizes()
     save()
@@ -248,45 +414,25 @@ for (const el of Object.values(optEls)) {
   el.addEventListener("input", reencodeFromJson)
 }
 
-rexcEl.addEventListener("input", () => {
-  if (updating) return
-  clearHash()
-  updating = true
-  try {
-    const value = rexcEl.value.trim()
-    if (!value) { setJson(""); setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonWrap); save(); updating = false; return }
-    const values = splitValues(value, v => parse(v, getDecodeOpts()))
-    setJson(values.map(v => JSON.stringify(v, null, 2)).join("\n"))
-    setStatus(true, "OK")
-    markValid(rexcEl)
-    markValid(jsonWrap)
-    save()
-  } catch (e: any) {
-    setStatus(false, "REXC: " + e.message)
-    markError(rexcEl)
-    markNeutral(jsonWrap)
-  }
-  updateSizes()
-  updating = false
-})
-
+// --- JSON input handler ---
 function onJsonInput() {
   if (updating) return
   clearHash()
   updating = true
   try {
     const value = getJson().trim()
-    if (!value) { rexcEl.value = ""; setStatus(true, "OK"); markNeutral(rexcEl); markNeutral(jsonWrap); save(); updating = false; return }
-    const values = splitValues(value, JSON.parse)
-    rexcEl.value = values.map(v => stringify(v, getEncodeOpts())).join("\n")
+    if (!value) { setRexc(""); setStatus(true, "OK"); markNeutral(rexcContainer); markNeutral(jsonWrap); save(); updating = false; return }
+    const parsed = JSON.parse(value)
+    rexcText = stringify(parsed, getEncodeOpts()) ?? ''
+    treeView.setValue(rexcText)
     setStatus(true, "OK")
-    markValid(rexcEl)
+    markValid(rexcContainer)
     markValid(jsonWrap)
     save()
   } catch (e: any) {
     setStatus(false, "JSON: " + e.message)
     markError(jsonWrap)
-    markNeutral(rexcEl)
+    markNeutral(rexcContainer)
   }
   updateSizes()
   updating = false
