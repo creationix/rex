@@ -370,14 +370,12 @@ describe("rexc stringify", () => {
 
 	describe("arrays", () => {
 		test("encodes simple arrays", () => {
-			expect(stringify([1, 2, 3])).toBe("[2+4+6+]");
+			expect(stringify([1, 2, 3])).toBe("6;2+4+6+");
 		});
 
-		test("encodes arrays as values with length prefix when randomAccess is true", () => {
-			const encoded = stringify([[1, 2, 3]], { randomAccess: true });
-			expect(encoded).toBe("[6;2+4+6+]")
-			const encoded2 = stringify([[1, 2, 3]], { randomAccess: false });
-			expect(encoded2).toBe("[[2+4+6+]]");
+		test("encodes arrays as values with length prefix", () => {
+			const encoded = stringify([[1, 2, 3]], {});
+			expect(encoded).toBe("8;6;2+4+6+")
 		});
 
 		test("encodes empty array", () => {
@@ -385,55 +383,66 @@ describe("rexc stringify", () => {
 		});
 
 		test("encodes nested arrays", () => {
-			const encoded = stringify([[1], [2]], { randomAccess: false });
-			expect(encoded).toBe("[[2+][4+]]");
+			const encoded = stringify([[1], [2]]);
+			expect(encoded).toBe("8;2;2+2;4+");
 		});
+
+		test('encodes arrays with different formats', () => {
+			const data = [[1, 2], [3, 4]]
+			expect(stringify(data, { reverse: false })).toBe("c;4;2+4+4;6+8+")
+			expect(stringify(data, { reverse: true })).toBe("+8+6;4+4+2;4;c")
+			expect(stringify(data, { reverse: false, indexes: 0 })).toBe("o;g#0a8;g#022+4+8;g#026+8+")
+			expect(stringify(data, { reverse: true, indexes: 0 })).toBe("+8+602#g;8+4+202#g;80a#g;o")
+		})
+
 	});
 
 	describe("objects", () => {
 		test("encodes simple objects", () => {
-			expect(stringify({ color: "red", size: 42 }, { randomAccess: false }))
-				.toBe("{color.red.size.1k+}");
+			expect(stringify({ color: "red", size: 42 }))
+				.toBe("i:color.red.size.1k+");
 		});
 
 		test("encodes empty object", () => {
 			expect(stringify({})).toBe(":");
 		});
 
-		test("encodes objects with length prefix when randomAccess is true", () => {
-			const encoded = stringify([{ a: 1 }], { randomAccess: true });
+		test("encodes objects with length prefix", () => {
+			const encoded = stringify([{ a: 1 }]);
 			// Should have a length prefix before {
-			expect(encoded).toBe("[4:a.2+]")
-			const encoded2 = stringify([{ a: 1 }], { randomAccess: false });
-			expect(encoded2).toBe("[{a.2+}]");
+			expect(encoded).toBe("6;4:a.2+")
+		});
+
+		test("encodes objects with different formats", () => {
+			const data = { a: { b: 1, c: 1 }, d: { e: 3, f: 4 } }
+			expect(stringify(data, { reverse: false })).toBe("o:a.8:b.2+c.2+d.8:e.6+f.8+")
+			expect(stringify(data, { reverse: true })).toBe("+8.f+6.e:8.d+2.c+2.b:8.a:o")
+			expect(stringify(data, { reverse: false, indexes: 0 })).toBe("A:g#0ga.c:g#04b.2+c.2+d.c:g#04e.6+f.8+")
+			expect(stringify(data, { reverse: true, indexes: 0 })).toBe("+8.f+6.e04#g:c.d+2.c+2.b04#g:c.a0g#g:A")
+		});
+
+		test("object keys are sorted when indexes enabled", () => {
+			const obj = { c: 3, a: 1, b: 2 };
+			const encoded = stringify(obj, { indexes: 2 });
+			expect(encoded).toBe("h:o#480c.6+a.2+b.4+");
 		});
 	});
 
-	describe("pretty print", () => {
-		test("pretty prints with indentation", () => {
-			const data = { name: "Alice", age: 30, hobbies: ["reading", "hiking"] };
-			expect(stringify(data, { pretty: true }))
-				.toBe('{\n  name. Alice.\n  age. Y+\n  hobbies. p;\n    reading.\n    hiking.\n}');
-			expect(stringify(data, { pretty: true, reverse: true }))
-				.toBe('{\n    .hiking\n    .reading\n  ;m .hobbies\n  +Y .age\n  .Alice .name\n}')
-		})
-	});
-
-	describe.only("indexes", () => {
+	describe("indexes", () => {
 		test('embed index into small array', () => {
 			const arr = [1, 2, 3]
 			const encoded = stringify(arr, { indexes: 2 });
-			expect(encoded).toBe("[o#0242+4+6+]");
+			expect(encoded).toBe("b;o#0242+4+6+");
 		});
 		test("embeds index for medium arrays", () => {
 			const arr = Array.from({ length: 12 }, (_, i) => i);
 			const encoded = stringify(arr, { indexes: 10 });
-			expect(encoded).toBe("[1w#013579bdfhjl+2+4+6+8+a+c+e+g+i+k+m+]");
+			expect(encoded).toBe("C;1w#013579bdfhjl+2+4+6+8+a+c+e+g+i+k+m+");
 		});
 		test("embeds index for large arrays", () => {
 			const arr = Array.from({ length: 40 }, (_, i) => i);
 			const encoded = stringify(arr, { indexes: 30 });
-			expect(encoded).toBe("[51#0001030507090b0d0f0h0j0l0n0p0r0t0v0x0z0B0D0F0H0J0L0N0P0R0T0V0X0Z0_1215181b1e1h1k+2+4+6+8+a+c+e+g+i+k+m+o+q+s+u+w+y+A+C+E+G+I+K+M+O+Q+S+U+W+Y+-+10+12+14+16+18+1a+1c+1e+]");
+			expect(encoded).toBe("2G;51#0001030507090b0d0f0h0j0l0n0p0r0t0v0x0z0B0D0F0H0J0L0N0P0R0T0V0X0Z0_1215181b1e1h1k+2+4+6+8+a+c+e+g+i+k+m+o+q+s+u+w+y+A+C+E+G+I+K+M+O+Q+S+U+W+Y+-+10+12+14+16+18+1a+1c+1e+");
 		});
 
 		test("skips index for small arrays", () => {
@@ -446,25 +455,42 @@ describe("rexc stringify", () => {
 			const encoded = stringify(arr, { indexes: false });
 			expect(encoded).not.toContain("#");
 		});
-	});
+
+		test('indices for maps', () => {
+			const obj = { a: 1, b: 2, c: 3 };
+			const encoded = stringify(obj, { indexes: 2 });
+			expect(encoded).toBe("h:o#048a.2+b.4+c.6+");
+		})
+
+		test('map indexes sort keys', () => {
+			const obj = { c: 3, a: 1, b: 2 };
+			const encoded = stringify(obj, { indexes: 2 });
+			expect(encoded).toBe("h:o#480c.6+a.2+b.4+");
+		})
+
+		test('schema objects can have indices on values', () => {
+			const data = [{ name: "alice", age: 1 }, { name: "bob", age: 2 }];
+			expect(stringify(data, { indexes: 1, schemas: true }))
+				.toBe("F;g#0ge:c^g#06alice.2+j:g#90name.bob.age.4+");
+			expect(stringify(data, { indexes: 1, schemas: true, reverse: true }))
+				.toBe("+4.age.bob.name90#g:j+2.alice06#g^c:e0g#g;F");
+		});
+	})
 
 	describe("pointers", () => {
 		test("deduplicates repeated strings", () => {
-			const encoded = stringify(["hello", "hello"], { randomAccess: false });
-			expect(encoded).toBe("[^hello.]")
+			const encoded = stringify(["hello", "hello"]);
+			expect(encoded).toBe("7;^hello.")
 		});
 
 		test("deduplicates repeated objects", () => {
 			const obj = { x: 1 };
-			const encoded = stringify([obj, obj], { randomAccess: false });
-			expect(encoded).toBe("[^{x.2+}]");
-			const encoded2 = stringify([obj, obj], { randomAccess: true });
-			expect(encoded2).toBe("[^4:x.2+]");
+			expect(stringify([obj, obj])).toBe("7;^4:x.2+");
 		});
 
 		test("does not deduplicate when pointers disabled", () => {
-			const encoded = stringify(["hello", "hello"], { pointers: false, randomAccess: false });
-			expect(encoded).toBe("[hello.hello.]");
+			const encoded = stringify(["hello", "hello"], { pointers: false });
+			expect(encoded).toBe("c;hello.hello.");
 		});
 	});
 
@@ -480,28 +506,28 @@ describe("rexc stringify", () => {
 		});
 
 		test("encodes refs inside arrays", () => {
-			expect(stringify(["hello", "world"], { refs: { H: "hello" }, pointers: true, randomAccess: false }))
-				.toBe("[H'world.]");
+			expect(stringify(["hello", "world"], { refs: { H: "hello" }, pointers: true }))
+				.toBe("8;H'world.");
 		});
 
 		test("encodes multiple refs", () => {
-			expect(stringify(["hello", 42], { refs: { H: "hello", X: 42 }, pointers: true, randomAccess: false }))
-				.toBe("[H'X']");
+			expect(stringify(["hello", 42], { refs: { H: "hello", X: 42 }, pointers: true }))
+				.toBe("4;H'X'");
 		});
 
 		test("encodes schema ref for repeated object shapes", () => {
 			const data = [{ a: 1, b: 2 }, { a: 3, b: 4 }];
-			expect(stringify(data, { refs: { S: ["a", "b"] }, pointers: true, schemas: true, randomAccess: false }))
-				.toBe("[{S'2+4+}{S'6+8+}]");
+			expect(stringify(data, { refs: { S: ["a", "b"] }, pointers: true, schemas: true }))
+				.toBe("g;6:S'2+4+6:S'6+8+");
 		});
 
 		test("encodes refs in reverse mode", () => {
-			expect(stringify("hello", { refs: { H: "hello" }, pointers: true, randomAccess: false, reverse: true }))
+			expect(stringify("hello", { refs: { H: "hello" }, pointers: true, reverse: true }))
 				.toBe("'H");
 		});
 
 		test("use refs even when pointers are disabled", () => {
-			expect(stringify("hello", { refs: { H: "hello" }, pointers: false, randomAccess: false }))
+			expect(stringify("hello", { refs: { H: "hello" }, pointers: false }))
 				.toBe("H'");
 		});
 	});
@@ -513,16 +539,16 @@ describe("rexc stringify", () => {
 				{ name: "bob", age: 2 },
 				{ name: "charlie", age: 3 },
 			];
-			const withSchemas = stringify(data, { schemas: true, randomAccess: false });
-			const withoutSchemas = stringify(data, { schemas: false, randomAccess: false });
-			expect(withSchemas).toBe("[{j^alice.2+}{7^bob.4+}{name.charlie.age.6+}]")
-			expect(withoutSchemas).toBe("[{o^alice.t^2+}{a^bob.h^4+}{name.charlie.age.6+}]")
+			const withSchemas = stringify(data, { schemas: true });
+			const withoutSchemas = stringify(data, { schemas: false });
+			expect(withSchemas).toBe("H;a:i^alice.2+8:6^bob.4+j:name.charlie.age.6+")
+			expect(withoutSchemas).toBe("L;c:o^alice.t^2+a:a^bob.h^4+j:name.charlie.age.6+")
 		});
 
 		test("does not use schemas for single objects", () => {
 			const data = [{ name: "alice" }];
-			const encoded = stringify(data, { schemas: true, randomAccess: false });
-			expect(encoded).toBe("[{name.alice.}]")
+			const encoded = stringify(data, { schemas: true });
+			expect(encoded).toBe("d;b:name.alice.")
 		});
 	});
 
@@ -562,10 +588,10 @@ describe("rexc stringify", () => {
 		// The array wrapping is a root object and doesn't need to be skippable so it's just wrapping in `[]`
 
 		expect(stringify(paths, { pathChains: true, pointers: true, schemas: false, reverse: false }))
-			.toBe("[6/6^baz.c/6/a^bar.qux.b/4/foo.quux.]")
+			.toBe("z;6/6^baz.c/6/a^bar.qux.b/4/foo.quux.")
 		// Reverse mode is the same thing in reverse
 		expect(stringify(paths, { pathChains: true, pointers: true, schemas: false, reverse: true }))
-			.toBe("[.quux.foo/4/b.qux.bar^a/6/c.baz^6/6]")
+			.toBe(".quux.foo/4/b.qux.bar^a/6/c.baz^6/6;z")
 
 		// The current implementaion breaks out `/foo` as a "duplicated" prefix.
 		// But technically we could stop at `/foo/bar` as the root prefix, 
@@ -578,10 +604,10 @@ describe("rexc stringify", () => {
 			"/foo/bar/qux",
 		]
 		expect(stringify(prefixedPaths, { pathChains: true, pointers: true, schemas: false, reverse: false }))
-			.toBe("[6/6^baz.g/a/4/foo.bar.qux.]")
+			.toBe("q;6/6^baz.g/a/4/foo.bar.qux.")
 		// Reverse mode is the same thing in reverse
 		expect(stringify(prefixedPaths, { pathChains: true, pointers: true, schemas: false, reverse: true }))
-			.toBe("[.qux.bar.foo/4/a/g.baz^6/6]")
+			.toBe(".qux.bar.foo/4/a/g.baz^6/6;q")
 	})
 
 	describe("website manifest", () => {
@@ -606,26 +632,16 @@ describe("rexc stringify", () => {
 			"/admin/logs/export/csv": { name: "Export Logs as CSV", method: "GET" },
 		};
 		test("byte counts are accurate with different options", () => {
-			expect(stringify(doc, { pathChains: true, randomAccess: false, pointers: true, schemas: true, reverse: false }))
-				.toBe("{1,/{7H^Home.84^}6,/about{7m^About.7K^}8,/contact{6-^Contact.5j^}H^{6I^Blog.75^}7/q^post.{6m^9,Blog Post6F^}l/5/blog.c,post/comment{5I^Comment.41^}7/p^data.{5j^8,API Data5D^}d/4/api.update.{4O^a,API Update33^}47^{4r^Admin.4P^}c/3Q^settings.{3_^e,Admin Settings2c^}N^{3B^b,Admin Users3S^}6/o^add.{38^8,Add User1r^}i/9/2r^users.remove.{2y^b,Remove UserP^}1R^{2b^a,Admin Logs2t^}9/1s^clear.{1I^a,Clear LogsPOST.}Y^{1k^b,Export Logs1B^}7/z^json.{T^j,Export Logs as JSON10^}s/m/d/6/admin.logs.export.csv.{name.i,Export Logs as CSVmethod.GET.}}");
-			expect(stringify(doc, { pathChains: true, randomAccess: false, pointers: true, schemas: true, reverse: true }))
-				.toBe("{{.GET.methodExport Logs as CSV,i.name}.csv.export.logs.admin/6/d/m/s{^10Export Logs as JSON,j^T}.json^z/7{^1BExport Logs,b^1k}^Y{.POSTClear Logs,a^1I}.clear^1s/9{^2tAdmin Logs,a^2b}^1R{^PRemove User,b^2y}.remove.users^2r/9/i{^1rAdd User,8^38}.add^o/6{^3SAdmin Users,b^3B}^N{^2cAdmin Settings,e^3_}.settings^3Q/c{^4P.Admin^4r}^47{^33API Update,a^4O}.update.api/4/d{^5DAPI Data,8^5j}.data^p/7{^41.Comment^5I}post/comment,c.blog/5/l{^6FBlog Post,9^6m}.post^q/7{^75.Blog^6I}^H{^5j.Contact^6-}/contact,8{^7K.About^7m}/about,6{^84.Home^7H}/,1}");
-			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: true, reverse: false }))
-				.toBe("{1,/b:7G^Home.84^6,/aboutc:7l^About.7K^8,/contacte:6Z^Contact.5j^H^b:6H^Blog.75^7/q^post.h:6l^9,Blog Post6F^l/5/blog.c,post/commente:5H^Comment.41^7/p^data.g:5i^8,API Data5D^d/4/api.update.i:4N^a,API Update33^47^c:4q^Admin.4P^c/3Q^settings.m:3-^e,Admin Settings2c^N^j:3A^b,Admin Users3S^6/o^add.g:37^8,Add User1r^i/9/2r^users.remove.i:2x^b,Remove UserP^1R^i:2a^a,Admin Logs2t^9/1s^clear.k:1H^a,Clear LogsPOST.Y^j:1j^b,Export Logs1B^7/z^json.q:S^j,Export Logs as JSON10^s/m/d/6/admin.logs.export.csv.A:name.i,Export Logs as CSVmethod.GET.}");
-			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: true, reverse: true }))
-				.toBe("{.GET.methodExport Logs as CSV,i.name:A.csv.export.logs.admin/6/d/m/s^10Export Logs as JSON,j^S:q.json^z/7^1BExport Logs,b^1j:j^Y.POSTClear Logs,a^1H:k.clear^1s/9^2tAdmin Logs,a^2a:i^1R^PRemove User,b^2x:i.remove.users^2r/9/i^1rAdd User,8^37:g.add^o/6^3SAdmin Users,b^3A:j^N^2cAdmin Settings,e^3-:m.settings^3Q/c^4P.Admin^4q:c^47^33API Update,a^4N:i.update.api/4/d^5DAPI Data,8^5i:g.data^p/7^41.Comment^5H:epost/comment,c.blog/5/l^6FBlog Post,9^6l:h.post^q/7^75.Blog^6H:b^H^5j.Contact^6Z:e/contact,8^7K.About^7l:c/about,6^84.Home^7G:b/,1}");
-			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: false, reverse: false }))
-				.toBe("{1,/e:8v^Home.8M^8Q^6,/aboutf:87^About.8n^8r^8,/contacth:7I^Contact.7W^5T^N^e:7n^Blog.7E^7I^7/t^post.k:6-^9,Blog Post79^7d^l/5/blog.c,post/commenth:6h^Comment.6v^4s^7/s^data.j:5R^8,API Data61^65^d/4/api.update.l:5h^a,API Update5r^3o^4y^f:4T^Admin.57^5b^c/4c^settings.p:4o^e,Admin Settings4u^2r^T^m:3X^b,Admin Users44^48^6/r^add.j:3r^8,Add User3D^1A^i/9/2G^users.remove.l:2O^b,Remove User2X^V^21^l:2o^a,Admin Logs2y^2C^9/1B^clear.n:1S^a,Clear Logs20^POST.11^m:1q^b,Export Logs1z^1D^7/B^json.s:W^j,Export Logs as JSONY^10^s/m/d/6/admin.logs.export.csv.A:name.i,Export Logs as CSVmethod.GET.}");
-			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: false, reverse: true }))
-				.toBe("{.GET.methodExport Logs as CSV,i.name:A.csv.export.logs.admin/6/d/m/s^10^YExport Logs as JSON,j^W:s.json^B/7^1D^1zExport Logs,b^1q:m^11.POST^20Clear Logs,a^1S:n.clear^1B/9^2C^2yAdmin Logs,a^2o:l^21^V^2XRemove User,b^2O:l.remove.users^2G/9/i^1A^3DAdd User,8^3r:j.add^r/6^48^44Admin Users,b^3X:m^T^2r^4uAdmin Settings,e^4o:p.settings^4c/c^5b^57.Admin^4T:f^4y^3o^5rAPI Update,a^5h:l.update.api/4/d^65^61API Data,8^5R:j.data^s/7^4s^6v.Comment^6h:hpost/comment,c.blog/5/l^7d^79Blog Post,9^6-:k.post^t/7^7I^7E.Blog^7n:e^N^5T^7W.Contact^7I:h/contact,8^8r^8n.About^87:f/about,6^8Q^8M.Home^8v:e/,1}");
-			expect(stringify(doc, { pathChains: true, randomAccess: false, pointers: true, schemas: true, bareStrings: false, reverse: true }))
-				.toBe("{{GET,3method,6Export Logs as CSV,iname,4}csv,3export,6logs,4admin,5/7/f/p/w{^16Export Logs as JSON,j^X}json,4^A/8{^1IExport Logs,b^1p}^Z{POST,4Clear Logs,a^1O}clear,5^1v/a{^2CAdmin Logs,a^2i}^1U{^QRemove User,b^2F}remove,6users,5^2w/a/k{^1uAdd User,8^3h}add,3^p/7{^42Admin Users,b^3L}^O{^2gAdmin Settings,e^49}settings,8^3X/d{^50Admin,5^4D}^4f{^39API Update,a^4-}update,6api,3/5/f{^5TAPI Data,8^5x}data,4^q/8{^4aComment,7^5Y}post/comment,cblog,4/6/m{^6YBlog Post,9^6D}post,4^r/8{^7pBlog,4^6_}^J{^5wContact,7^7i}/contact,8{^84About,5^7H}/about,6{^8rHome,4^81}/,1}");
-			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: true, bareStrings: false, reverse: false }))
-				.toBe("{1,/c:80^4,Home8r^6,/aboutd:7G^5,About84^8,/contactf:7h^7,Contact5w^J^c:6-^4,Blog7p^8/r^4,posth:6C^9,Blog Post6Y^m/6/4,blogc,post/commentf:5X^7,Comment4a^8/q^4,datag:5w^8,API Data5T^f/5/3,api6,updatei:4Z^a,API Update39^4f^d:4C^5,Admin50^d/3X^8,settingsm:48^e,Admin Settings2g^O^j:3K^b,Admin Users42^7/p^3,addg:3g^8,Add User1u^k/a/2w^5,users6,removei:2E^b,Remove UserQ^1U^i:2h^a,Admin Logs2C^a/1v^5,clearl:1N^a,Clear Logs4,POSTZ^j:1o^b,Export Logs1I^8/A^4,jsonq:W^j,Export Logs as JSON16^w/p/f/7/5,admin4,logs6,export3,csvD:4,namei,Export Logs as CSV6,method3,GET}");
-			expect(stringify(doc, { pathChains: false, randomAccess: false, pointers: false, schemas: false, bareStrings: false, reverse: false }))
-				.toBe("{1,/{4,name4,Home6,method3,GET}6,/about{4,name5,About6,method3,GET}8,/contact{4,name7,Contact6,method4,POST}5,/blog{4,name4,Blog6,method3,GET}a,/blog/post{4,name9,Blog Post6,method3,GET}i,/blog/post/comment{4,name7,Comment6,method4,POST}9,/api/data{4,name8,API Data6,method3,GET}b,/api/update{4,namea,API Update6,method4,POST}6,/admin{4,name5,Admin6,method3,GET}f,/admin/settings{4,namee,Admin Settings6,method4,POST}c,/admin/users{4,nameb,Admin Users6,method3,GET}g,/admin/users/add{4,name8,Add User6,method4,POST}j,/admin/users/remove{4,nameb,Remove User6,method4,POST}b,/admin/logs{4,namea,Admin Logs6,method3,GET}h,/admin/logs/clear{4,namea,Clear Logs6,method4,POST}i,/admin/logs/export{4,nameb,Export Logs6,method3,GET}n,/admin/logs/export/json{4,namej,Export Logs as JSON6,method3,GET}m,/admin/logs/export/csv{4,namei,Export Logs as CSV6,method3,GET}}");
-			expect(stringify(doc, { pathChains: false, randomAccess: false, pointers: false, schemas: false, bareStrings: false, reverse: true }))
-				.toBe("{{GET,3method,6Export Logs as CSV,iname,4}/admin/logs/export/csv,m{GET,3method,6Export Logs as JSON,jname,4}/admin/logs/export/json,n{GET,3method,6Export Logs,bname,4}/admin/logs/export,i{POST,4method,6Clear Logs,aname,4}/admin/logs/clear,h{GET,3method,6Admin Logs,aname,4}/admin/logs,b{POST,4method,6Remove User,bname,4}/admin/users/remove,j{POST,4method,6Add User,8name,4}/admin/users/add,g{GET,3method,6Admin Users,bname,4}/admin/users,c{POST,4method,6Admin Settings,ename,4}/admin/settings,f{GET,3method,6Admin,5name,4}/admin,6{POST,4method,6API Update,aname,4}/api/update,b{GET,3method,6API Data,8name,4}/api/data,9{POST,4method,6Comment,7name,4}/blog/post/comment,i{GET,3method,6Blog Post,9name,4}/blog/post,a{GET,3method,6Blog,4name,4}/blog,5{POST,4method,6Contact,7name,4}/contact,8{GET,3method,6About,5name,4}/about,6{GET,3method,6Home,4name,4}/,1}");
+			expect(stringify(doc, { pathChains: true, pointers: true, schemas: true, reverse: false, indexes: false }))
+				.toBe("8o:1,/b:7G^Home.84^6,/aboutc:7l^About.7K^8,/contacte:6Z^Contact.5j^H^b:6H^Blog.75^7/q^post.h:6l^9,Blog Post6F^l/5/blog.c,post/commente:5H^Comment.41^7/p^data.g:5i^8,API Data5D^d/4/api.update.i:4N^a,API Update33^47^c:4q^Admin.4P^c/3Q^settings.m:3-^e,Admin Settings2c^N^j:3A^b,Admin Users3S^6/o^add.g:37^8,Add User1r^i/9/2r^users.remove.i:2x^b,Remove UserP^1R^i:2a^a,Admin Logs2t^9/1s^clear.k:1H^a,Clear LogsPOST.Y^j:1j^b,Export Logs1B^7/z^json.q:S^j,Export Logs as JSON10^s/m/d/6/admin.logs.export.csv.A:name.i,Export Logs as CSVmethod.GET.");
+			expect(stringify(doc, { pathChains: true, pointers: true, schemas: true, reverse: true, indexes: false }))
+				.toBe(".GET.methodExport Logs as CSV,i.name:A.csv.export.logs.admin/6/d/m/s^10Export Logs as JSON,j^S:q.json^z/7^1BExport Logs,b^1j:j^Y.POSTClear Logs,a^1H:k.clear^1s/9^2tAdmin Logs,a^2a:i^1R^PRemove User,b^2x:i.remove.users^2r/9/i^1rAdd User,8^37:g.add^o/6^3SAdmin Users,b^3A:j^N^2cAdmin Settings,e^3-:m.settings^3Q/c^4P.Admin^4q:c^47^33API Update,a^4N:i.update.api/4/d^5DAPI Data,8^5i:g.data^p/7^41.Comment^5H:epost/comment,c.blog/5/l^6FBlog Post,9^6l:h.post^q/7^75.Blog^6H:b^H^5j.Contact^6Z:e/contact,8^7K.About^7l:c/about,6^84.Home^7G:b/,1:8o");
+			expect(stringify(doc, { pathChains: true, pointers: true, schemas: false, reverse: false, indexes: false }))
+				.toBe("9b:1,/e:8v^Home.8M^8Q^6,/aboutf:87^About.8n^8r^8,/contacth:7I^Contact.7W^5T^N^e:7n^Blog.7E^7I^7/t^post.k:6-^9,Blog Post79^7d^l/5/blog.c,post/commenth:6h^Comment.6v^4s^7/s^data.j:5R^8,API Data61^65^d/4/api.update.l:5h^a,API Update5r^3o^4y^f:4T^Admin.57^5b^c/4c^settings.p:4o^e,Admin Settings4u^2r^T^m:3X^b,Admin Users44^48^6/r^add.j:3r^8,Add User3D^1A^i/9/2G^users.remove.l:2O^b,Remove User2X^V^21^l:2o^a,Admin Logs2y^2C^9/1B^clear.n:1S^a,Clear Logs20^POST.11^m:1q^b,Export Logs1z^1D^7/B^json.s:W^j,Export Logs as JSONY^10^s/m/d/6/admin.logs.export.csv.A:name.i,Export Logs as CSVmethod.GET.");
+			expect(stringify(doc, { pathChains: true, pointers: true, schemas: false, reverse: true, indexes: false }))
+				.toBe(".GET.methodExport Logs as CSV,i.name:A.csv.export.logs.admin/6/d/m/s^10^YExport Logs as JSON,j^W:s.json^B/7^1D^1zExport Logs,b^1q:m^11.POST^20Clear Logs,a^1S:n.clear^1B/9^2C^2yAdmin Logs,a^2o:l^21^V^2XRemove User,b^2O:l.remove.users^2G/9/i^1A^3DAdd User,8^3r:j.add^r/6^48^44Admin Users,b^3X:m^T^2r^4uAdmin Settings,e^4o:p.settings^4c/c^5b^57.Admin^4T:f^4y^3o^5rAPI Update,a^5h:l.update.api/4/d^65^61API Data,8^5R:j.data^s/7^4s^6v.Comment^6h:hpost/comment,c.blog/5/l^7d^79Blog Post,9^6-:k.post^t/7^7I^7E.Blog^7n:e^N^5T^7W.Contact^7I:h/contact,8^8r^8n.About^87:f/about,6^8Q^8M.Home^8v:e/,1:9b");
+			expect(stringify(doc, { pathChains: true, pointers: true, schemas: true, bareStrings: false, reverse: false, indexes: false }))
+				.toBe("8N:1,/c:80^4,Home8r^6,/aboutd:7G^5,About84^8,/contactf:7h^7,Contact5w^J^c:6-^4,Blog7p^8/r^4,posth:6C^9,Blog Post6Y^m/6/4,blogc,post/commentf:5X^7,Comment4a^8/q^4,datag:5w^8,API Data5T^f/5/3,api6,updatei:4Z^a,API Update39^4f^d:4C^5,Admin50^d/3X^8,settingsm:48^e,Admin Settings2g^O^j:3K^b,Admin Users42^7/p^3,addg:3g^8,Add User1u^k/a/2w^5,users6,removei:2E^b,Remove UserQ^1U^i:2h^a,Admin Logs2C^a/1v^5,clearl:1N^a,Clear Logs4,POSTZ^j:1o^b,Export Logs1I^8/A^4,jsonq:W^j,Export Logs as JSON16^w/p/f/7/5,admin4,logs6,export3,csvD:4,namei,Export Logs as CSV6,method3,GET");
 
 		})
 	})
@@ -642,20 +658,18 @@ describe("rexc stringify", () => {
 			"/emoji/🏴‍☠️": { name: "pirate flag", group: "flags" },
 		};
 		test("byte counts are accurate with different options", () => {
-			expect(stringify(doc, { pathChains: false, randomAccess: false, pointers: false, schemas: false, reverse: false }))
-				.toBe("{b,/emoji/🔥{name.fire.group.travel-places.}b,/emoji/💧{name.water.group.travel-places.}b,/emoji/🌱{name.seedling.group.animals-nature.}b,/emoji/🐍{name.snake.group.animals-nature.}b,/emoji/🎸{name.guitar.group.objects.}a,/emoji/⚽{name.b,soccer ballgroup.activities.}d,/emoji/❤️{name.9,red heartgroup.smileys-emotion.}k,/emoji/🏴‍☠️{name.b,pirate flaggroup.flags.}}");
-			expect(stringify(doc, { pathChains: false, randomAccess: true, pointers: true, schemas: true, reverse: false }))
-				.toBe("{b,/emoji/🔥a:3_^fire.o^b,/emoji/💧n:3C^water.travel-places.b,/emoji/🌱e:30^seedling.o^b,/emoji/🐍o:2z^snake.animals-nature.b,/emoji/🎸i:1Y^guitar.objects.a,/emoji/⚽r:1s^b,soccer ballactivities.d,/emoji/❤️t:N^9,red heartsmileys-emotion.k,/emoji/🏴‍☠️u:name.b,pirate flaggroup.flags.}");
-			expect(stringify(doc, { pathChains: false, randomAccess: true, pointers: true, schemas: true, reverse: true }))
-				.toBe("{.flags.grouppirate flag,b.name:u/emoji/🏴‍☠️,k.smileys-emotionred heart,9^N:t/emoji/❤️,d.activitiessoccer ball,b^1s:r/emoji/⚽,a.objects.guitar^1Y:i/emoji/🎸,b.animals-nature.snake^2z:o/emoji/🐍,b^o.seedling^30:e/emoji/🌱,b.travel-places.water^3C:n/emoji/💧,b^o.fire^3_:a/emoji/🔥,b}");
-			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: false, reverse: false }))
-				.toBe("{9/3Z^4,🔥d:4b^fire.4l^p^9/3z^4,💧q:3N^water.3W^travel-places.9/2Y^4,🌱h:3a^seedling.3g^p^9/2u^4,🐍r:2I^snake.2R^animals-nature.9/1S^4,🎸l:24^guitar.2c^objects.8/1k^3,⚽u:1z^b,soccer ball1B^activities.a/H^6,❤️v:U^9,red heartZ^smileys-emotion.n/6/emoji.d,🏴‍☠️u:name.b,pirate flaggroup.flags.}");
-			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: false, reverse: true }))
-				.toBe("{.flags.grouppirate flag,b.name:u🏴‍☠️,d.emoji/6/n.smileys-emotion^Zred heart,9^U:v❤️,6^H/a.activities^1Bsoccer ball,b^1z:u⚽,3^1k/8.objects^2c.guitar^24:l🎸,4^1S/9.animals-nature^2R.snake^2I:r🐍,4^2u/9^p^3g.seedling^3a:h🌱,4^2Y/9.travel-places^3W.water^3N:q💧,4^3z/9^p^4l.fire^4b:d🔥,4^3Z/9}");
-			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: true, reverse: false }))
-				.toBe("{9/3F^4,🔥a:3R^fire.m^9/3i^4,💧n:3u^water.travel-places.9/2K^4,🌱e:2W^seedling.m^9/2j^4,🐍o:2v^snake.animals-nature.9/1K^4,🎸i:1W^guitar.objects.8/1f^3,⚽r:1s^b,soccer ballactivities.a/F^6,❤️t:Q^9,red heartsmileys-emotion.n/6/emoji.d,🏴‍☠️u:name.b,pirate flaggroup.flags.}");
-			expect(stringify(doc, { pathChains: true, randomAccess: true, pointers: true, schemas: true, reverse: true }))
-				.toBe("{.flags.grouppirate flag,b.name:u🏴‍☠️,d.emoji/6/n.smileys-emotionred heart,9^Q:t❤️,6^F/a.activitiessoccer ball,b^1s:r⚽,3^1f/8.objects.guitar^1W:i🎸,4^1K/9.animals-nature.snake^2v:o🐍,4^2j/9^m.seedling^2W:e🌱,4^2K/9.travel-places.water^3u:n💧,4^3i/9^m.fire^3R:a🔥,4^3F/9}");
+			expect(stringify(doc, { pathChains: false, pointers: true, schemas: true, reverse: false }))
+				.toBe("4N:b,/emoji/🔥a:3_^fire.o^b,/emoji/💧n:3C^water.travel-places.b,/emoji/🌱e:30^seedling.o^b,/emoji/🐍o:2z^snake.animals-nature.b,/emoji/🎸i:1Y^guitar.objects.a,/emoji/⚽r:1s^b,soccer ballactivities.d,/emoji/❤️t:N^9,red heartsmileys-emotion.k,/emoji/🏴‍☠️u:name.b,pirate flaggroup.flags.");
+			expect(stringify(doc, { pathChains: false, pointers: true, schemas: true, reverse: true }))
+				.toBe(".flags.grouppirate flag,b.name:u/emoji/🏴‍☠️,k.smileys-emotionred heart,9^N:t/emoji/❤️,d.activitiessoccer ball,b^1s:r/emoji/⚽,a.objects.guitar^1Y:i/emoji/🎸,b.animals-nature.snake^2z:o/emoji/🐍,b^o.seedling^30:e/emoji/🌱,b.travel-places.water^3C:n/emoji/💧,b^o.fire^3_:a/emoji/🔥,b:4N");
+			expect(stringify(doc, { pathChains: true, pointers: true, schemas: false, reverse: false }))
+				.toBe("4V:9/3Z^4,🔥d:4b^fire.4l^p^9/3z^4,💧q:3N^water.3W^travel-places.9/2Y^4,🌱h:3a^seedling.3g^p^9/2u^4,🐍r:2I^snake.2R^animals-nature.9/1S^4,🎸l:24^guitar.2c^objects.8/1k^3,⚽u:1z^b,soccer ball1B^activities.a/H^6,❤️v:U^9,red heartZ^smileys-emotion.n/6/emoji.d,🏴‍☠️u:name.b,pirate flaggroup.flags.");
+			expect(stringify(doc, { pathChains: true, pointers: true, schemas: false, reverse: true }))
+				.toBe(".flags.grouppirate flag,b.name:u🏴‍☠️,d.emoji/6/n.smileys-emotion^Zred heart,9^U:v❤️,6^H/a.activities^1Bsoccer ball,b^1z:u⚽,3^1k/8.objects^2c.guitar^24:l🎸,4^1S/9.animals-nature^2R.snake^2I:r🐍,4^2u/9^p^3g.seedling^3a:h🌱,4^2Y/9.travel-places^3W.water^3N:q💧,4^3z/9^p^4l.fire^4b:d🔥,4^3Z/9:4V");
+			expect(stringify(doc, { pathChains: true, pointers: true, schemas: true, reverse: false }))
+				.toBe("4B:9/3F^4,🔥a:3R^fire.m^9/3i^4,💧n:3u^water.travel-places.9/2K^4,🌱e:2W^seedling.m^9/2j^4,🐍o:2v^snake.animals-nature.9/1K^4,🎸i:1W^guitar.objects.8/1f^3,⚽r:1s^b,soccer ballactivities.a/F^6,❤️t:Q^9,red heartsmileys-emotion.n/6/emoji.d,🏴‍☠️u:name.b,pirate flaggroup.flags.");
+			expect(stringify(doc, { pathChains: true, pointers: true, schemas: true, reverse: true }))
+				.toBe(".flags.grouppirate flag,b.name:u🏴‍☠️,d.emoji/6/n.smileys-emotionred heart,9^Q:t❤️,6^F/a.activitiessoccer ball,b^1s:r⚽,3^1f/8.objects.guitar^1W:i🎸,4^1K/9.animals-nature.snake^2v:o🐍,4^2j/9^m.seedling^2W:e🌱,4^2K/9.travel-places.water^3u:n💧,4^3i/9^m.fire^3R:a🔥,4^3F/9:4B");
 		});
 	})
 
@@ -667,38 +681,22 @@ describe("rexc stringify", () => {
 			{ color: "orange", fruits: ["orange"] },
 		]
 		test("with correct options applied", () => {
-			expect(stringify(doc, { randomAccess: false, pointers: false, schemas: false, reverse: false }))
-				.toBe("[{color.red.fruits.[apple.strawberry.]}{color.green.fruits.[apple.]}{color.yellow.fruits.[apple.banana.]}{color.orange.fruits.[orange.]}]")
-			expect(stringify(doc, { randomAccess: false, pointers: false, schemas: false, reverse: true }))
-				.toBe("[{[.orange].fruits.orange.color}{[.banana.apple].fruits.yellow.color}{[.apple].fruits.green.color}{[.strawberry.apple].fruits.red.color}]")
-			expect(stringify(doc, { randomAccess: true, pointers: false, schemas: false, reverse: false }))
-				.toBe("[A:color.red.fruits.h;apple.strawberry.r:color.green.fruits.6;apple.z:color.yellow.fruits.d;apple.banana.t:color.orange.fruits.7;orange.]")
-			expect(stringify(doc, { randomAccess: true, pointers: false, schemas: false, reverse: true }))
-				.toBe("[.orange;7.fruits.orange.color:t.banana.apple;d.fruits.yellow.color:z.apple;6.fruits.green.color:r.strawberry.apple;h.fruits.red.color:A]")
-			expect(stringify(doc, { randomAccess: false, pointers: true, schemas: false, reverse: false }))
-				.toBe("[{14^red.15^[G^strawberry.]}{G^green.G^[f^]}{q^yellow.p^[apple.banana.]}{color.8^fruits.[orange.]}]")
-			expect(stringify(doc, { randomAccess: false, pointers: true, schemas: false, reverse: true }))
-				.toBe("[{[.orange].fruits^8.color}{[.banana.apple]^p.yellow^q}{[^f]^G.green^G}{[.strawberry^G]^15.red^14}]")
-			expect(stringify(doc, { randomAccess: true, pointers: true, schemas: false, reverse: false }))
-				.toBe("[p:14^red.15^d;G^strawberry.e:G^green.G^2;f^q:q^yellow.p^d;apple.banana.o:color.9^fruits.7;orange.]")
-			expect(stringify(doc, { randomAccess: true, pointers: true, schemas: false, reverse: true }))
-				.toBe("[.orange;7.fruits^9.color:o.banana.apple;d^p.yellow^q:q^f;2^G.green^G:e.strawberry^G;d^15.red^14:p]")
-			expect(stringify(doc, { randomAccess: false, pointers: false, schemas: true, reverse: false }))
-				.toBe("[{14^red.[apple.strawberry.]}{F^green.[apple.]}{n^yellow.[apple.banana.]}{color.orange.fruits.[orange.]}]")
-			expect(stringify(doc, { randomAccess: false, pointers: false, schemas: true, reverse: true }))
-				.toBe("[{[.orange].fruits.orange.color}{[.banana.apple].yellow^n}{[.apple].green^F}{[.strawberry.apple].red^14}]")
-			expect(stringify(doc, { randomAccess: true, pointers: false, schemas: true, reverse: false }))
-				.toBe("[q:13^red.h;apple.strawberry.g:E^green.6;apple.o:m^yellow.d;apple.banana.t:color.orange.fruits.7;orange.]")
-			expect(stringify(doc, { randomAccess: true, pointers: false, schemas: true, reverse: true }))
-				.toBe("[.orange;7.fruits.orange.color:t.banana.apple;d.yellow^m:o.apple;6.green^E:g.strawberry.apple;h.red^13:q]")
-			expect(stringify(doc, { randomAccess: false, pointers: true, schemas: true, reverse: false }))
-				.toBe("[{Y^red.[C^strawberry.]}{B^green.[d^]}{n^yellow.[apple.banana.]}{color.8^fruits.[orange.]}]")
-			expect(stringify(doc, { randomAccess: false, pointers: true, schemas: true, reverse: true }))
-				.toBe("[{[.orange].fruits^8.color}{[.banana.apple].yellow^n}{[^d].green^B}{[.strawberry^C].red^Y}]")
-			expect(stringify(doc, { randomAccess: true, pointers: true, schemas: true, reverse: false }))
-				.toBe("[l:X^red.d;C^strawberry.c:A^green.2;d^o:m^yellow.d;apple.banana.o:color.9^fruits.7;orange.]")
-			expect(stringify(doc, { randomAccess: true, pointers: true, schemas: true, reverse: true }))
-				.toBe("[.orange;7.fruits^9.color:o.banana.apple;d.yellow^m:o^d;2.green^A:c.strawberry^C;d.red^X:l]")
+			expect(stringify(doc, { pointers: false, schemas: false, reverse: false }))
+				.toBe("27;A:color.red.fruits.h;apple.strawberry.r:color.green.fruits.6;apple.z:color.yellow.fruits.d;apple.banana.t:color.orange.fruits.7;orange.")
+			expect(stringify(doc, { pointers: false, schemas: false, reverse: true }))
+				.toBe(".orange;7.fruits.orange.color:t.banana.apple;d.fruits.yellow.color:z.apple;6.fruits.green.color:r.strawberry.apple;h.fruits.red.color:A;27")
+			expect(stringify(doc, { pointers: true, schemas: false, reverse: false }))
+				.toBe("1x;p:14^red.15^d;G^strawberry.e:G^green.G^2;f^q:q^yellow.p^d;apple.banana.o:color.9^fruits.7;orange.")
+			expect(stringify(doc, { pointers: true, schemas: false, reverse: true }))
+				.toBe(".orange;7.fruits^9.color:o.banana.apple;d^p.yellow^q:q^f;2^G.green^G:e.strawberry^G;d^15.red^14:p;1x")
+			expect(stringify(doc, { pointers: false, schemas: true, reverse: false }))
+				.toBe("1D;q:13^red.h;apple.strawberry.g:E^green.6;apple.o:m^yellow.d;apple.banana.t:color.orange.fruits.7;orange.")
+			expect(stringify(doc, { pointers: false, schemas: true, reverse: true }))
+				.toBe(".orange;7.fruits.orange.color:t.banana.apple;d.yellow^m:o.apple;6.green^E:g.strawberry.apple;h.red^13:q;1D")
+			expect(stringify(doc, { pointers: true, schemas: true, reverse: false }))
+				.toBe("1p;l:X^red.d;C^strawberry.c:A^green.2;d^o:m^yellow.d;apple.banana.o:color.9^fruits.7;orange.")
+			expect(stringify(doc, { pointers: true, schemas: true, reverse: true }))
+				.toBe(".orange;7.fruits^9.color:o.banana.apple;d.yellow^m:o^d;2.green^A:c.strawberry^C;d.red^X:l;1p")
 		});
 	})
 })
@@ -846,7 +844,6 @@ describe.skip("rexc round-trip", () => {
 				pointers: true,
 				schemas: true,
 				pathChains: true,
-				randomAccess: true,
 			}),
 		).toEqual(value);
 	});
@@ -858,7 +855,6 @@ describe.skip("rexc round-trip", () => {
 				pointers: false,
 				schemas: false,
 				pathChains: false,
-				randomAccess: false,
 				indexes: false,
 			}),
 		).toEqual(value);
@@ -893,16 +889,13 @@ describe("rexc streaming", () => {
 		expect(chunks).toEqual([
 			{
 				offset: 0,
-				data: "{",
-			}, {
-				offset: 1,
 				data: "+2",
 			}, {
-				offset: 3,
+				offset: 2,
 				data: ".a",
 			}, {
-				offset: 5,
-				data: "}",
+				offset: 4,
+				data: ":4",
 			}
 		])
 	});

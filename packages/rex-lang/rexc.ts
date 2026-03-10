@@ -1,12 +1,8 @@
 import { write } from "bun";
 
 export interface RexCEncodeOptions {
-	// Add whitespace and newlines for readability (mostly for tests and debugging).
-	pretty?: boolean;
 	// Allow bare strings (b64:)
 	bareStrings?: boolean;
-	// Add Length Prefixes for fast skipping
-	randomAccess?: boolean;
 	// Enable pointers. (generic de-dupe)
 	pointers?: boolean;
 	// Enable shared schemas. (object shape de-dupe, requires pointers)
@@ -43,9 +39,7 @@ export const BUILTIN_REFS: Record<string, unknown> = {
 }
 
 const ENCODE_DEFAULTS = {
-	pretty: false,
 	bareStrings: true,
-	randomAccess: true,
 	pointers: true,
 	schemas: true,
 	pathChains: true,
@@ -217,7 +211,6 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 	let byteLength = 0;
 	const onChunk = opts.onChunk ?? (chunk => parts.push(chunk));
 	const reverse = opts.reverse
-	const randomAccess = opts.randomAccess
 	const pointers = opts.pointers
 	const schemas = opts.schemas
 	const pathChains = opts.pathChains
@@ -225,9 +218,7 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 	const refs = Object.fromEntries(
 		(Object.entries({ ...opts.refs }) as [string, unknown][])
 			.map(([key, val]) => [makeKey(val), key]));
-	const pretty = opts.pretty
 	const indexThreshold = typeof opts.indexes === "number" ? opts.indexes : opts.indexes === true ? 10 : Infinity;
-	let indentLevel = 0;
 	// Map from value identity to encoded offset, used for pointers
 	const seenOffsets: Record<string, number> = {};
 	// Map from schema identity to offset of either array of object with same shape
@@ -308,17 +299,13 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 		return pushBytes(bytes);
 	}
 
-	function indent() {
-		pushString('\n' + '  '.repeat(indentLevel));
-	}
-
-	function writeAny(value: unknown, needsSkippable = false) {
+	function writeAny(value: unknown) {
 		const key = makeKey(value);
 		const refKey = refs[key];
 		if (refKey !== undefined) {
 			return pushString(writeStringPair("'", refKey));
 		}
-		if (!pointers) return writeAnyInner(value, needsSkippable);
+		if (!pointers) return writeAnyInner(value);
 		const seenOffset = seenOffsets[key];
 		if (seenOffset !== undefined) {
 			const delta = byteLength - seenOffset;
@@ -330,13 +317,13 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 		}
 
 		const before = byteLength;
-		const ret = writeAnyInner(value, needsSkippable);
+		const ret = writeAnyInner(value);
 		seenOffsets[key] = byteLength;
 		seenCosts[key] = byteLength - before;
 		return ret;
 	}
 
-	function writeAnyInner(value: unknown, needsSkippable: boolean) {
+	function writeAnyInner(value: unknown) {
 		switch (typeof value) {
 			case "string": return writeString(value);
 			case "number": return writeNumber(value);
@@ -344,8 +331,8 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 			case "undefined": return pushString(writeStringPair("'", 'u'));
 			case "object":
 				if (value === null) return pushString(writeStringPair("'", 'n'));;
-				if (Array.isArray(value)) return writeArray(value, needsSkippable);
-				return writeObject(value as Record<string, unknown>, needsSkippable);
+				if (Array.isArray(value)) return writeArray(value);
+				return writeObject(value as Record<string, unknown>);
 			default:
 				throw new TypeError(`Unsupported value type: ${typeof value}`);
 		}
@@ -416,34 +403,23 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 		return pushString(writeSigned("*", exp))
 	}
 
-	function writeArray(value: unknown[], needsSkippable = false) {
-		if (value.length === 0) {
-			return pushString(';');
-		}
-		if (!needsSkippable) {
-			pushString(reverse ? '[' : ']');
-			if (pretty) {
-				indent()
+	function writeArray(value: unknown[]) {
+		const start = byteLength
+		writeValues(value);
+		return pushString(writeUnsigned(';', byteLength - start));
+	}
+
+	// Write values in reverse order, and optionally write an index last for O(1) random access.
+	function writeValues(values: unknown[]) {
+		const length = values.length
+		const offsets = length > indexThreshold ? new Array(length) : undefined;
+		for (let f = length - 1, i = f; i >= 0; i--) {
+			writeAny(values[i], true);
+			if (offsets) {
+				offsets[i] = byteLength;
 			}
 		}
-		indentLevel++;
-		const offsets = []
-		const before = byteLength;
-		for (let f = value.length - 1, i = f; i >= 0; i--) {
-			if (pretty && reverse) {
-				if (i === f) {
-					pushString('  ')
-				} else {
-					indent()
-				}
-			}
-			writeAny(value[i], randomAccess);
-			offsets[i] = byteLength;
-			if (pretty && !reverse) {
-				indent()
-			}
-		}
-		if (value.length > indexThreshold) {
+		if (offsets) {
 			const lastOffset = offsets[offsets.length - 1] as number
 			const width = Math.ceil(Math.log(byteLength - lastOffset + 1) / Math.log(64));
 			const pointers = offsets.map(offset => toB64(byteLength - offset).padStart(width, '0')).join('');
@@ -451,101 +427,71 @@ export function encode(rootValue: unknown, options?: RexCEncodeOptions): Uint8Ar
 			if (width > 8) {
 				throw new Error(`Index width exceeds maximum of 8 characters: ${width}`);
 			}
-			pushString(writeUnsigned('#', (value.length << 3) | (width - 1)));
-			if (pretty) {
-				pushString(' ')
-			}
+			pushString(writeUnsigned('#', (values.length << 3) | (width - 1)));
 		}
-		const length = byteLength - before;
-		indentLevel--;
-		if (pretty && reverse) {
-			indent()
-		}
-		return pushString(needsSkippable ? writeUnsigned(';', length) : reverse ? ']' : '[');
 	}
 
-	function writeObject(value: Record<string, unknown>, needsSkippable = false) {
+	function writeObject(value: Record<string, unknown>) {
 		const keys = Object.keys(value);
-		if (keys.length === 0) {
+		const length = keys.length;
+		if (length === 0) {
 			return pushString(':');
 		}
-		if (!needsSkippable) {
-			pushString(reverse ? '{' : '}');
-			if (pretty) {
-				indent()
-			}
-		}
-		indentLevel++;
-		const before = byteLength;
-		let keysKey: string | undefined;
-		let schemaTarget: number | undefined;
-		let schemaRef: string | undefined;
+
+		let keysKey: string | undefined
+		// Check for schemas
 		if (schemas) {
 			keysKey = makeKey(keys);
-			schemaRef = refs[keysKey];
-			schemaTarget = schemaOffsets[keysKey] ?? seenOffsets[keysKey];
-		}
-		const useSchema = schemaRef !== undefined || schemaTarget !== undefined;
-		if (useSchema) {
-			const values = Object.values(value);
-			for (let f = values.length - 1, i = f; i >= 0; i--) {
-				if (pretty && reverse) {
-					if (i === f) {
-						pushString('  ')
-					} else {
-						indent()
-					}
-				}
-				writeAny(values[i], randomAccess);
-				if (pretty && !reverse) {
-					indent()
-				}
-			}
-			if (pretty && reverse) {
-				indentLevel--
-				indent() // newline after schema pointer
-				indentLevel++
-			}
-			if (schemaRef !== undefined) {
-				pushString(writeStringPair("'", schemaRef));
-			} else if (schemaTarget !== undefined) {
-				pushString(writeUnsigned("^", byteLength - schemaTarget));
-			} else {
-				writeAny(keys, randomAccess);
-			}
-			if (pretty) {
-				pushString(' ') // Space between object head and schema pointer
-			}
-			// indent()
-		} else {
-			const entries = Object.entries(value);
-			for (let f = entries.length - 1, i = f; i >= 0; i--) {
-				const [key, val] = entries[i] as [string, unknown];
-				if (pretty && reverse) {
-					if (i === f) {
-						pushString('  ')
-					} else {
-						indent()
-					}
-				}
-				writeAny(val, randomAccess);
-				if (pretty) pushString(" ")
-				writeAny(key);
-				if (pretty && !reverse) {
-					indent()
-				}
+			const schemaRef = refs[keysKey];
+			const schemaTarget = schemaOffsets[keysKey] ?? seenOffsets[keysKey];
+			if (schemaRef !== undefined || schemaTarget !== undefined) {
+				return writeSchemaObject(value, (schemaRef ?? schemaTarget) as string | number);
 			}
 		}
-		const length = byteLength - before;
-		indentLevel--;
-		if (pretty && reverse && !useSchema) {
-			indent()
+		const before = byteLength;
+		const offsets = length > indexThreshold ? {} as Record<string, number> : undefined;
+		let lastOffset: number | undefined;
+		const entries = Object.entries(value);
+		for (let f = entries.length - 1, i = f; i >= 0; i--) {
+			const [key, val] = entries[i] as [string, unknown];
+			writeAny(val, true);
+			writeAny(key);
+			if (offsets) {
+				offsets[key] = byteLength;
+				lastOffset = lastOffset ?? byteLength;
+			}
 		}
-		const ret = pushString(needsSkippable ? writeUnsigned(':', length) : reverse ? '}' : '{');
-		if (schemas && keysKey && !useSchema) {
+
+		if (offsets && lastOffset !== undefined) {
+			const width = Math.ceil(Math.log(byteLength - lastOffset + 1) / Math.log(64));
+			const pointers = Object.entries(offsets)
+				// Sort by UTF-8 representation of keys
+				.sort(([a,], [b,]) => utf8Sort(a, b))
+				// Map to width width base64 offsets
+				.map(([, offset]) => toB64(byteLength - offset).padStart(width, '0'))
+				.join('');
+			pushString(pointers)
+			if (width > 8) {
+				throw new Error(`Index width exceeds maximum of 8 characters: ${width}`);
+			}
+			pushString(writeUnsigned('#', (length << 3) | (width - 1)));
+		}
+		const ret = pushString(writeUnsigned(':', byteLength - before));
+		if (schemas && keysKey) {
 			schemaOffsets[keysKey] = byteLength
 		}
 		return ret
+	}
+
+	function writeSchemaObject(value: Record<string, unknown>, target: string | number) {
+		const before = byteLength;
+		writeValues(Object.values(value));
+		if (typeof target === "string") {
+			pushString(writeStringPair("'", target));
+		} else {
+			pushString(writeUnsigned('^', byteLength - target));
+		}
+		return pushString(writeUnsigned(':', byteLength - before));
 	}
 
 }
@@ -617,4 +563,19 @@ function makeKey(val: unknown): string {
 		return key
 	}
 	return JSON.stringify(val)
+}
+
+// Compare two strings in UTF-8 order, which is the same as comparing the binary data as UTF-8
+// This is important for the binary search to work in lua where strings are binary data
+// Since UTF-8 preserves code point ordering, we can simply order by codepoints.
+export function utf8Sort(a: string, b: string): number {
+	const len = Math.min(a.length, b.length);
+	for (let i = 0; i < len;) {
+		const cpA = a.codePointAt(i) ?? 0;
+		const cpB = b.codePointAt(i) ?? 0;
+		if (cpA !== cpB) return cpA - cpB;
+		// Jump by 2 for surrogate pairs.
+		i += cpA > 0xffff ? 2 : 1;
+	}
+	return a.length - b.length;
 }

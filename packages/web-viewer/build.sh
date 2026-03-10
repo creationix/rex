@@ -1,1 +1,2 @@
-bun build --watch ../rex-lang/rexc.ts --outfile rexc.js --format esm --target browser
+#!/bin/bash
+bun build --watch src/main.ts --outdir dist --format esm --target browser --minify
