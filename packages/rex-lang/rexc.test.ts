@@ -671,6 +671,45 @@ describe("rexc stringify", () => {
 			for (let i = 0; i < 50; i++) obj[`key${i}`] = i;
 			expect(roundTrip(obj, { indexes: 10 })).toEqual(obj);
 		});
+
+		test("round-trips with schemas", () => {
+			const data = {
+				entries: {
+					"/data/people/alice": { name: "alice", age: 1 },
+					"/data/people/bob": { name: "bob", age: 2 },
+					"/data/people/charlie": { name: "charlie", age: 3 },
+				}
+			};
+			expect(roundTrip(data)).toEqual(data);
+		});
+
+		test("round-trips objects with overlapping but distinct key sets", () => {
+			// Key "a" is written as a full string in the first object, then as a ^
+			// pointer when reused as a key in the second object. The decoder must
+			// not mistake a key pointer at the right edge of the content area for
+			// a schema pointer.
+			const data = [{ a: 1, b: 2 }, { a: 3 }];
+			expect(roundTrip(data)).toEqual(data);
+		});
+
+		test("round-trips objects where first key is a pointer", () => {
+			// Similar pattern: "contentType" appears as a key in one object,
+			// then reappears as the first key in a different-shaped object.
+			const data = [
+				{ contentType: "text/html", status: 200 },
+				{ contentType: "text/css" },
+			];
+			expect(roundTrip(data)).toEqual(data);
+		});
+
+		test("round-trips mixed key/value reuse across objects", () => {
+			// "type" appears as both a value and a key in different objects
+			const data = [
+				{ label: "type" },
+				{ type: "page", active: true },
+			];
+			expect(roundTrip(data)).toEqual(data);
+		});
 	});
 
 	describe("rexc streaming", () => {

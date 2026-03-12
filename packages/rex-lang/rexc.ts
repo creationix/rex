@@ -496,13 +496,6 @@ function unpackIndex(data: Uint8Array, left: number, right: number): RxIndex {
 // Low Level parser that returns parse nodes directly from the input data.
 // This does not resolve pointers, refs, or recurse into containers.
 export function get(data: Uint8Array, right = data.length): Readonly<RxNode> {
-	// console.log({
-	// 	data,
-	// 	offset,
-	// 	str: new TextDecoder().decode(
-	// 		data.subarray(Math.max(0, offset - 40), offset),
-	// 	),
-	// });
 	let [left, tag] = peek(data, right);
 	if (tag === 0x27) {
 		// ' -- builtin reference
@@ -567,9 +560,17 @@ export function get(data: Uint8Array, right = data.length): Readonly<RxNode> {
 					content = l - index.width * index.count;
 				} else if ((t === 0x27 || t === 0x5e) && schema === undefined) {
 					// ' -- schema reference or ^ -- schema pointer
-					const ptr = get(data, content) as RxPointer;
+					const ptr = get(data, content);
 					if (ptr.type !== "pointer") {
-						throw new SyntaxError("Unexpected schema reference type");
+						break;
+					}
+					// For ^ pointers, verify the target is an array/object
+					// (not a key string deduplicated into a pointer).
+					if (t === 0x5e) {
+						const target = get(data, ptr.target as number);
+						if (target.type !== "array" && target.type !== "object") {
+							break;
+						}
 					}
 					schema = ptr.target;
 					content = l;
@@ -649,14 +650,16 @@ export function* getEntries(context: RxContext, node: RxObject): Generator<[stri
 			let targetNode = get(data, schema);
 			if (targetNode.type === "array") {
 				keys = getEach(context, targetNode).map((k) => {
-					if (k.type === "primitive" && typeof k.value === "string") {
-						return k.value;
+					const resolved = resolve(context, k);
+					if (typeof resolved === "string") {
+						return resolved;
 					}
 					throw new TypeError("Schema reference array must contain only string primitives");
 				}) as Iterable<string>;
 			} else if (targetNode.type === "object") {
 				keys = getEntries(context, targetNode).map(([k]) => k);
 			} else {
+				console.log({ targetNode })
 				throw new TypeError("Schema reference must point to an object or array");
 			}
 		} else {
@@ -679,13 +682,14 @@ export function* getEntries(context: RxContext, node: RxObject): Generator<[stri
 	}
 	while (right > node.left) {
 		const key = get(data, right);
-		if (!(key.type === "primitive" && typeof key.value === "string")) {
+		const keyValue = resolve(context, key);
+		if (typeof keyValue !== "string") {
 			throw new SyntaxError("Expected string key in object");
 		}
 		right = key.left;
 		const value = get(data, right);
 		right = value.left;
-		yield [key.value, value];
+		yield [keyValue, value];
 	}
 }
 
