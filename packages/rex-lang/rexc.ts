@@ -1,3 +1,5 @@
+import * as B64 from "./b64";
+
 export interface RexCEncodeOptions {
 	// Enable path chains. (substring de-dupe in paths, requires pointers)
 	chainSplit?: string | false;
@@ -60,31 +62,9 @@ export function fromZigZag(num: number): number {
 	return num % 2 === 0 ? num / 2 : (num + 1) / -2;
 }
 
-const b64Chars =
-	"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
-
-// charCode -> digit value (0xff = invalid)
-const b64Lookup = new Uint8Array(128).fill(0xff);
-// digit value -> charCode
-const b64Codes = new Uint8Array(64);
-for (let i = 0; i < 64; i++) {
-	const code = b64Chars.charCodeAt(i);
-	b64Lookup[code] = i;
-	b64Codes[i] = code;
-}
-
-export function toB64Signed(num: number): string {
-	return toB64(toZigZag(num));
-}
-
-export function fromB64Signed(str: string): number {
-	return fromZigZag(fromB64(str));
-}
-
-const b64Regex = /^[0-9a-zA-Z\-_]*$/;
 
 function writeStringPair(tag: string, value: string) {
-	if (!b64Regex.test(value)) {
+	if (!B64.regex.test(value)) {
 		throw new TypeError(
 			`String contains invalid characters for inline encoding: ${value}`,
 		);
@@ -96,72 +76,11 @@ function writeUnsigned(tag: string, value: number) {
 	if (value < 0) {
 		throw new RangeError(`Value must be non-negative, got ${value}`);
 	}
-	return `${tag}${toB64(value)}`;
+	return `${tag}${B64.stringify(value)}`;
 }
 
 function writeSigned(tag: string, value: number) {
-	return `${tag}${toB64(toZigZag(value))}`;
-}
-
-export function toB64(num: number): string {
-	let result = "";
-	while (num > 0) {
-		result = b64Chars[num % 64] + result;
-		num = Math.floor(num / 64);
-	}
-	return result;
-}
-export function fromB64(str: string): number {
-	let result = 0;
-	for (let i = 0; i < str.length; i++) {
-		const value = b64Lookup[str.charCodeAt(i)] as number;
-		if (value === 0xff) {
-			throw new Error(`Invalid base64 character: ${str[i]}`);
-		}
-		result = result * 64 + value;
-	}
-	return result;
-}
-
-// Scratch space for digit extraction (max 9 digits for MAX_SAFE_INTEGER in base64)
-const b64Scratch = new Uint8Array(10);
-
-// Writes the base64 varint encoding of the value into the buffer at the given offset,
-// and returns the new offset.
-export function writeB64(
-	buffer: Uint8Array,
-	offset: number,
-	value: number,
-): number {
-	if (value === 0) return offset;
-	// Extract digits LSB-first into scratch
-	let len = 0;
-	while (value > 0) {
-		b64Scratch[len++] = b64Codes[value % 64] as number;
-		value = Math.floor(value / 64);
-	}
-	// Write MSB-first into buffer
-	for (let i = len - 1; i >= 0; i--) {
-		buffer[offset++] = b64Scratch[i] as number;
-	}
-	return offset;
-}
-
-export function readB64(
-	buffer: Uint8Array,
-	offset: number,
-	length: number,
-): number {
-	let result = 0;
-	for (let i = 0; i < length; i++) {
-		const code = buffer[offset + i] as number;
-		const value = b64Lookup[code] as number;
-		if (value === 0xff) {
-			throw new Error(`Invalid base64 character: ${String.fromCharCode(code)}`);
-		}
-		result = result * 64 + value;
-	}
-	return result;
+	return `${tag}${B64.stringify(toZigZag(value))}`;
 }
 
 export type RexCStringifyOptions = Omit<RexCEncodeOptions, "onChunk"> & {
@@ -409,7 +328,7 @@ export function encode(
 				Math.log(byteLength - lastOffset + 1) / Math.log(64),
 			);
 			const pointers = offsets
-				.map((offset) => toB64(byteLength - offset).padStart(width, "0"))
+				.map((offset) => B64.stringify(byteLength - offset).padStart(width, "0"))
 				.join("");
 			pushString(pointers);
 			if (width > 8) {
@@ -460,7 +379,7 @@ export function encode(
 				// Sort by UTF-8 representation of keys
 				.sort(([a], [b]) => utf8Sort(a, b))
 				// Map to width width base64 offsets
-				.map(([, offset]) => toB64(byteLength - offset).padStart(width, "0"))
+				.map(([, offset]) => B64.stringify(byteLength - offset).padStart(width, "0"))
 				.join("");
 			pushString(pointers);
 			if (width > 8) {
@@ -540,43 +459,7 @@ export type RxIndex = Readonly<{
 	count: number;
 }>;
 
-// Return true if byte is 0-9, a-z, A-Z, '-' or '_'
-function isB64(byte: number): boolean {
-	return (
-		(byte >= 48 && byte <= 57) ||
-		(byte >= 97 && byte <= 122) ||
-		(byte >= 65 && byte <= 90) ||
-		byte === 45 ||
-		byte === 95
-	);
-}
 
-const b64ValueLookup = new Uint8Array(256).fill(0xff);
-for (let i = 0; i < 64; i++) {
-	b64ValueLookup[b64Chars.charCodeAt(i)] = i;
-}
-
-// Skip backwards till we reach the end of b64 digits
-// offset is a right-side boundary, the result is a left-side boundary
-export function b64Skip(data: Uint8Array, offset: number) {
-	while (isB64(data[--offset] ?? 0));
-	return offset + 1;
-}
-
-// right is after last base64 digit
-// left is before first base64 digit
-// Digits are big-endian so the left-most digit is the most significant
-export function b64Decode(
-	data: Uint8Array,
-	left: number,
-	right: number,
-): number {
-	let result = 0;
-	for (let i = left; i < right; i++) {
-		result = result * 64 + b64ValueLookup[data[i]!]!;
-	}
-	return result;
-}
 
 // Convert from unsigned zigzag value back to signed integer
 export function zigzagDecode(num: number): number {
@@ -584,6 +467,13 @@ export function zigzagDecode(num: number): number {
 		return (num >>> 1) ^ -(num & 1);
 	}
 	return num % 2 === 0 ? num / 2 : (num + 1) / -2;
+}
+
+// Skip backwards till we reach the end of b64 digits
+// offset is a right-side boundary, the result is a left-side boundary
+export function b64Skip(data: Uint8Array, offset: number) {
+	while (B64.is(data[--offset] ?? 0));
+	return offset + 1;
 }
 
 function peek(data: Uint8Array, right: number): [number, number] {
@@ -596,7 +486,7 @@ function peek(data: Uint8Array, right: number): [number, number] {
 }
 
 function unpackIndex(data: Uint8Array, left: number, right: number): RxIndex {
-	const b64 = b64Decode(data, left, right);
+	const b64 = B64.read(data, left, right);
 	return {
 		width: (b64 & 0b111) + 1,
 		count: b64 >> 3,
@@ -634,7 +524,7 @@ export function get(data: Uint8Array, right = data.length): Readonly<RxNode> {
 			target: ref,
 		} as Readonly<RxPointer>;
 	}
-	const b64 = b64Decode(data, left + 1, right);
+	const b64 = B64.read(data, left + 1, right);
 	switch (tag) {
 		case 0x2c: // , -- string
 			return {
