@@ -12,6 +12,7 @@ import {
 	encode,
 	getEntries,
 	getEach,
+	makeContext,
 	type RxArray,
 	type RxObject,
 } from "./rexc.ts";
@@ -543,25 +544,19 @@ describe("rexc stringify", () => {
 			const obj = { x: 1 };
 			expect(stringify([obj, obj])).toBe("+2x,1:5^;8");
 		});
-
-		test("does not deduplicate when pointers disabled", () => {
-			const encoded = stringify(["hello", "hello"], { pointers: false });
-			expect(encoded).toBe("hello,5^;8");
-		});
 	});
 
 	describe("refs", () => {
 		test("encodes value matching a ref as ref shorthand", () => {
 			expect(
 				stringify("hello", {
-					refs: { H: "hello" },
-					pointers: true,
+					refs: { H: "hello" }
 				}),
 			).toBe("'H");
 		});
 
 		test("encodes number matching a ref", () => {
-			expect(stringify(42, { refs: { X: 42 }, pointers: true })).toBe("'X");
+			expect(stringify(42, { refs: { X: 42 } })).toBe("'X");
 		});
 
 		test("encodes refs inside arrays", () => {
@@ -574,7 +569,6 @@ describe("rexc stringify", () => {
 			expect(
 				stringify(["hello", 42], {
 					refs: { H: "hello", X: 42 },
-					pointers: true,
 				}),
 			).toBe("'X'H;4");
 		});
@@ -587,8 +581,6 @@ describe("rexc stringify", () => {
 			expect(
 				stringify(data, {
 					refs: { S: ["a", "b"] },
-					pointers: true,
-					schemas: true,
 				}),
 			).toBe("+8+6'S:6+4+2'S:6;g");
 		});
@@ -597,14 +589,13 @@ describe("rexc stringify", () => {
 			expect(
 				stringify("hello", {
 					refs: { H: "hello" },
-					pointers: true,
 				}),
 			).toBe("'H");
 		});
 
 		test("use refs even when pointers are disabled", () => {
 			expect(
-				stringify("hello", { refs: { H: "hello" }, pointers: false }),
+				stringify("hello", { refs: { H: "hello" } }),
 			).toBe("'H");
 		});
 	});
@@ -818,16 +809,10 @@ describe("rexc parse", () => {
 		});
 	});
 
-	describe.skip("lazy mode", () => {
-		test("returns proxy when lazy is true", () => {
-			const result = parse("{a:2+b:4+}", { lazy: true });
-			expect((result as Record<string, number>).a).toBe(1);
-			expect((result as Record<string, number>).b).toBe(2);
-		});
-
-		test("returns plain object when lazy is false", () => {
-			const result = parse("{a:2+b:4+}", { lazy: false });
-			expect(result).toEqual({ a: 1, b: 2 });
+	describe("lazy mode", () => {
+		test("decodes properly with and without lazy mode", () => {
+			expect(parse("+4b,1+2a,1:a", { lazy: false })).toEqual({ a: 1, b: 2 });
+			expect(parse("+4b,1+2a,1:a", { lazy: true })).toEqual({ a: 1, b: 2 });
 		});
 	});
 });
@@ -835,10 +820,15 @@ describe("rexc parse", () => {
 describe("rexc round-trip", () => {
 	const roundTrip = (
 		value: unknown,
-		options?: Parameters<typeof stringify>[1],
+		opts?: {
+			refs?: Record<string, unknown>;
+			indexes?: number | false;
+			chainSplit?: string | false;
+			lazy?: boolean;
+		},
 	) => {
-		const encoded = stringify(value, options);
-		return parse(encoded);
+		const encoded = stringify(value, opts);
+		return parse(encoded, opts);
 	};
 
 	test("round-trips primitives", () => {
@@ -879,7 +869,7 @@ describe("rexc round-trip", () => {
 			.toEqual({ name: "rex", nested: { ok: true } });
 	});
 
-	test.skip("round-trips complex nested structures", () => {
+	test("round-trips complex nested structures", () => {
 		const value = {
 			routes: [
 				{ path: "/api/users", handler: "getUsers", methods: ["GET"] },
@@ -890,7 +880,7 @@ describe("rexc round-trip", () => {
 		expect(roundTrip(value)).toEqual(value);
 	});
 
-	test.skip("round-trips with path chains", () => {
+	test("round-trips with path chains", () => {
 		const value = {
 			paths: [
 				"/docs/api/v2/users",
@@ -1152,7 +1142,6 @@ describe("rexc reading", () => {
 					{ a: 1, b: 2 },
 					{ a: 3, b: 4 },
 				]),
-				{},
 				20,
 			),
 		).toEqual({
@@ -1166,7 +1155,8 @@ describe("rexc reading", () => {
 	});
 
 	test("getEntries and getValues return correct metadata for arrays and objects", () => {
-		expect([...getEntries(get(encode({ a: 1, b: 2 })) as RxObject)]).toEqual([
+		let context = makeContext(encode({ a: 1, b: 2 }));
+		expect([...getEntries(context, get(context.data) as RxObject)]).toEqual([
 			// `+4b,1+2a,1:a`
 			["a", {
 				type: "primitive",
@@ -1182,7 +1172,8 @@ describe("rexc reading", () => {
 			}],
 		]);
 
-		expect([...getEach(get(encode([1, 2, 3])) as RxArray)]).toEqual([
+		context = makeContext(encode([1, 2, 3]));
+		expect([...getEach(context, get(context.data) as RxArray)]).toEqual([
 			// `+6+4+2;6`
 			{
 				type: "primitive",
