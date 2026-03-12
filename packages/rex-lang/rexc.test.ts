@@ -1,13 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
-	fromB64,
-	fromZigZag,
-	parse,
-	readB64,
-	stringify,
 	toB64,
+	fromZigZag,
 	toZigZag,
-	writeB64,
+	parse,
+	stringify,
 	get,
 	encode,
 	getEntries,
@@ -627,7 +624,7 @@ describe("rexc stringify", () => {
 		test("Can use object refs as schema targets", () => {
 			const data = { a: 1, b: 2 }
 			const refs = { O: { a: 3, b: 4 } };
-			expect(stringify(data, { refs })).toBe("+4+2'O:6");
+			expect(stringify(data, { refs })).toBe("+4+2'K:6");
 		});
 
 		describe("path chains", () => {
