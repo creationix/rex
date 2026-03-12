@@ -5,6 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>REXC Viewer</title>
+  <script defer src="/_vercel/insights/script.js"></script>
   <style>
     * {
       margin: 0;
@@ -297,7 +298,9 @@
     }
 
     @keyframes spin {
-      to { transform: rotate(360deg); }
+      to {
+        transform: rotate(360deg);
+      }
     }
   </style>
 </head>
@@ -330,13 +333,17 @@
     <div class="pane">
       <label><span class="name" id="copy-rexc">REXC</span> <span class="size" id="rexc-size">0 B</span></label>
       <div id="rexc">
-        <div class="worker-spinner" id="rexc-spinner"><div class="spin"></div><span>Encoding…</span></div>
+        <div class="worker-spinner" id="rexc-spinner">
+          <div class="spin"></div><span>Encoding…</span>
+        </div>
       </div>
     </div>
     <div class="pane">
       <label><span class="name" id="copy-json">JSON</span> <span class="size" id="json-size">0 B</span></label>
       <div id="json-editor" style="position:relative;">
-        <div class="worker-spinner" id="json-spinner"><div class="spin"></div><span>Decoding…</span></div>
+        <div class="worker-spinner" id="json-spinner">
+          <div class="spin"></div><span>Decoding…</span>
+        </div>
       </div>
     </div>
   </div>
