@@ -14,6 +14,9 @@ export interface RexCDecodeOptions {
 	lazy?: boolean;
 	// External dictionary of known values, Must match encoder.
 	refs?: Record<string, unknown>;
+	// Internal map for memoizing parsed offsets to values.
+	// Useful for inspecting parse progress
+	resolveCache?: Map<number, unknown>;
 }
 
 export const BUILTIN_REFS: Record<string, unknown> = {
@@ -476,15 +479,14 @@ export function encode(
 	}
 }
 
-// These fields are for parser context and are not enumerable
-// This means the tests don't need to include them in expected values
-// And they are not included when encoding nodes as JSON.
-type RxContext = Readonly<{
+export type RxContext = Readonly<{
 	data: Uint8Array;
 	refs: Record<string, unknown>;
-}>
+	lazy: boolean;
+	resolveCache: Map<number, unknown>;
+}>;
 
-type RxCommon = RxContext & Readonly<{
+type RxCommon = Readonly<{
 	type: string;
 	left: number;
 	right: number;
@@ -505,6 +507,7 @@ export type RxPrimitive = RxCommon & Readonly<{
 }>;
 export type RxChain = RxCommon & Readonly<{
 	type: "chain";
+	content: number;
 }>;
 export type RxPointer = RxCommon & Readonly<{
 	type: "pointer";
@@ -589,7 +592,9 @@ function unpackIndex(data: Uint8Array, left: number, right: number): RxIndex {
 	}
 }
 
-export function get(data: Uint8Array, refs: Record<string, unknown> = {}, right = data.length): Readonly<RxNode> {
+// Low Level parser that returns parse nodes directly from the input data.
+// This does not resolve pointers, refs, or recurse into containers.
+export function get(data: Uint8Array, right = data.length): Readonly<RxNode> {
 	// console.log({
 	// 	data,
 	// 	offset,
@@ -604,29 +609,29 @@ export function get(data: Uint8Array, refs: Record<string, unknown> = {}, right 
 			data.subarray(left + 1, right),
 		);
 		if (ref in BUILTIN_REFS) {
-			return withData(data, refs, {
+			return {
 				type: "primitive",
 				left,
 				right,
 				value: BUILTIN_REFS[ref],
-			}) as Readonly<RxPrimitive>;
+			} as Readonly<RxPrimitive>;
 		}
-		return withData(data, refs, {
+		return {
 			type: "pointer",
 			left,
 			right,
 			target: ref,
-		}) as Readonly<RxPointer>;
+		} as Readonly<RxPointer>;
 	}
 	const b64 = b64Decode(data, left + 1, right);
 	switch (tag) {
 		case 0x2c: // , -- string
-			return withData(data, refs, {
+			return {
 				type: "primitive",
 				left: left - b64,
 				right,
 				value: new TextDecoder().decode(data.subarray(left - b64, left)),
-			}) as Readonly<RxPrimitive>;
+			} as Readonly<RxPrimitive>;
 		case 0x3b: {
 			// ; -- array
 			let content = left;
@@ -639,13 +644,13 @@ export function get(data: Uint8Array, refs: Record<string, unknown> = {}, right 
 					content = l - index.width * index.count;
 				}
 			}
-			return withData(data, refs, {
+			return {
 				type: "array",
 				left,
 				right,
 				content,
 				index,
-			}) as Readonly<RxArray>;
+			} as Readonly<RxArray>;
 		}
 		case 0x3a: {
 			// : -- object
@@ -661,7 +666,7 @@ export function get(data: Uint8Array, refs: Record<string, unknown> = {}, right 
 					content = l - index.width * index.count;
 				} else if ((t === 0x27 || t === 0x5e) && schema === undefined) {
 					// ' -- schema reference or ^ -- schema pointer
-					const ptr = get(data, refs, content) as RxPointer;
+					const ptr = get(data, content) as RxPointer;
 					if (ptr.type !== "pointer") {
 						throw new SyntaxError("Unexpected schema reference type");
 					}
@@ -671,60 +676,62 @@ export function get(data: Uint8Array, refs: Record<string, unknown> = {}, right 
 					break;
 				}
 			}
-			return withData(data, refs, {
+			return {
 				type: "object",
 				left,
 				right,
 				content,
 				schema,
 				index,
-			}) as Readonly<RxObject>;
+			} as Readonly<RxObject>;
 		}
 		case 0x5e: // ^ -- pointer
-			return withData(data, refs, {
+			return {
 				type: "pointer",
 				left,
 				right,
 				target: left - b64,
-			}) as Readonly<RxPointer>;
+			} as Readonly<RxPointer>;
 		case 0x2e: { // . -- chain
-			return withData(data, refs, {
+			return {
 				type: "chain",
-				left,
+				left: left - b64,
 				right,
-			}) as Readonly<RxChain>;
+				content: left,
+			} as Readonly<RxChain>;
 			throw new Error("TODO: implement string chain reading");
 		}
 		case 0x2a: {
 			// * -- decimal exponent
-			const int = get(data, refs, left);
+			const int = get(data, left);
 			if (int.type === "primitive" && typeof int.value === "number") {
-				return withData(data, refs, {
+				return {
 					type: "primitive",
 					left: int.left,
 					right,
 					value: parseFloat(`${int.value}e${zigzagDecode(b64)}`),
-				}) as Readonly<RxPrimitive>;
+				} as Readonly<RxPrimitive>;
 			}
 			throw new SyntaxError("Invalid number format in decimal");
 		}
 		case 0x2b: // + -- integer base
-			return withData(data, refs, {
+			return {
 				type: "primitive",
 				left,
 				right,
 				value: zigzagDecode(b64)
-			}) as Readonly<RxPrimitive>;
+			} as Readonly<RxPrimitive>;
 		default:
 			throw new SyntaxError(`Unknown tag: ${String.fromCharCode(tag)}`);
 	}
 }
 
-export function* getEntries(node: RxObject): Generator<[string, RxNode]> {
+export function* getEntries(context: RxContext, node: RxObject): Generator<[string, RxNode]> {
 	if (node.type !== "object") {
 		throw new TypeError("Node must be an object");
 	}
-	const { data, refs, schema } = node
+	const { data, refs } = context;
+	const { schema } = node
 	let right = node.content;
 	if (schema !== undefined) {
 		let keys: Iterable<string>;
@@ -738,23 +745,23 @@ export function* getEntries(node: RxObject): Generator<[string, RxNode]> {
 			}
 			keys = Array.isArray(ref) ? ref : Object.keys(ref);
 		} else if (typeof schema === "number") {
-			let targetNode = get(data, refs, schema);
+			let targetNode = get(data, schema);
 			if (targetNode.type === "array") {
-				keys = getEach(targetNode).map((k) => {
+				keys = getEach(context, targetNode).map((k) => {
 					if (k.type === "primitive" && typeof k.value === "string") {
 						return k.value;
 					}
 					throw new TypeError("Schema reference array must contain only string primitives");
 				}) as Iterable<string>;
 			} else if (targetNode.type === "object") {
-				keys = getEntries(targetNode).map(([k]) => k)
+				keys = getEntries(context, targetNode).map(([k]) => k);
 			} else {
 				throw new TypeError("Schema reference must point to an object or array");
 			}
 		} else {
 			throw new TypeError("Invalid schema reference type");
 		}
-		const values = getEach(node);
+		const values = getEach(context, node);
 		// Zip keys and values together, with keys coming from the schema reference and values coming from the object content.
 		const keysIter = keys[Symbol.iterator]();
 		for (const value of values) {
@@ -770,52 +777,50 @@ export function* getEntries(node: RxObject): Generator<[string, RxNode]> {
 		return;
 	}
 	while (right > node.left) {
-		const key = get(data, refs, right);
+		const key = get(data, right);
 		if (!(key.type === "primitive" && typeof key.value === "string")) {
 			throw new SyntaxError("Expected string key in object");
 		}
 		right = key.left;
-		const value = get(data, refs, right);
+		const value = get(data, right);
 		right = value.left;
 		yield [key.value, value];
 	}
 }
 
 // Get values.  This can be called on objects and will return all entries as values
-export function* getEach(node: RxArray | RxObject): Generator<RxNode> {
-	if (node.type !== "array" && node.type !== "object") {
-		throw new TypeError("Node must be an array or object");
+export function* getEach(context: RxContext, node: RxArray | RxObject | RxChain): Generator<RxNode> {
+	if (node.type !== "array" && node.type !== "object" && node.type !== "chain") {
+		throw new TypeError("Node must be an array, object, or chain");
 	}
-	const { data, refs } = node;
+	const { data } = context;
 	let right = node.content;
 	while (right > node.left) {
-		const value = get(data, refs, right);
+		const value = get(data, right);
 		right = value.left;
 		yield value;
 	}
 }
 
+export function makeContext(input: Uint8Array, options?: Partial<RexCDecodeOptions>): RxContext {
+	return {
+		data: input,
+		refs: options?.refs ?? DECODE_DEFAULTS.refs,
+		lazy: options?.lazy ?? DECODE_DEFAULTS.lazy,
+		resolveCache: options?.resolveCache ?? new Map(),
+	}
+}
+
 export function decode(
 	input: Uint8Array,
-	options?: RexCDecodeOptions,
+	options?: Partial<RexCDecodeOptions>,
 ): unknown {
-	const opts = { ...DECODE_DEFAULTS, ...options };
-	if (opts.lazy) {
-		return lazyDecode(input, opts.refs);
-	}
-	return eagerDecode(input, opts.refs);
+	let context: RxContext = makeContext(input, options);
+	return resolve(context, get(context.data));
 }
 
-export function lazyDecode(input: Uint8Array, refs: Record<string, unknown> = {}): unknown {
-	throw new Error("TODO: implement lazy decode");
-}
-
-export function eagerDecode(input: Uint8Array, refs: Record<string, unknown> = {}): unknown {
-	return resolve(get(input, refs));
-}
-
-export function resolve(node: RxNode): unknown {
-	const { data, refs } = node
+export function resolve(context: RxContext, node: RxNode, lazy = false): unknown {
+	const { data, refs } = context;
 	if (node.type === "primitive") {
 		return node.value;
 	}
@@ -827,19 +832,43 @@ export function resolve(node: RxNode): unknown {
 			}
 			throw new ReferenceError(`Unknown reference: ${target}`);
 		} else if (typeof target === "number") {
-			return resolve(get(data, refs, target));
+			return resolve(context, get(data, target));
 		}
 		throw new TypeError(`Invalid pointer target type: ${typeof target}`);
 	}
 	if (node.type === "object") {
 		const obj: Record<string, unknown> = {};
-		for (const [key, value] of getEntries(node)) {
-			obj[key] = resolve(value);
+		for (const [key, value] of getEntries(context, node)) {
+			obj[key] = resolve(context, value);
 		}
 		return obj;
 	}
 	if (node.type === "array") {
-		return Array.from(getEach(node)).map((value) => resolve(value));
+		return Array.from(getEach(context, node)).map((value) => resolve(context, value));
+	}
+	if (node.type === "chain") {
+		const parts: unknown[] = [];
+		expandChain(node);
+		if (parts.length === 0) {
+			throw new SyntaxError("Chain must have at least one part");
+		}
+		if (parts.every((part) => typeof part === "string")) {
+			return parts.join("");
+		}
+		if (parts.some((part) => Array.isArray(part))) {
+			return parts.flat();
+		}
+		// TODO: think more through all permutations and desired behaviors.
+		throw new Error("TODO: implement complex chain resolution");
+		function expandChain(node: RxChain) {
+			for (const part of getEach(context, node)) {
+				if (part.type === "chain") {
+					expandChain(part);
+				} else {
+					parts.push(resolve(context, part));
+				}
+			}
+		}
 	}
 	throw new TypeError(`Unknown node type - ${JSON.stringify(node)}`);
 }
