@@ -12,7 +12,7 @@ import {
 	encode,
 	getEntries,
 	getEach,
-	makeContext,
+	encodeToContext,
 	type RxArray,
 	type RxObject,
 } from "./rexc.ts";
@@ -617,582 +617,629 @@ describe("rexc stringify", () => {
 			const encoded = stringify(data);
 			expect(encoded).toBe("alice,5name,4:d;f");
 		});
-	});
 
-	describe("path chains", () => {
-		test("encodes path chains with shared prefixes", () => {
-			// Non-repeated prefixes should not use pathChains optimization
-			expect(stringify("/")).toBe("/,1");
-			expect(stringify("/about")).toBe("/about,6");
-			const paths = ["/foo/bar/baz", "/foo/bar/qux", "/foo/quux"];
-			// `/foo` is pointed to twice via `/foo/bar` and `/foo/quux`.
-			// `/foo/bar/` is pointed to twice via `/foo/bar/baz` and `/foo/bar/qux`.
-			// Therefore we should have prefixes for both of them
-			// This inner `/foo` is encoded as `4/foo:`
-			// Then the outer `/foo/bar` could point to it or inline if possible
-			//
-			// In this case we write `/foo/quux` first so `/foo` is a standalone target
-			// `/foo/quux` then becomes `b/4/foo:quux:`
-			// And now we have pointer targets for both `/foo` and `/foo/quux`
-			//
-			// Next we encode `/foo/bar/qux` which contains `/foo/bar` that we want to make a target,
-			// and that recursively depends on / points to `/foo` from the previous entry
-			// so we write `??/??^bar:` for `/foo/bar`, but will calculate `??` later
-			// The entire chain is then `??/??/??^bar:qux:`
-			// So when combined with the previous line, we can calculate all pointers and lengths
-			// this gives us `c/6/a^bar:qux:b/4/foo:quux:`
-			//
-			// Now we finally encode `/foo/bar/baz` which can point to `/foo/bar` and then append `baz:`
-			// This is `??/??^baz:`
-			// now combining to the other we can calculate the `??` slots
-			// And we finally get `6/6^baz:c/6/a^bar:qux:b/4/foo:quux:` for the 3 strings
-			//
-			// The array wrapping is a root object and doesn't need to be skippable so it's just wrapping in `[]`
+		test("Can use array refs as schema targets", () => {
+			const data = { a: 1, b: 2 }
+			const refs = { K: ["a", "b"] };
+			expect(stringify(data, { refs })).toBe("+4+2'K:6");
+		})
 
-			expect(stringify(paths)).toBe(
-				"/quux,5/foo,4.d/qux,4/bar,4^e.8.g/baz,4^8.8;H",
-			);
+		test("Can use object refs as schema targets", () => {
+			const data = { a: 1, b: 2 }
+			const refs = { O: { a: 3, b: 4 } };
+			expect(stringify(data, { refs })).toBe("+4+2'O:6");
+		});
 
-			// The current implementaion breaks out `/foo` as a "duplicated" prefix.
-			// But technically we could stop at `/foo/bar` as the root prefix,
-			// but that requires changing the duplicate prefix detector to be more complex and cancel nested prefixes.
-			// Also this form writes cleaner encodings since most path segments are b64 friendly.
-			// The inner `/foo/bar` is currently `a/4/foo:bar:` when it could be `9/7,foo/bar`.
-			// The "optimized" form is one less character and one less concat layer, but more ugly.
-			const prefixedPaths = ["/foo/bar/baz", "/foo/bar/qux"];
-			expect(stringify(prefixedPaths)).toBe("/qux,4/bar,4/foo,4.c.k/baz,4^8.8;w");
+		describe("path chains", () => {
+			test("encodes path chains with shared prefixes", () => {
+				// Non-repeated prefixes should not use pathChains optimization
+				expect(stringify("/")).toBe("/,1");
+				expect(stringify("/about")).toBe("/about,6");
+				const paths = ["/foo/bar/baz", "/foo/bar/qux", "/foo/quux"];
+				// `/foo` is pointed to twice via `/foo/bar` and `/foo/quux`.
+				// `/foo/bar/` is pointed to twice via `/foo/bar/baz` and `/foo/bar/qux`.
+				// Therefore we should have prefixes for both of them
+				// This inner `/foo` is encoded as `4/foo:`
+				// Then the outer `/foo/bar` could point to it or inline if possible
+				//
+				// In this case we write `/foo/quux` first so `/foo` is a standalone target
+				// `/foo/quux` then becomes `b/4/foo:quux:`
+				// And now we have pointer targets for both `/foo` and `/foo/quux`
+				//
+				// Next we encode `/foo/bar/qux` which contains `/foo/bar` that we want to make a target,
+				// and that recursively depends on / points to `/foo` from the previous entry
+				// so we write `??/??^bar:` for `/foo/bar`, but will calculate `??` later
+				// The entire chain is then `??/??/??^bar:qux:`
+				// So when combined with the previous line, we can calculate all pointers and lengths
+				// this gives us `c/6/a^bar:qux:b/4/foo:quux:`
+				//
+				// Now we finally encode `/foo/bar/baz` which can point to `/foo/bar` and then append `baz:`
+				// This is `??/??^baz:`
+				// now combining to the other we can calculate the `??` slots
+				// And we finally get `6/6^baz:c/6/a^bar:qux:b/4/foo:quux:` for the 3 strings
+				//
+				// The array wrapping is a root object and doesn't need to be skippable so it's just wrapping in `[]`
+
+				expect(stringify(paths)).toBe(
+					"/quux,5/foo,4.d/qux,4/bar,4^e.8.g/baz,4^8.8;H",
+				);
+
+				// The current implementaion breaks out `/foo` as a "duplicated" prefix.
+				// But technically we could stop at `/foo/bar` as the root prefix,
+				// but that requires changing the duplicate prefix detector to be more complex and cancel nested prefixes.
+				// Also this form writes cleaner encodings since most path segments are b64 friendly.
+				// The inner `/foo/bar` is currently `a/4/foo:bar:` when it could be `9/7,foo/bar`.
+				// The "optimized" form is one less character and one less concat layer, but more ugly.
+				const prefixedPaths = ["/foo/bar/baz", "/foo/bar/qux"];
+				expect(stringify(prefixedPaths)).toBe("/qux,4/bar,4/foo,4.c.k/baz,4^8.8;w");
+			});
+		});
+
+		describe("website manifest", () => {
+			const doc = {
+				"/": { name: "Home", method: "GET" },
+				"/about": { name: "About", method: "GET" },
+				"/contact": { name: "Contact", method: "POST" },
+				"/blog": { name: "Blog", method: "GET" },
+				"/blog/post": { name: "Blog Post", method: "GET" },
+				"/blog/post/comment": { name: "Comment", method: "POST" },
+				"/api/data": { name: "API Data", method: "GET" },
+				"/api/update": { name: "API Update", method: "POST" },
+				"/admin": { name: "Admin", method: "GET" },
+				"/admin/settings": { name: "Admin Settings", method: "POST" },
+				"/admin/users": { name: "Admin Users", method: "GET" },
+				"/admin/users/add": { name: "Add User", method: "POST" },
+				"/admin/users/remove": { name: "Remove User", method: "POST" },
+				"/admin/logs": { name: "Admin Logs", method: "GET" },
+				"/admin/logs/clear": { name: "Clear Logs", method: "POST" },
+				"/admin/logs/export": { name: "Export Logs", method: "GET" },
+				"/admin/logs/export/json": { name: "Export Logs as JSON", method: "GET" },
+				"/admin/logs/export/csv": { name: "Export Logs as CSV", method: "GET" },
+			};
+			test("byte counts are accurate with different options", () => {
+				expect(stringify(doc)).toBe(
+					"GET,3method,6Export Logs as CSV,iname,4:D/csv,4/export,7/logs,5/admin,6.f.q.y^18Export Logs as JSON,j^Y:q/json,5^B.9^1LExport Logs,b^1r:j^-POST,4Clear Logs,a^1Q:l/clear,6^1x.b^2GAdmin Logs,a^2l:i^1W^RRemove User,b^2I:i/remove,7/users,6^2A.b.m^1xAdd User,8^3m:g/add,4^q.8^49Admin Users,b^3R:j^P^2kAdmin Settings,e^4f:m/settings,9^41.e^58Admin,5^4K:d^4l^3eAPI Update,a^55:i/update,7/api,4.f^5_API Data,8^5E:g/data,5^r.9^4gComment,7^64:f/post/comment,d/blog,5.m^75Blog Post,9^6L:h/post,5^s.9^7zBlog,4^78:c^K^5DContact,7^7r:f/contact,8^8eAbout,5^7Q:d/about,6^8BHome,4^8a:c/,1:8X",
+				);
+				expect(stringify(doc)).toBe(
+					"GET,3method,6Export Logs as CSV,iname,4:D/csv,4/export,7/logs,5/admin,6.f.q.y^18Export Logs as JSON,j^Y:q/json,5^B.9^1LExport Logs,b^1r:j^-POST,4Clear Logs,a^1Q:l/clear,6^1x.b^2GAdmin Logs,a^2l:i^1W^RRemove User,b^2I:i/remove,7/users,6^2A.b.m^1xAdd User,8^3m:g/add,4^q.8^49Admin Users,b^3R:j^P^2kAdmin Settings,e^4f:m/settings,9^41.e^58Admin,5^4K:d^4l^3eAPI Update,a^55:i/update,7/api,4.f^5_API Data,8^5E:g/data,5^r.9^4gComment,7^64:f/post/comment,d/blog,5.m^75Blog Post,9^6L:h/post,5^s.9^7zBlog,4^78:c^K^5DContact,7^7r:f/contact,8^8eAbout,5^7Q:d/about,6^8BHome,4^8a:c/,1:8X",
+				);
+				expect(
+					stringify(doc, {
+						indexes: false,
+					}),
+				).toBe(
+					"GET,3method,6Export Logs as CSV,iname,4:D/csv,4/export,7/logs,5/admin,6.f.q.y^18Export Logs as JSON,j^Y:q/json,5^B.9^1LExport Logs,b^1r:j^-POST,4Clear Logs,a^1Q:l/clear,6^1x.b^2GAdmin Logs,a^2l:i^1W^RRemove User,b^2I:i/remove,7/users,6^2A.b.m^1xAdd User,8^3m:g/add,4^q.8^49Admin Users,b^3R:j^P^2kAdmin Settings,e^4f:m/settings,9^41.e^58Admin,5^4K:d^4l^3eAPI Update,a^55:i/update,7/api,4.f^5_API Data,8^5E:g/data,5^r.9^4gComment,7^64:f/post/comment,d/blog,5.m^75Blog Post,9^6L:h/post,5^s.9^7zBlog,4^78:c^K^5DContact,7^7r:f/contact,8^8eAbout,5^7Q:d/about,6^8BHome,4^8a:c/,1:8X",
+				);
+			});
+		});
+
+		describe("emoji party", () => {
+			const doc = {
+				"/emoji/🔥": { name: "fire", group: "travel-places" },
+				"/emoji/💧": { name: "water", group: "travel-places" },
+				"/emoji/🌱": { name: "seedling", group: "animals-nature" },
+				"/emoji/🐍": { name: "snake", group: "animals-nature" },
+				"/emoji/🎸": { name: "guitar", group: "objects" },
+				"/emoji/⚽": { name: "soccer ball", group: "activities" },
+				"/emoji/❤️": { name: "red heart", group: "smileys-emotion" },
+				"/emoji/🏴‍☠️": { name: "pirate flag", group: "flags" },
+			};
+			test("byte counts are accurate with different options", () => {
+				expect(stringify(doc)).toBe(
+					"flags,5group,5pirate flag,bname,4:x/🏴‍☠️,e/emoji,6.osmileys-emotion,fred heart,9^S:u/❤️,7^H.bactivities,asoccer ball,b^1w:s/⚽,4^1j.9objects,7guitar,6^21:k/🎸,5^1R.aanimals-nature,esnake,5^2F:q/🐍,5^2t.a^oseedling,8^36:f/🌱,5^2W.atravel-places,dwater,5^3J:p/💧,5^3x.a^ofire,4^46:b/🔥,5^3W.a:4W",
+				);
+				expect(stringify(doc, { chainSplit: false })).toBe(
+					"flags,5group,5pirate flag,bname,4:x/emoji/🏴‍☠️,ksmileys-emotion,fred heart,9^O:u/emoji/❤️,dactivities,asoccer ball,b^1u:s/emoji/⚽,aobjects,7guitar,6^20:k/emoji/🎸,banimals-nature,esnake,5^2F:q/emoji/🐍,b^pseedling,8^37:f/emoji/🌱,btravel-places,dwater,5^3L:p/emoji/💧,b^pfire,4^49:b/emoji/🔥,b:4-",
+				);
+			});
+		});
+
+		describe("encode colored fruits", () => {
+			const doc = [
+				{ color: "red", fruits: ["apple", "strawberry"] },
+				{ color: "green", fruits: ["apple"] },
+				{ color: "yellow", fruits: ["apple", "banana"] },
+				{ color: "orange", fruits: ["orange"] },
+			];
+			test("with correct options applied", () => {
+				expect(stringify(doc)).toBe(
+					"orange,6;8fruits,6^acolor,5:rbanana,6apple,5;fyellow,6^p:r^e;2green,5^E:dstrawberry,a^F;ered,3^11:o;1z",
+				);
+				expect(stringify(doc, {})).toBe(
+					"orange,6;8fruits,6^acolor,5:rbanana,6apple,5;fyellow,6^p:r^e;2green,5^E:dstrawberry,a^F;ered,3^11:o;1z",
+				);
+				expect(stringify(doc)).toBe(
+					"orange,6;8fruits,6^acolor,5:rbanana,6apple,5;fyellow,6^p:r^e;2green,5^E:dstrawberry,a^F;ered,3^11:o;1z",
+				);
+			});
 		});
 	});
 
-	describe("website manifest", () => {
-		const doc = {
-			"/": { name: "Home", method: "GET" },
-			"/about": { name: "About", method: "GET" },
-			"/contact": { name: "Contact", method: "POST" },
-			"/blog": { name: "Blog", method: "GET" },
-			"/blog/post": { name: "Blog Post", method: "GET" },
-			"/blog/post/comment": { name: "Comment", method: "POST" },
-			"/api/data": { name: "API Data", method: "GET" },
-			"/api/update": { name: "API Update", method: "POST" },
-			"/admin": { name: "Admin", method: "GET" },
-			"/admin/settings": { name: "Admin Settings", method: "POST" },
-			"/admin/users": { name: "Admin Users", method: "GET" },
-			"/admin/users/add": { name: "Add User", method: "POST" },
-			"/admin/users/remove": { name: "Remove User", method: "POST" },
-			"/admin/logs": { name: "Admin Logs", method: "GET" },
-			"/admin/logs/clear": { name: "Clear Logs", method: "POST" },
-			"/admin/logs/export": { name: "Export Logs", method: "GET" },
-			"/admin/logs/export/json": { name: "Export Logs as JSON", method: "GET" },
-			"/admin/logs/export/csv": { name: "Export Logs as CSV", method: "GET" },
+	describe("rexc parse", () => {
+		describe("primitives", () => {
+			test("parses integers", () => {
+				expect(parse("+")).toBe(0);
+				expect(parse("+2")).toBe(1);
+				expect(parse("+1")).toBe(-1);
+				expect(parse("+1k")).toBe(42);
+				expect(parse("+1j")).toBe(-42);
+			});
+
+			test("parses decimals", () => {
+				expect(parse("+9Q*3")).toBe(3.14);
+				expect(parse("+a*1")).toBe(0.5);
+			});
+
+			test("parses strings", () => {
+				expect(parse(",")).toBe("");
+				expect(parse("hello world,b")).toBe("hello world");
+				expect(parse("foo bar,7")).toBe("foo bar");
+			});
+
+			test("parses booleans, null, undefined", () => {
+				expect(parse("'t")).toBe(true);
+				expect(parse("'f")).toBe(false);
+				expect(parse("'n")).toBe(null);
+				expect(parse("'u")).toBe(undefined);
+			});
+
+			test("parses special numbers", () => {
+				expect(parse("'nan")).toBeNaN();
+				expect(parse("'inf")).toBe(Infinity);
+				expect(parse("'nif")).toBe(-Infinity);
+			});
+		});
+
+		describe("arrays", () => {
+			test("parses simple arrays", () => {
+				expect(parse("+6+4+2;6")).toEqual([1, 2, 3]);
+			});
+
+			test("parses empty array", () => {
+				expect(parse(";")).toEqual([]);
+			});
+		});
+
+		describe("objects", () => {
+			test("parses simple objects", () => {
+				expect(parse("+1ksize,4red,3color,5:l")).toEqual({ color: "red", size: 42 });
+			});
+
+			test("parses empty object", () => {
+				expect(parse(":")).toEqual({});
+			});
+		});
+
+		test("resolves pointer references", () => {
+			expect(parse("hello,5^;8")).toEqual(["hello", "hello"]);
+		});
+
+		describe("refs", () => {
+			test("resolves ref references", () => {
+				expect(parse("'H", { refs: { H: "hello" } })).toBe("hello");
+			});
+		});
+
+		describe("lazy mode", () => {
+			test("decodes properly with and without lazy mode", () => {
+				expect(parse("+4b,1+2a,1:a", { lazy: false })).toEqual({ a: 1, b: 2 });
+				expect(parse("+4b,1+2a,1:a", { lazy: true })).toEqual({ a: 1, b: 2 });
+			});
+		});
+	});
+
+	describe("rexc round-trip", () => {
+		const roundTrip = (
+			value: unknown,
+			opts?: {
+				refs?: Record<string, unknown>;
+				indexes?: number | false;
+				chainSplit?: string | false;
+				lazy?: boolean;
+			},
+		) => {
+			const encoded = stringify(value, opts);
+			return parse(encoded, opts);
 		};
-		test("byte counts are accurate with different options", () => {
-			expect(stringify(doc)).toBe(
-				"GET,3method,6Export Logs as CSV,iname,4:D/csv,4/export,7/logs,5/admin,6.f.q.y^18Export Logs as JSON,j^Y:q/json,5^B.9^1LExport Logs,b^1r:j^-POST,4Clear Logs,a^1Q:l/clear,6^1x.b^2GAdmin Logs,a^2l:i^1W^RRemove User,b^2I:i/remove,7/users,6^2A.b.m^1xAdd User,8^3m:g/add,4^q.8^49Admin Users,b^3R:j^P^2kAdmin Settings,e^4f:m/settings,9^41.e^58Admin,5^4K:d^4l^3eAPI Update,a^55:i/update,7/api,4.f^5_API Data,8^5E:g/data,5^r.9^4gComment,7^64:f/post/comment,d/blog,5.m^75Blog Post,9^6L:h/post,5^s.9^7zBlog,4^78:c^K^5DContact,7^7r:f/contact,8^8eAbout,5^7Q:d/about,6^8BHome,4^8a:c/,1:8X",
-			);
-			expect(stringify(doc)).toBe(
-				"GET,3method,6Export Logs as CSV,iname,4:D/csv,4/export,7/logs,5/admin,6.f.q.y^18Export Logs as JSON,j^Y:q/json,5^B.9^1LExport Logs,b^1r:j^-POST,4Clear Logs,a^1Q:l/clear,6^1x.b^2GAdmin Logs,a^2l:i^1W^RRemove User,b^2I:i/remove,7/users,6^2A.b.m^1xAdd User,8^3m:g/add,4^q.8^49Admin Users,b^3R:j^P^2kAdmin Settings,e^4f:m/settings,9^41.e^58Admin,5^4K:d^4l^3eAPI Update,a^55:i/update,7/api,4.f^5_API Data,8^5E:g/data,5^r.9^4gComment,7^64:f/post/comment,d/blog,5.m^75Blog Post,9^6L:h/post,5^s.9^7zBlog,4^78:c^K^5DContact,7^7r:f/contact,8^8eAbout,5^7Q:d/about,6^8BHome,4^8a:c/,1:8X",
-			);
+
+		test("round-trips primitives", () => {
+			expect(roundTrip(0)).toBe(0);
+			expect(roundTrip(1)).toBe(1);
+			expect(roundTrip(-1)).toBe(-1);
+			expect(roundTrip(42)).toBe(42);
+			expect(roundTrip(3.14)).toBe(3.14);
+			expect(roundTrip("hello")).toBe("hello");
+			expect(roundTrip("hello world")).toBe("hello world");
+			expect(roundTrip("")).toBe("");
+			expect(roundTrip(true)).toBe(true);
+			expect(roundTrip(false)).toBe(false);
+			expect(roundTrip(null)).toBe(null);
+			expect(roundTrip(undefined)).toBe(undefined);
+		});
+
+		test("round-trips arrays", () => {
+			expect(roundTrip([])).toEqual([]);
+			expect(roundTrip([1, 2, 3])).toEqual([1, 2, 3]);
+			expect(roundTrip(["a", "b", "c"])).toEqual(["a", "b", "c"]);
 			expect(
-				stringify(doc, {
-					indexes: false,
-				}),
-			).toBe(
-				"GET,3method,6Export Logs as CSV,iname,4:D/csv,4/export,7/logs,5/admin,6.f.q.y^18Export Logs as JSON,j^Y:q/json,5^B.9^1LExport Logs,b^1r:j^-POST,4Clear Logs,a^1Q:l/clear,6^1x.b^2GAdmin Logs,a^2l:i^1W^RRemove User,b^2I:i/remove,7/users,6^2A.b.m^1xAdd User,8^3m:g/add,4^q.8^49Admin Users,b^3R:j^P^2kAdmin Settings,e^4f:m/settings,9^41.e^58Admin,5^4K:d^4l^3eAPI Update,a^55:i/update,7/api,4.f^5_API Data,8^5E:g/data,5^r.9^4gComment,7^64:f/post/comment,d/blog,5.m^75Blog Post,9^6L:h/post,5^s.9^7zBlog,4^78:c^K^5DContact,7^7r:f/contact,8^8eAbout,5^7Q:d/about,6^8BHome,4^8a:c/,1:8X",
-			);
-		});
-	});
-
-	describe("emoji party", () => {
-		const doc = {
-			"/emoji/🔥": { name: "fire", group: "travel-places" },
-			"/emoji/💧": { name: "water", group: "travel-places" },
-			"/emoji/🌱": { name: "seedling", group: "animals-nature" },
-			"/emoji/🐍": { name: "snake", group: "animals-nature" },
-			"/emoji/🎸": { name: "guitar", group: "objects" },
-			"/emoji/⚽": { name: "soccer ball", group: "activities" },
-			"/emoji/❤️": { name: "red heart", group: "smileys-emotion" },
-			"/emoji/🏴‍☠️": { name: "pirate flag", group: "flags" },
-		};
-		test("byte counts are accurate with different options", () => {
-			expect(stringify(doc)).toBe(
-				"flags,5group,5pirate flag,bname,4:x/🏴‍☠️,e/emoji,6.osmileys-emotion,fred heart,9^S:u/❤️,7^H.bactivities,asoccer ball,b^1w:s/⚽,4^1j.9objects,7guitar,6^21:k/🎸,5^1R.aanimals-nature,esnake,5^2F:q/🐍,5^2t.a^oseedling,8^36:f/🌱,5^2W.atravel-places,dwater,5^3J:p/💧,5^3x.a^ofire,4^46:b/🔥,5^3W.a:4W",
-			);
-			expect(stringify(doc, { chainSplit: false })).toBe(
-				"flags,5group,5pirate flag,bname,4:x/emoji/🏴‍☠️,ksmileys-emotion,fred heart,9^O:u/emoji/❤️,dactivities,asoccer ball,b^1u:s/emoji/⚽,aobjects,7guitar,6^20:k/emoji/🎸,banimals-nature,esnake,5^2F:q/emoji/🐍,b^pseedling,8^37:f/emoji/🌱,btravel-places,dwater,5^3L:p/emoji/💧,b^pfire,4^49:b/emoji/🔥,b:4-",
-			);
-		});
-	});
-
-	describe("encode colored fruits", () => {
-		const doc = [
-			{ color: "red", fruits: ["apple", "strawberry"] },
-			{ color: "green", fruits: ["apple"] },
-			{ color: "yellow", fruits: ["apple", "banana"] },
-			{ color: "orange", fruits: ["orange"] },
-		];
-		test("with correct options applied", () => {
-			expect(stringify(doc)).toBe(
-				"orange,6;8fruits,6^acolor,5:rbanana,6apple,5;fyellow,6^p:r^e;2green,5^E:dstrawberry,a^F;ered,3^11:o;1z",
-			);
-			expect(stringify(doc, {})).toBe(
-				"orange,6;8fruits,6^acolor,5:rbanana,6apple,5;fyellow,6^p:r^e;2green,5^E:dstrawberry,a^F;ered,3^11:o;1z",
-			);
-			expect(stringify(doc)).toBe(
-				"orange,6;8fruits,6^acolor,5:rbanana,6apple,5;fyellow,6^p:r^e;2green,5^E:dstrawberry,a^F;ered,3^11:o;1z",
-			);
-		});
-	});
-});
-
-describe("rexc parse", () => {
-	describe("primitives", () => {
-		test("parses integers", () => {
-			expect(parse("+")).toBe(0);
-			expect(parse("+2")).toBe(1);
-			expect(parse("+1")).toBe(-1);
-			expect(parse("+1k")).toBe(42);
-			expect(parse("+1j")).toBe(-42);
-		});
-
-		test("parses decimals", () => {
-			expect(parse("+9Q*3")).toBe(3.14);
-			expect(parse("+a*1")).toBe(0.5);
-		});
-
-		test("parses strings", () => {
-			expect(parse(",")).toBe("");
-			expect(parse("hello world,b")).toBe("hello world");
-			expect(parse("foo bar,7")).toBe("foo bar");
-		});
-
-		test("parses booleans, null, undefined", () => {
-			expect(parse("'t")).toBe(true);
-			expect(parse("'f")).toBe(false);
-			expect(parse("'n")).toBe(null);
-			expect(parse("'u")).toBe(undefined);
-		});
-
-		test("parses special numbers", () => {
-			expect(parse("'nan")).toBeNaN();
-			expect(parse("'inf")).toBe(Infinity);
-			expect(parse("'nif")).toBe(-Infinity);
-		});
-	});
-
-	describe("arrays", () => {
-		test("parses simple arrays", () => {
-			expect(parse("+6+4+2;6")).toEqual([1, 2, 3]);
-		});
-
-		test("parses empty array", () => {
-			expect(parse(";")).toEqual([]);
-		});
-	});
-
-	describe("objects", () => {
-		test("parses simple objects", () => {
-			expect(parse("+1ksize,4red,3color,5:l")).toEqual({ color: "red", size: 42 });
-		});
-
-		test("parses empty object", () => {
-			expect(parse(":")).toEqual({});
-		});
-	});
-
-	test("resolves pointer references", () => {
-		expect(parse("hello,5^;8")).toEqual(["hello", "hello"]);
-	});
-
-	describe("refs", () => {
-		test("resolves ref references", () => {
-			expect(parse("'H", { refs: { H: "hello" } })).toBe("hello");
-		});
-	});
-
-	describe("lazy mode", () => {
-		test("decodes properly with and without lazy mode", () => {
-			expect(parse("+4b,1+2a,1:a", { lazy: false })).toEqual({ a: 1, b: 2 });
-			expect(parse("+4b,1+2a,1:a", { lazy: true })).toEqual({ a: 1, b: 2 });
-		});
-	});
-});
-
-describe("rexc round-trip", () => {
-	const roundTrip = (
-		value: unknown,
-		opts?: {
-			refs?: Record<string, unknown>;
-			indexes?: number | false;
-			chainSplit?: string | false;
-			lazy?: boolean;
-		},
-	) => {
-		const encoded = stringify(value, opts);
-		return parse(encoded, opts);
-	};
-
-	test("round-trips primitives", () => {
-		expect(roundTrip(0)).toBe(0);
-		expect(roundTrip(1)).toBe(1);
-		expect(roundTrip(-1)).toBe(-1);
-		expect(roundTrip(42)).toBe(42);
-		expect(roundTrip(3.14)).toBe(3.14);
-		expect(roundTrip("hello")).toBe("hello");
-		expect(roundTrip("hello world")).toBe("hello world");
-		expect(roundTrip("")).toBe("");
-		expect(roundTrip(true)).toBe(true);
-		expect(roundTrip(false)).toBe(false);
-		expect(roundTrip(null)).toBe(null);
-		expect(roundTrip(undefined)).toBe(undefined);
-	});
-
-	test("round-trips arrays", () => {
-		expect(roundTrip([])).toEqual([]);
-		expect(roundTrip([1, 2, 3])).toEqual([1, 2, 3]);
-		expect(roundTrip(["a", "b", "c"])).toEqual(["a", "b", "c"]);
-		expect(
-			roundTrip([
+				roundTrip([
+					[1, 2],
+					[3, 4],
+				]),
+			).toEqual([
 				[1, 2],
 				[3, 4],
-			]),
-		).toEqual([
-			[1, 2],
-			[3, 4],
-		]);
-	});
+			]);
+		});
 
-	test("round-trips objects", () => {
-		expect(roundTrip({})).toEqual({});
-		expect(roundTrip({ a: 1, b: 2 })).toEqual({ a: 1, b: 2 });
-		expect(
-			roundTrip({ name: "rex", nested: { ok: true } }))
-			.toEqual({ name: "rex", nested: { ok: true } });
-	});
+		test("round-trips objects", () => {
+			expect(roundTrip({})).toEqual({});
+			expect(roundTrip({ a: 1, b: 2 })).toEqual({ a: 1, b: 2 });
+			expect(
+				roundTrip({ name: "rex", nested: { ok: true } }))
+				.toEqual({ name: "rex", nested: { ok: true } });
+		});
 
-	test("round-trips complex nested structures", () => {
-		const value = {
-			routes: [
-				{ path: "/api/users", handler: "getUsers", methods: ["GET"] },
-				{ path: "/api/users", handler: "createUser", methods: ["POST"] },
-			],
-			metadata: { version: 1, generated: true },
-		};
-		expect(roundTrip(value)).toEqual(value);
-	});
+		test("round-trips complex nested structures", () => {
+			const value = {
+				routes: [
+					{ path: "/api/users", handler: "getUsers", methods: ["GET"] },
+					{ path: "/api/users", handler: "createUser", methods: ["POST"] },
+				],
+				metadata: { version: 1, generated: true },
+			};
+			expect(roundTrip(value)).toEqual(value);
+		});
 
-	test("round-trips with path chains", () => {
-		const value = {
-			paths: [
-				"/docs/api/v2/users",
-				"/docs/api/v2/teams",
-				"/docs/api/v2/billing",
-			],
-			config: { retries: 3, timeout: 30 },
-		};
-		expect(roundTrip(value)).toEqual(value);
-	});
+		test("round-trips with path chains", () => {
+			const value = {
+				paths: [
+					"/docs/api/v2/users",
+					"/docs/api/v2/teams",
+					"/docs/api/v2/billing",
+				],
+				config: { retries: 3, timeout: 30 },
+			};
+			expect(roundTrip(value)).toEqual(value);
+		});
 
-	test("round-trips with duplicated values", () => {
-		const shared = { type: "page", status: 200 };
-		const value = [shared, shared, shared];
-		expect(roundTrip(value)).toEqual(value);
-	});
+		test("round-trips with duplicated values", () => {
+			const shared = { type: "page", status: 200 };
+			const value = [shared, shared, shared];
+			expect(roundTrip(value)).toEqual(value);
+		});
 
-	test("round-trips large indexed arrays", () => {
-		const arr = Array.from({ length: 100 }, (_, i) => i);
-		expect(roundTrip(arr, { indexes: 10 })).toEqual(arr);
-	});
+		test("round-trips large indexed arrays", () => {
+			const arr = Array.from({ length: 100 }, (_, i) => i);
+			expect(roundTrip(arr, { indexes: 10 })).toEqual(arr);
+		});
 
-	test("round-trips large indexed objects", () => {
-		const obj: Record<string, number> = {};
-		for (let i = 0; i < 50; i++) obj[`key${i}`] = i;
-		expect(roundTrip(obj, { indexes: 10 })).toEqual(obj);
-	});
-});
-
-describe("rexc streaming", () => {
-	test("onChunk receives chunks in reverse mode", () => {
-		const chunks: { offset: number; data: string }[] = [];
-		stringify(
-			{ a: 1 },
-			{
-				onChunk: (data, offset) => chunks.push({ offset, data }),
-			},
-		);
-		expect(chunks).toEqual([
-			{
-				offset: 0,
-				data: "+2",
-			},
-			{
-				offset: 2,
-				data: "a",
-			},
-			{
-				offset: 3,
-				data: ",1",
-			},
-			{
-				offset: 5,
-				data: ":5",
-			},
-		]);
-	});
-
-	test("onChunk offsets are increasing in reverse mode", () => {
-		const offsets: number[] = [];
-		stringify([1, 2, 3, "hello", { a: true }], {
-			onChunk: (_, offset) => offsets.push(offset),
-		});
-		for (let i = 1; i < offsets.length; i++) {
-			expect(offsets[i]).toBeGreaterThanOrEqual(offsets[i - 1]!);
-		}
-	});
-
-	test("reassembled chunks match non-streaming output", () => {
-		const value = { items: [1, "two", true], name: "test" };
-		const direct = stringify(value);
-		const chunks: string[] = [];
-		stringify(value, {
-			onChunk: (chunk) => chunks.push(chunk),
-		});
-		const result = chunks.join("");
-		expect(result).toBe(direct);
-	});
-});
-
-describe("rexc reading", () => {
-	test("get returns correct metadata for primitives", () => {
-		expect(get(encode(0))).toEqual({
-			// `+`
-			type: "primitive",
-			left: 0,
-			right: 1,
-			value: 0,
-		});
-		expect(get(encode(42))).toEqual({
-			// `+1k`
-			type: "primitive",
-			left: 0,
-			right: 3,
-			value: 42,
-		});
-		expect(get(encode(-42))).toEqual({
-			// `+1j`
-			type: "primitive",
-			left: 0,
-			right: 3,
-			value: -42,
-		});
-		expect(get(encode(3.14))).toEqual({
-			// `+9Q*3`
-			type: "primitive",
-			left: 0,
-			right: 5,
-			value: 3.14,
-		});
-		expect(get(encode(""))).toEqual({
-			// `,`
-			type: "primitive",
-			left: 0,
-			right: 1,
-			value: "",
-		});
-		expect(get(encode("hello"))).toEqual({
-			// `hello,5`
-			type: "primitive",
-			left: 0,
-			right: 7,
-			value: "hello",
-		});
-		expect(get(encode("content-type"))).toEqual({
-			// `content-type,c`
-			type: "primitive",
-			left: 0,
-			right: 14,
-			value: "content-type",
-		});
-		expect(get(encode("🏴‍☠️"))).toEqual({
-			// `🏴‍☠️,d`
-			type: "primitive",
-			left: 0,
-			right: 15,
-			value: "🏴‍☠️",
-		});
-		expect(get(encode("🚀"))).toEqual({
-			// `🚀,4`
-			type: "primitive",
-			left: 0,
-			right: 6,
-			value: "🚀",
-		});
-		expect(get(encode(true))).toEqual({
-			// `'t`
-			type: "primitive",
-			left: 0,
-			right: 2,
-			value: true,
-		});
-		expect(get(encode(false))).toEqual({
-			// `'f`
-			type: "primitive",
-			left: 0,
-			right: 2,
-			value: false,
-		});
-		expect(get(encode(null))).toEqual({
-			// `'n`
-			type: "primitive",
-			left: 0,
-			right: 2,
-			value: null,
-		});
-		expect(get(encode(undefined))).toEqual({
-			// `'u`
-			type: "primitive",
-			left: 0,
-			right: 2,
-			value: undefined,
-		});
-		expect(get(encode(NaN))).toEqual({
-			// `'nan`
-			type: "primitive",
-			left: 0,
-			right: 4,
-			value: NaN,
-		});
-		expect(get(encode(Infinity))).toEqual({
-			// `'inf`
-			type: "primitive",
-			left: 0,
-			right: 4,
-			value: Infinity,
-		});
-		expect(get(encode(-Infinity))).toEqual({
-			// `'nif`
-			type: "primitive",
-			left: 0,
-			right: 4,
-			value: -Infinity,
+		test("round-trips large indexed objects", () => {
+			const obj: Record<string, number> = {};
+			for (let i = 0; i < 50; i++) obj[`key${i}`] = i;
+			expect(roundTrip(obj, { indexes: 10 })).toEqual(obj);
 		});
 	});
 
-	test("get returns correct metadata for arrays and objects", () => {
-		expect(get(encode([1, 2, 3]))).toEqual({
-			// `+6+4+2;6`
-			type: "array",
-			left: 0,
-			right: 8,
-			content: 6,
+	describe("rexc streaming", () => {
+		test("onChunk receives chunks in reverse mode", () => {
+			const chunks: { offset: number; data: string }[] = [];
+			stringify(
+				{ a: 1 },
+				{
+					onChunk: (data, offset) => chunks.push({ offset, data }),
+				},
+			);
+			expect(chunks).toEqual([
+				{
+					offset: 0,
+					data: "+2",
+				},
+				{
+					offset: 2,
+					data: "a",
+				},
+				{
+					offset: 3,
+					data: ",1",
+				},
+				{
+					offset: 5,
+					data: ":5",
+				},
+			]);
 		});
-		expect(get(encode({ a: 1, b: 2 }))).toEqual({
-			// `+4b,1+2a,1:a`
-			type: "object",
-			left: 0,
-			right: 12,
-			content: 10,
+
+		test("onChunk offsets are increasing in reverse mode", () => {
+			const offsets: number[] = [];
+			stringify([1, 2, 3, "hello", { a: true }], {
+				onChunk: (_, offset) => offsets.push(offset),
+			});
+			for (let i = 1; i < offsets.length; i++) {
+				expect(offsets[i]).toBeGreaterThanOrEqual(offsets[i - 1]!);
+			}
 		});
-		expect(get(encode([1, 2, 3], { indexes: 0 }))).toEqual({
-			// `+6+4+2024#o;b`
-			type: "array",
-			left: 0,
-			right: 13,
-			content: 6,
-			index: {
-				width: 1,
-				count: 3,
-			},
-		});
-		expect(get(encode({ a: 1, b: 2 }, { indexes: 1 }))).toEqual({
-			// `+4b,1+2a,105#g:e`
-			type: "object",
-			left: 0,
-			right: 16,
-			content: 10,
-			index: {
-				width: 1,
-				count: 2,
-			},
-		});
-		expect(get(encode({ a: 1, b: 2 }, { refs: { K: ["a", "b"] } }))).toEqual({
-			// `+4+2'K:6`
-			type: "object",
-			left: 0,
-			right: 8,
-			content: 4,
-			schema: "K",
-		});
-		expect(
-			get(
-				encode([
-					{ a: 1, b: 2 },
-					{ a: 3, b: 4 },
-				]),
-			),
-		).toEqual({
-			// `+8b,1+6a,1:a+4+2^4:6;k`
-			type: "array",
-			left: 0,
-			right: 22,
-			content: 20,
-		});
-		expect(
-			get(
-				encode([
-					{ a: 1, b: 2 },
-					{ a: 3, b: 4 },
-				]),
-				20,
-			),
-		).toEqual({
-			// `+8b,1+6a,1:a+4+2^4:6;k`
-			type: "object",
-			left: 12,
-			right: 20,
-			content: 16,
-			schema: 12,
+
+		test("reassembled chunks match non-streaming output", () => {
+			const value = { items: [1, "two", true], name: "test" };
+			const direct = stringify(value);
+			const chunks: string[] = [];
+			stringify(value, {
+				onChunk: (chunk) => chunks.push(chunk),
+			});
+			const result = chunks.join("");
+			expect(result).toBe(direct);
 		});
 	});
 
-	test("getEntries and getValues return correct metadata for arrays and objects", () => {
-		let context = makeContext(encode({ a: 1, b: 2 }));
-		expect([...getEntries(context, get(context.data) as RxObject)]).toEqual([
-			// `+4b,1+2a,1:a`
-			["a", {
+	describe("rexc reading", () => {
+		test("get returns correct metadata for primitives", () => {
+			expect(get(encode(0))).toEqual({
+				// `+`
 				type: "primitive",
-				left: 5,
+				left: 0,
+				right: 1,
+				value: 0,
+			});
+			expect(get(encode(42))).toEqual({
+				// `+1k`
+				type: "primitive",
+				left: 0,
+				right: 3,
+				value: 42,
+			});
+			expect(get(encode(-42))).toEqual({
+				// `+1j`
+				type: "primitive",
+				left: 0,
+				right: 3,
+				value: -42,
+			});
+			expect(get(encode(3.14))).toEqual({
+				// `+9Q*3`
+				type: "primitive",
+				left: 0,
+				right: 5,
+				value: 3.14,
+			});
+			expect(get(encode(""))).toEqual({
+				// `,`
+				type: "primitive",
+				left: 0,
+				right: 1,
+				value: "",
+			});
+			expect(get(encode("hello"))).toEqual({
+				// `hello,5`
+				type: "primitive",
+				left: 0,
 				right: 7,
-				value: 1,
-			}],
-			["b", {
+				value: "hello",
+			});
+			expect(get(encode("content-type"))).toEqual({
+				// `content-type,c`
 				type: "primitive",
 				left: 0,
-				right: 2,
-				value: 2,
-			}],
-		]);
-
-		context = makeContext(encode([1, 2, 3]));
-		expect([...getEach(context, get(context.data) as RxArray)]).toEqual([
-			// `+6+4+2;6`
-			{
+				right: 14,
+				value: "content-type",
+			});
+			expect(get(encode("🏴‍☠️"))).toEqual({
+				// `🏴‍☠️,d`
 				type: "primitive",
-				left: 4,
+				left: 0,
+				right: 15,
+				value: "🏴‍☠️",
+			});
+			expect(get(encode("🚀"))).toEqual({
+				// `🚀,4`
+				type: "primitive",
+				left: 0,
 				right: 6,
-				value: 1,
-			},
-			{
-				type: "primitive",
-				left: 2,
-				right: 4,
-				value: 2,
-			},
-			{
+				value: "🚀",
+			});
+			expect(get(encode(true))).toEqual({
+				// `'t`
 				type: "primitive",
 				left: 0,
 				right: 2,
-				value: 3,
-			},
-		])
+				value: true,
+			});
+			expect(get(encode(false))).toEqual({
+				// `'f`
+				type: "primitive",
+				left: 0,
+				right: 2,
+				value: false,
+			});
+			expect(get(encode(null))).toEqual({
+				// `'n`
+				type: "primitive",
+				left: 0,
+				right: 2,
+				value: null,
+			});
+			expect(get(encode(undefined))).toEqual({
+				// `'u`
+				type: "primitive",
+				left: 0,
+				right: 2,
+				value: undefined,
+			});
+			expect(get(encode(NaN))).toEqual({
+				// `'nan`
+				type: "primitive",
+				left: 0,
+				right: 4,
+				value: NaN,
+			});
+			expect(get(encode(Infinity))).toEqual({
+				// `'inf`
+				type: "primitive",
+				left: 0,
+				right: 4,
+				value: Infinity,
+			});
+			expect(get(encode(-Infinity))).toEqual({
+				// `'nif`
+				type: "primitive",
+				left: 0,
+				right: 4,
+				value: -Infinity,
+			});
+		});
+
+		test("get returns correct metadata for arrays and objects", () => {
+			expect(get(encode([1, 2, 3]))).toEqual({
+				// `+6+4+2;6`
+				type: "array",
+				left: 0,
+				right: 8,
+				content: 6,
+			});
+			expect(get(encode({ a: 1, b: 2 }))).toEqual({
+				// `+4b,1+2a,1:a`
+				type: "object",
+				left: 0,
+				right: 12,
+				content: 10,
+			});
+			expect(get(encode([1, 2, 3], { indexes: 0 }))).toEqual({
+				// `+6+4+2024#o;b`
+				type: "array",
+				left: 0,
+				right: 13,
+				content: 6,
+				index: {
+					width: 1,
+					count: 3,
+				},
+			});
+			expect(get(encode({ a: 1, b: 2 }, { indexes: 1 }))).toEqual({
+				// `+4b,1+2a,105#g:e`
+				type: "object",
+				left: 0,
+				right: 16,
+				content: 10,
+				index: {
+					width: 1,
+					count: 2,
+				},
+			});
+			expect(get(encode({ a: 1, b: 2 }, { refs: { K: ["a", "b"] } }))).toEqual({
+				// `+4+2'K:6`
+				type: "object",
+				left: 0,
+				right: 8,
+				content: 4,
+				schema: "K",
+			});
+			expect(
+				get(
+					encode([
+						{ a: 1, b: 2 },
+						{ a: 3, b: 4 },
+					]),
+				),
+			).toEqual({
+				// `+8b,1+6a,1:a+4+2^4:6;k`
+				type: "array",
+				left: 0,
+				right: 22,
+				content: 20,
+			});
+			expect(
+				get(
+					encode([
+						{ a: 1, b: 2 },
+						{ a: 3, b: 4 },
+					]),
+					20,
+				),
+			).toEqual({
+				// `+8b,1+6a,1:a+4+2^4:6;k`
+				type: "object",
+				left: 12,
+				right: 20,
+				content: 16,
+				schema: 12,
+			});
+		});
+
+		test("getEntries and getValues return correct metadata for arrays and objects", () => {
+			let context = encodeToContext({ a: 1, b: 2 });
+			expect([...getEntries(context, get(context.data) as RxObject)]).toEqual([
+				// `+4b,1+2a,1:a`
+				["a", {
+					type: "primitive",
+					left: 5,
+					right: 7,
+					value: 1,
+				}],
+				["b", {
+					type: "primitive",
+					left: 0,
+					right: 2,
+					value: 2,
+				}],
+			]);
+
+			context = encodeToContext([1, 2, 3]);
+			expect([...getEach(context, get(context.data) as RxArray)]).toEqual([
+				// `+6+4+2;6`
+				{
+					type: "primitive",
+					left: 4,
+					right: 6,
+					value: 1,
+				},
+				{
+					type: "primitive",
+					left: 2,
+					right: 4,
+					value: 2,
+				},
+				{
+					type: "primitive",
+					left: 0,
+					right: 2,
+					value: 3,
+				},
+			])
+
+			context = encodeToContext({ a: 1, b: 2 }, { refs: { K: ["a", "b"] } });
+			expect([...getEntries(context, get(context.data) as RxObject)]).toEqual([
+				// `+4+2'K:6`
+				["a", {
+					type: "primitive",
+					left: 2,
+					right: 4,
+					value: 1,
+				}],
+				["b", {
+					type: "primitive",
+					left: 0,
+					right: 2,
+					value: 2,
+				}],
+			]);
+
+			context = encodeToContext({ a: 1, b: 2 }, { refs: { K: { a: 3, b: 4 } } });
+			expect([...getEntries(context, get(context.data) as RxObject)]).toEqual([
+				// `+4+2'K:6`
+				["a", {
+					type: "primitive",
+					left: 2,
+					right: 4,
+					value: 1,
+				}],
+				["b", {
+					type: "primitive",
+					left: 0,
+					right: 2,
+					value: 2,
+				}],
+			]);
+
+		});
 	});
 });

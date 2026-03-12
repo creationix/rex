@@ -220,8 +220,20 @@ export function encode(
 	// Map from value identity to encoded offset, used for pointers
 	const seenOffsets: Record<string, number> = {};
 	// Map from schema identity to offset of either array of object with same shape
-	const schemaOffsets: Record<string, number> = {};
+	// string points to refs entry
+	const schemaOffsets: Record<string, number | string> = {};
 	const seenCosts: Record<string, number> = {};
+
+	// Pre-scan refs to calculate schemaKeys
+	for (const [key, val] of Object.entries(opts.refs)) {
+		if (typeof val === "object" && val !== null) {
+			if (Array.isArray(val)) {
+				schemaOffsets[makeKey(val)] = key;
+			} else {
+				schemaOffsets[makeKey(Object.keys(val))] = key;
+			}
+		}
+	}
 
 	// Pre-scan the dataset to find reused path prefixes
 	const duplicatePrefixes = new Set<string>();
@@ -418,12 +430,11 @@ export function encode(
 
 		// Check for schemas
 		const keysKey = makeKey(keys);
-		const schemaRef = refs[keysKey];
 		const schemaTarget = schemaOffsets[keysKey] ?? seenOffsets[keysKey];
-		if (schemaRef !== undefined || schemaTarget !== undefined) {
+		if (schemaTarget !== undefined) {
 			return writeSchemaObject(
 				value,
-				(schemaRef ?? schemaTarget) as string | number,
+				schemaTarget,
 			);
 		}
 		const before = byteLength;
@@ -810,6 +821,14 @@ export function makeContext(input: Uint8Array, options?: Partial<RexCDecodeOptio
 		resolveCache: options?.resolveCache ?? new Map(),
 	}
 }
+
+export function encodeToContext(value: unknown, options?: Partial<RexCDecodeOptions> & Partial<RexCEncodeOptions>): RxContext {
+	if (options?.onChunk) {
+		throw new Error("Cannot use onChunk option with encodeToContext");
+	}
+	return makeContext(encode(value, options), options);
+}
+
 
 export function decode(
 	input: Uint8Array,
