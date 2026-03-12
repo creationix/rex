@@ -1,11 +1,11 @@
-import { BUILTIN_REFS, get, getEntries, getEach, makeContext } from "../../rex-lang/rexc.ts"
-import type { RxNode, RxObject, RxArray, RxChain } from "../../rex-lang/rexc.ts"
+import { BUILTIN_REFS, get, getEntries, getEach, makeContext, resolve } from "../../rex-lang/rexc.ts"
+import type { RxNode, RxObject, RxArray, RxChain, RxContext } from "../../rex-lang/rexc.ts"
 import { EditorView, basicSetup, json as jsonLang, oneDark } from "./codemirror.ts"
 import { RexcTreeView } from "./rexc-tree.ts"
 import type { RexcNode, RexcParser } from "./rexc-parser.ts"
 import type { WorkerRequestBody, WorkerResponse } from "./decode-worker.ts"
 
-function rxNodeToRexcNode(node: RxNode, key?: string | number): RexcNode {
+function rxNodeToRexcNode(node: RxNode, key?: string | number, context?: RxContext): RexcNode {
   switch (node.type) {
     case 'primitive': {
       const v = node.value
@@ -15,40 +15,70 @@ function rxNodeToRexcNode(node: RxNode, key?: string | number): RexcNode {
       if (v === null) return { kind: 'null', start: node.left, end: node.right, key: key as string }
       return { kind: 'undefined', start: node.left, end: node.right, key: key as string }
     }
-    case 'pointer':
+    case 'pointer': {
       if (typeof node.target === 'string')
         return { kind: 'reference', start: node.left, end: node.right, key: key as string, refId: node.target }
-      return { kind: 'pointer', start: node.left, end: node.right, key: key as string, targetOffset: node.target }
+      const result: RexcNode = { kind: 'pointer', start: node.left, end: node.right, key: key as string, targetOffset: node.target }
+      if (context) {
+        try {
+          // Only resolve cheap targets — peek at the target node type first
+          const target = get(context.data, node.target)
+          if (target.type === 'primitive' || target.type === 'chain') {
+            const resolved = resolve(context, target)
+            if (typeof resolved === 'string') {
+              result.resolvedValue = resolved
+              result.resolvedKind = target.type === 'chain' ? 'chain' : 'string'
+            } else if (typeof resolved === 'number') {
+              result.resolvedValue = String(resolved)
+              result.resolvedKind = 'number'
+            } else if (typeof resolved === 'boolean' || resolved === null) {
+              result.resolvedValue = String(resolved)
+              result.resolvedKind = String(typeof resolved === 'boolean' ? 'boolean' : 'null')
+            }
+          }
+        } catch { }
+      }
+      return result
+    }
     case 'object':
       return { kind: 'object', start: node.left, end: node.right, key: key as string, offset: node.content }
     case 'array':
       return { kind: 'array', start: node.left, end: node.right, key: key as string, offset: node.content }
-    case 'chain':
-      return { kind: 'pathChain', start: node.left, end: node.right, key: key as string, offset: node.content }
+    case 'chain': {
+      let resolvedValue: string | undefined
+      if (context) {
+        try {
+          const resolved = resolve(context, node)
+          if (typeof resolved === 'string') resolvedValue = resolved
+        } catch { }
+      }
+      return { kind: 'pathChain', start: node.left, end: node.right, key: key as string, offset: node.content, resolvedValue }
+    }
   }
 }
 
 const realParser: RexcParser = {
   parseRoot(input) {
-    return rxNodeToRexcNode(get(input, input.length))
+    const context = makeContext(input)
+    return rxNodeToRexcNode(get(input, input.length), undefined, context)
   },
   parseChildren(input, parent): RexcNode[] {
     const context = makeContext(input)
     if (parent.kind === 'object') {
       const node = get(input, parent.end) as RxObject
-      return [...getEntries(context, node)].reverse().map(([key, child]) => rxNodeToRexcNode(child, key))
+      return [...getEntries(context, node)].reverse().map(([key, child]) => rxNodeToRexcNode(child, key, context))
     }
     if (parent.kind === 'array') {
       const node = get(input, parent.end) as RxArray
-      return [...getEach(context, node)].reverse().map((child, i) => rxNodeToRexcNode(child, i))
+      return [...getEach(context, node)].reverse().map((child, i) => rxNodeToRexcNode(child, i, context))
     }
     if (parent.kind === 'pathChain') {
       const node = get(input, parent.end) as RxChain
-      return [...getEach(context, node)].reverse().map((child, i) => rxNodeToRexcNode(child, i))
+      return [...getEach(context, node)].reverse().map((child, i) => rxNodeToRexcNode(child, i, context))
     }
     if (parent.kind === 'pointer') {
       const target = parent.targetOffset
-      if (target < input.length) return [rxNodeToRexcNode(get(input, target))]
+      if (target < input.length) return [rxNodeToRexcNode(get(input, target), undefined, context)]
     }
     return []
   }
