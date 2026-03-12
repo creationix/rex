@@ -13,13 +13,13 @@ export type RexcNode =
   { kind: 'object', start: number, end: number, key?: string, offset: number } |
   { kind: 'array', start: number, end: number, key?: string, offset: number } |
   { kind: 'string', start: number, end: number, key?: string, value: string } |
-  { kind: 'pathChain', start: number, end: number, key?: string, offset: number } |
+  { kind: 'pathChain', start: number, end: number, key?: string, offset: number, resolvedValue?: string } |
   { kind: 'number', start: number, end: number, key?: string, value: number } |
   { kind: 'boolean', start: number, end: number, key?: string, value: boolean } |
   { kind: 'null', start: number, end: number, key?: string } |
   { kind: 'undefined', start: number, end: number, key?: string } |
   { kind: 'reference', start: number, end: number, key?: string, refId: string } |
-  { kind: 'pointer', start: number, end: number, key?: string, targetOffset: number }
+  { kind: 'pointer', start: number, end: number, key?: string, targetOffset: number, resolvedValue?: string, resolvedKind?: string }
 
 export interface RexcParser {
   /**

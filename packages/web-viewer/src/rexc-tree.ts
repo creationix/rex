@@ -41,22 +41,24 @@ const KIND_COLORS: Record<string, string> = {
   loopControl: '#c586c0',
 }
 
-const KIND_LABELS: Record<string, string> = {
-  object: 'Object',
-  array: 'Array',
-  call: 'Call',
-  when: 'When',
-  unless: 'Unless',
-  alt: 'Alt',
-  all: 'All',
-  forIn: 'For-in',
-  forOf: 'For-of',
-  while: 'While',
-  set: 'Set',
-  swap: 'Swap',
-  delete: 'Delete',
-  arrayComp: 'ArrayComp',
-  objectComp: 'ObjectComp',
+const KIND_TAGS: Record<string, string> = {
+  object: 'OBJ',
+  array: 'ARR',
+  pointer: 'PTR',
+  pathChain: 'CHAIN',
+  call: 'CALL',
+  when: 'WHEN',
+  unless: 'UNLESS',
+  alt: 'ALT',
+  all: 'ALL',
+  forIn: 'FORIN',
+  forOf: 'FOROF',
+  while: 'WHILE',
+  set: 'SET',
+  swap: 'SWAP',
+  delete: 'DEL',
+  arrayComp: 'ARRC',
+  objectComp: 'OBJC',
 }
 
 const textDecoder = new TextDecoder()
@@ -248,6 +250,13 @@ export class RexcTreeView {
     this.errorEl.style.display = msg ? '' : 'none'
   }
 
+  private appendTag(parent: HTMLElement, text: string, color: string) {
+    const span = document.createElement('span')
+    span.style.cssText = `color:${color};font-size:9px;font-weight:600;letter-spacing:0.5px;background:${color}18;border-radius:3px;padding:1px 4px;margin-left:6px;vertical-align:middle;`
+    span.textContent = text
+    parent.appendChild(span)
+  }
+
   private isExpandable(node: RexcNode): boolean {
     return node.kind === 'object' || node.kind === 'array' || node.kind === "pathChain" || node.kind === "pointer"
   }
@@ -340,16 +349,34 @@ export class RexcTreeView {
 
     const color = KIND_COLORS[node.kind] || '#d4d4d4'
 
-    if (this.isExpandable(node)) {
-      const label = KIND_LABELS[node.kind] || node.kind
-      const span = document.createElement('span')
-      span.style.color = color
-      let text = label
-      if (node.childCount !== undefined) {
-        text += node.kind === 'array' ? ` [${node.childCount}]` : ` {${node.childCount}}`
+    if (node.kind === 'pointer' && node.resolvedValue != null) {
+      // Value first, then PTR / CHAIN tags
+      const innerKind = node.resolvedKind || 'string'
+      const innerColor = KIND_COLORS[innerKind] || KIND_COLORS['string']!
+      const needsQuotes = innerKind === 'string' || innerKind === 'chain'
+      const valSpan = document.createElement('span')
+      valSpan.style.color = innerColor
+      valSpan.textContent = needsQuotes ? `"${node.resolvedValue}"` : node.resolvedValue
+      div.appendChild(valSpan)
+      this.appendTag(div, 'PTR', KIND_COLORS['pointer']!)
+      if (innerKind === 'chain') {
+        this.appendTag(div, 'CHAIN', KIND_COLORS['pathChain'] || KIND_COLORS['string']!)
       }
-      span.textContent = text
-      div.appendChild(span)
+    } else if (node.kind === 'pathChain') {
+      // Value first, then CHAIN tag
+      const valSpan = document.createElement('span')
+      valSpan.style.color = KIND_COLORS['string']!
+      valSpan.textContent = node.resolvedValue != null ? `"${node.resolvedValue}"` : '?'
+      div.appendChild(valSpan)
+      this.appendTag(div, 'CHAIN', color)
+    } else if (this.isExpandable(node)) {
+      this.appendTag(div, KIND_TAGS[node.kind] || node.kind.toUpperCase(), color)
+      if (node.childCount !== undefined) {
+        const countSpan = document.createElement('span')
+        countSpan.style.cssText = 'color:#888;font-size:11px;margin-left:4px;'
+        countSpan.textContent = String(node.childCount)
+        div.appendChild(countSpan)
+      }
     } else {
       const span = document.createElement('span')
       span.style.color = color
