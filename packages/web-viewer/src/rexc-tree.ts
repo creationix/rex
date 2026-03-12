@@ -337,7 +337,7 @@ export class RexcTreeView {
     } else {
       const span = document.createElement('span')
       span.style.color = color
-      span.textContent = node.value node.value ?? node.kind
+      span.textContent = node.value ?? node.value ?? node.kind
       div.appendChild(span)
     }
 
