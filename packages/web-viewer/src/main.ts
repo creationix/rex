@@ -1,152 +1,55 @@
-import { stringify, parse, BUILTIN_REFS, fromZigZag } from "../../rex-lang/rexc.ts"
+import { stringify, parse, BUILTIN_REFS, get, getEntries, getEach, makeContext } from "../../rex-lang/rexc.ts"
+import type { RxNode, RxObject, RxArray, RxChain } from "../../rex-lang/rexc.ts"
 import { EditorView, basicSetup, json as jsonLang, oneDark } from "./codemirror.ts"
 import { RexcTreeView } from "./rexc-tree.ts"
 import type { RexcNode, RexcParser } from "./rexc-parser.ts"
 
-const textDecoder = new TextDecoder()
-
-function skipB64(input: Uint8Array, offset: number): number {
-  while (offset < input.length) {
-    const c = input[offset]!
-    if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) || (c >= 0x30 && c <= 0x39) || c === 0x2D || c === 0x5F) {
-      offset++
-    } else {
-      break
+function rxNodeToRexcNode(node: RxNode, key?: string | number): RexcNode {
+  switch (node.type) {
+    case 'primitive': {
+      const v = node.value
+      if (typeof v === 'string') return { kind: 'string', start: node.left, end: node.right, key: key as string, value: v }
+      if (typeof v === 'number') return { kind: 'number', start: node.left, end: node.right, key: key as string, value: v }
+      if (typeof v === 'boolean') return { kind: 'boolean', start: node.left, end: node.right, key: key as string, value: v }
+      if (v === null) return { kind: 'null', start: node.left, end: node.right, key: key as string }
+      return { kind: 'undefined', start: node.left, end: node.right, key: key as string }
     }
+    case 'pointer':
+      if (typeof node.target === 'string')
+        return { kind: 'reference', start: node.left, end: node.right, key: key as string, refId: node.target }
+      return { kind: 'pointer', start: node.left, end: node.right, key: key as string, targetOffset: node.target }
+    case 'object':
+      return { kind: 'object', start: node.left, end: node.right, key: key as string, offset: node.content }
+    case 'array':
+      return { kind: 'array', start: node.left, end: node.right, key: key as string, offset: node.content }
+    case 'chain':
+      return { kind: 'pathChain', start: node.left, end: node.right, key: key as string, offset: node.content }
   }
-  return offset
 }
 
-// Map a b64 ascii code to its 6-bit value, or -1 if it's not a valid b64 char
-// Order: 0-9 a-z A-Z - _
-function b64Value(input: number): number {
-  if (input >= 0x30 && input <= 0x39) return input - 0x30       // '0'-'9' → 0-9
-  if (input >= 0x61 && input <= 0x7A) return input - 0x61 + 10  // 'a'-'z' → 10-35
-  if (input >= 0x41 && input <= 0x5A) return input - 0x41 + 36  // 'A'-'Z' → 36-61
-  if (input === 0x2D) return 62                                  // '-' → 62
-  if (input === 0x5F) return 63                                  // '_' → 63
-  return -1
-}
-
-// start offset is inclusive, end offset is exclusive
-function parseB64(input: Uint8Array, start: number, end: number): number {
-  let val = 0
-  for (let i = start; i < end; i++) {
-    val = val * 64 + b64Value(input[i]!)
-  }
-  return val
-}
-
-let parseCache: Record<number, RexcNode> = {}
-
-// --- Stub parser (replace with real implementation) ---
-const stubParser: RexcParser = {
+const realParser: RexcParser = {
   parseRoot(input) {
-    parseCache = {}
-    const root = parseAny(input, 0, input.length)
-    root.end ??= input.length
-    return root
+    return rxNodeToRexcNode(get(input, input.length))
   },
   parseChildren(input, parent): RexcNode[] {
-    let offset = parent.offset
-    const children: RexcNode[] = []
-    while (offset < parent.end) {
-      let key: string | undefined
-      if (parent.kind === "object") {
-        const keyNode = parseAny(input, offset, parent.end)
-        console.log({ keyNode })
-        if (keyNode.kind !== "string") {
-          throw new SyntaxError("Expected string key in object at offset " + offset)
-        }
-        key = keyNode.value
-        offset = keyNode.end ?? offset
-      }
-      console.log({ key })
-      const valueNode = parseAny(input, offset, parent.end)
-      valueNode.key = key
-      children.push(valueNode)
-      offset = valueNode.end
+    const context = makeContext(input)
+    if (parent.kind === 'object') {
+      const node = get(input, parent.end) as RxObject
+      return [...getEntries(context, node)].reverse().map(([key, child]) => rxNodeToRexcNode(child, key))
     }
-    return children
-  }
-}
-
-function parseAny(input: Uint8Array, start: number, end: number): RexcNode {
-  const cached = parseCache[start]
-  if (cached) return cached
-  const value = parseAnyInner(input, start, end)
-  console.log({ start, end, value })
-  parseCache[start] = value
-  return value
-}
-
-function parseAnyInner(input: Uint8Array, offset: number, end: number): RexcNode {
-  const start = offset
-  const tagOffset = skipB64(input, offset)
-  if (tagOffset >= end) {
-    throw new SyntaxError("Unexpected end of input while parsing value")
-  }
-  const tag = input[tagOffset]
-  offset = tagOffset + 1
-  switch (tag) {
-    // ":" object
-    case 0x3A: {
-      const end = offset + parseB64(input, start, tagOffset)
-      return { kind: 'object', start, offset, end }
+    if (parent.kind === 'array') {
+      const node = get(input, parent.end) as RxArray
+      return [...getEach(context, node)].reverse().map((child, i) => rxNodeToRexcNode(child, i))
     }
-    // ";" array
-    case 0x3B: {
-      const end = offset + parseB64(input, start, tagOffset)
-      return { kind: 'array', start, offset, end }
+    if (parent.kind === 'pathChain') {
+      const node = get(input, parent.end) as RxChain
+      return [...getEach(context, node)].reverse().map((child, i) => rxNodeToRexcNode(child, i))
     }
-    // "." bare string
-    case 0x2E: {
-      return {
-        kind: 'string',
-        start, end: offset,
-        value: textDecoder.decode(input.subarray(start, tagOffset))
-      }
+    if (parent.kind === 'pointer') {
+      const target = parent.targetOffset
+      if (target < input.length) return [rxNodeToRexcNode(get(input, target))]
     }
-    // "," string
-    case 0x2C: {
-      const length = parseB64(input, start, tagOffset)
-      return {
-        kind: 'string',
-        start: start, end: offset + length,
-        value: textDecoder.decode(input.subarray(offset, offset + length))
-      }
-    }
-    // "+" zigzag integer
-    case 0x2B: {
-      return {
-        kind: 'number',
-        start, end: offset,
-        value: fromZigZag(parseB64(input, start, tagOffset))
-      }
-    }
-    // "/" Path Chain
-    case 0x2F: {
-      const end = offset + parseB64(input, start, tagOffset)
-      return {
-        kind: 'pathChain',
-        start, offset, end,
-      }
-    }
-    // "^" pointer
-    case 0x5E:
-      return {
-        kind: 'pointer',
-        start, end: offset,
-        targetOffset: offset + parseB64(input, start, tagOffset),
-      }
-    default:
-      console.warn("Unknown tag " + String.fromCharCode(tag) + " at offset " + offset)
-      return {
-        kind: 'error',
-        start, end: offset,
-        value: JSON.stringify(textDecoder.decode(input.subarray(start, end)))
-      }
-      throw new Error("TODO: implement real parser instead of stub")
+    return []
   }
 }
 
@@ -161,7 +64,7 @@ let rexcText = ''
 let updating = false
 
 // --- REXC tree view ---
-const treeView = new RexcTreeView(rexcContainer, stubParser)
+const treeView = new RexcTreeView(rexcContainer, realParser)
 
 function setRexc(text: string) {
   rexcText = text
@@ -213,11 +116,10 @@ function setJson(text: string) {
 }
 
 // --- Options ---
-const encodeBoolNames = ["bareStrings", "pointers", "schemas", "pathChains"]
 const encodeNumNames = ["indexes"]
 const decodeOptNames = ["lazy"]
 const sharedOptNames = ["reverse"]
-const allBoolNames = [...encodeBoolNames, ...decodeOptNames, ...sharedOptNames]
+const allBoolNames = [...decodeOptNames, ...sharedOptNames]
 const allOptNames = [...allBoolNames, ...encodeNumNames]
 const optEls = Object.fromEntries(allOptNames.map(n => [n, document.getElementById("opt-" + n)])) as Record<string, HTMLInputElement>
 
@@ -290,7 +192,7 @@ refsApply.addEventListener("click", () => {
 
 // --- Encode/decode opts ---
 function getEncodeOpts() {
-  const o: any = Object.fromEntries([...encodeBoolNames, ...sharedOptNames].map(n => [n, optEls[n]!.checked]))
+  const o: any = Object.fromEntries(sharedOptNames.map(n => [n, optEls[n]!.checked]))
   for (const n of encodeNumNames) o[n] = parseInt(optEls[n]!.value, 10) || 0
   o.refs = getActiveRefs()
   return o
@@ -328,26 +230,26 @@ function updateSizes() {
 
 // --- Persistence ---
 function save() {
-  const opts = Object.fromEntries(allBoolNames.map(n => [n, optEls[n]!.checked]))
-  for (const n of encodeNumNames) (opts as any)[n] = parseInt(optEls[n]!.value, 10) || 0
-  localStorage.setItem("rexc-viewer", JSON.stringify({ rexc: rexcText, json: getJson(), opts, refs: currentRefs, refsEnabled: refsToggle.checked }))
+  // const opts = Object.fromEntries(allBoolNames.map(n => [n, optEls[n]!.checked]))
+  // for (const n of encodeNumNames) (opts as any)[n] = parseInt(optEls[n]!.value, 10) || 0
+  // localStorage.setItem("rexc-viewer", JSON.stringify({ rexc: rexcText, json: getJson(), opts, refs: currentRefs, refsEnabled: refsToggle.checked }))
 }
 function restore() {
-  try {
-    const s = JSON.parse(localStorage.getItem("rexc-viewer")!)
-    if (s) {
-      rexcText = s.rexc || ""
-      treeView.setValue(rexcText)
-      updating = true; setJson(s.json || ""); updating = false
-      if (s.opts) {
-        for (const n of allBoolNames) if (n in s.opts) optEls[n]!.checked = s.opts[n]
-        for (const n of encodeNumNames) if (n in s.opts) optEls[n]!.value = s.opts[n]
-      }
-      if (s.refs && typeof s.refs === "object") { currentRefs = s.refs; updateRefsBtn() }
-      if ("refsEnabled" in s) refsToggle.checked = s.refsEnabled
-      updateSizes()
-    }
-  } catch { }
+  // try {
+  //   const s = JSON.parse(localStorage.getItem("rexc-viewer")!)
+  //   if (s) {
+  //     rexcText = s.rexc || ""
+  //     treeView.setValue(rexcText)
+  //     updating = true; setJson(s.json || ""); updating = false
+  //     if (s.opts) {
+  //       for (const n of allBoolNames) if (n in s.opts) optEls[n]!.checked = s.opts[n]
+  //       for (const n of encodeNumNames) if (n in s.opts) optEls[n]!.value = s.opts[n]
+  //     }
+  //     if (s.refs && typeof s.refs === "object") { currentRefs = s.refs; updateRefsBtn() }
+  //     if ("refsEnabled" in s) refsToggle.checked = s.refsEnabled
+  //     updateSizes()
+  //   }
+  // } catch { }
 }
 restore()
 
