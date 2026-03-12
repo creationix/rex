@@ -1,8 +1,9 @@
-import { stringify, parse, BUILTIN_REFS, get, getEntries, getEach, makeContext } from "../../rex-lang/rexc.ts"
+import { BUILTIN_REFS, get, getEntries, getEach, makeContext } from "../../rex-lang/rexc.ts"
 import type { RxNode, RxObject, RxArray, RxChain } from "../../rex-lang/rexc.ts"
 import { EditorView, basicSetup, json as jsonLang, oneDark } from "./codemirror.ts"
 import { RexcTreeView } from "./rexc-tree.ts"
 import type { RexcNode, RexcParser } from "./rexc-parser.ts"
+import type { WorkerRequestBody, WorkerResponse } from "./decode-worker.ts"
 
 function rxNodeToRexcNode(node: RxNode, key?: string | number): RexcNode {
   switch (node.type) {
@@ -60,8 +61,30 @@ const statusEl = document.getElementById("status")!
 const rexcSizeEl = document.getElementById("rexc-size")!
 const jsonSizeEl = document.getElementById("json-size")!
 
+const rexcSpinner = document.getElementById("rexc-spinner")!
+const jsonSpinner = document.getElementById("json-spinner")!
+
 let rexcText = ''
 let updating = false
+
+// --- Worker for heavy encode/decode ---
+const worker = new Worker('./dist/decode-worker.js', { type: 'module' })
+let workerSeq = 0
+
+function workerCall(req: WorkerRequestBody): { id: number; promise: Promise<string> } {
+  const id = ++workerSeq
+  const promise = new Promise<string>((resolve, reject) => {
+    function handler(e: MessageEvent<WorkerResponse>) {
+      if (e.data.id !== id) return
+      worker.removeEventListener('message', handler)
+      if (e.data.ok) resolve(e.data.result)
+      else reject(new Error(e.data.error))
+    }
+    worker.addEventListener('message', handler)
+  })
+  worker.postMessage(Object.assign({ id }, req))
+  return { id, promise }
+}
 
 // --- REXC tree view ---
 const treeView = new RexcTreeView(rexcContainer, realParser)
@@ -76,24 +99,42 @@ treeView.onPaste = (text) => {
   clearHash()
   updating = true
   rexcText = text
-  treeView.setValue(text)
-  try {
-    const value = text.trim()
-    if (!value) { setJson(""); setStatus(true, "OK"); markNeutral(rexcContainer); markNeutral(jsonWrap); save(); updating = false; return }
-    const decoded = parse(value, getDecodeOpts())
-    setJson(JSON.stringify(decoded, null, 2))
+
+  // Phase 1: show the collapsed root node immediately so the UI isn't blank
+  treeView.setValue(text, false)
+  setStatus(true, "Decoding…")
+  markNeutral(rexcContainer)
+  markNeutral(jsonWrap)
+  updateSizes()
+
+  const value = text.trim()
+  if (!value) { setJson(""); setStatus(true, "OK"); markNeutral(rexcContainer); markNeutral(jsonWrap); save(); updating = false; return }
+
+  // Phase 2: expand the tree after the browser paints the root
+  requestAnimationFrame(() => treeView.expandAndRestore())
+
+  // Phase 3: full decode runs off-thread in a worker
+  jsonSpinner.classList.add('active')
+  const { id, promise } = workerCall({ type: 'rexc-to-json', rexc: value, refs: getActiveRefs() })
+  promise.then(json => {
+    if (workerSeq !== id) return // a newer request superseded this one
+    setJson(json)
     setStatus(true, "OK")
     markValid(rexcContainer)
     markValid(jsonWrap)
     save()
-  } catch (e: any) {
+  }).catch((e: any) => {
+    if (workerSeq !== id) return
     setStatus(false, "REXC: " + e.message)
     treeView.setError(e.message)
     markError(rexcContainer)
     markNeutral(jsonWrap)
-  }
-  updateSizes()
-  updating = false
+  }).finally(() => {
+    if (workerSeq !== id) return
+    jsonSpinner.classList.remove('active')
+    updateSizes()
+    updating = false
+  })
 }
 
 // --- CodeMirror 6 JSON editor ---
@@ -114,14 +155,6 @@ function getJson() { return jsonEditor.state.doc.toString() }
 function setJson(text: string) {
   jsonEditor.dispatch({ changes: { from: 0, to: jsonEditor.state.doc.length, insert: text } })
 }
-
-// --- Options ---
-const encodeNumNames = ["indexes"]
-const decodeOptNames = ["lazy"]
-const sharedOptNames = ["reverse"]
-const allBoolNames = [...decodeOptNames, ...sharedOptNames]
-const allOptNames = [...allBoolNames, ...encodeNumNames]
-const optEls = Object.fromEntries(allOptNames.map(n => [n, document.getElementById("opt-" + n)])) as Record<string, HTMLInputElement>
 
 // --- Refs modal ---
 const refsBtn = document.getElementById("refs-btn")!
@@ -189,19 +222,6 @@ refsApply.addEventListener("click", () => {
     refsStatusEl.className = "refs-status refs-error"
   }
 })
-
-// --- Encode/decode opts ---
-function getEncodeOpts() {
-  const o: any = Object.fromEntries(sharedOptNames.map(n => [n, optEls[n]!.checked]))
-  for (const n of encodeNumNames) o[n] = parseInt(optEls[n]!.value, 10) || 0
-  o.refs = getActiveRefs()
-  return o
-}
-function getDecodeOpts() {
-  const o: any = Object.fromEntries([...decodeOptNames, ...sharedOptNames].map(n => [n, optEls[n]!.checked]))
-  o.refs = getActiveRefs()
-  return o
-}
 
 // --- Size display ---
 const textEncoder = new TextEncoder()
@@ -297,45 +317,64 @@ function markValid(el: Element) { el.classList.remove("error"); el.classList.add
 function markError(el: Element) { el.classList.remove("valid"); el.classList.add("error") }
 function markNeutral(el: Element) { el.classList.remove("valid", "error") }
 
-// --- JSON → REXC ---
+// --- JSON → REXC (via worker) ---
 function reencodeFromJson() {
-  try {
-    const value = getJson().trim()
-    if (!value) return
-    const parsed = JSON.parse(value)
-    updating = true
-    rexcText = stringify(parsed, getEncodeOpts()) ?? ''
-    treeView.setValue(rexcText)
-    updating = false
-    updateSizes()
-    save()
-  } catch { }
-}
-for (const el of Object.values(optEls)) {
-  el.addEventListener("change", reencodeFromJson)
-  el.addEventListener("input", reencodeFromJson)
-}
-
-// --- JSON input handler ---
-function onJsonInput() {
-  if (updating) return
-  clearHash()
+  const value = getJson().trim()
+  if (!value) return
+  setStatus(true, "Encoding…")
+  rexcSpinner.classList.add('active')
   updating = true
-  try {
-    const value = getJson().trim()
-    if (!value) { setRexc(""); setStatus(true, "OK"); markNeutral(rexcContainer); markNeutral(jsonWrap); save(); updating = false; return }
-    const parsed = JSON.parse(value)
-    rexcText = stringify(parsed, getEncodeOpts()) ?? ''
+  const { id, promise } = workerCall({ type: 'json-to-rexc', json: value, refs: getActiveRefs() })
+  promise.then(rexc => {
+    if (workerSeq !== id) return
+    rexcText = rexc
     treeView.setValue(rexcText)
     setStatus(true, "OK")
     markValid(rexcContainer)
     markValid(jsonWrap)
     save()
-  } catch (e: any) {
-    setStatus(false, "JSON: " + e.message)
-    markError(jsonWrap)
-    markNeutral(rexcContainer)
-  }
-  updateSizes()
-  updating = false
+  }).catch(() => {
+    if (workerSeq !== id) return
+  }).finally(() => {
+    if (workerSeq !== id) return
+    rexcSpinner.classList.remove('active')
+    updateSizes()
+    updating = false
+  })
+}
+
+// --- JSON input handler (debounced, via worker) ---
+let jsonDebounce: ReturnType<typeof setTimeout> | undefined
+function onJsonInput() {
+  if (updating) return
+  clearHash()
+  clearTimeout(jsonDebounce)
+  jsonDebounce = setTimeout(() => {
+    if (updating) return
+    updating = true
+    const value = getJson().trim()
+    if (!value) { setRexc(""); setStatus(true, "OK"); markNeutral(rexcContainer); markNeutral(jsonWrap); save(); updating = false; return }
+    setStatus(true, "Encoding…")
+    rexcSpinner.classList.add('active')
+    const { id, promise } = workerCall({ type: 'json-to-rexc', json: value, refs: getActiveRefs() })
+    promise.then(rexc => {
+      if (workerSeq !== id) return
+      rexcText = rexc
+      treeView.setValue(rexcText)
+      setStatus(true, "OK")
+      markValid(rexcContainer)
+      markValid(jsonWrap)
+      save()
+    }).catch((e: any) => {
+      if (workerSeq !== id) return
+      setStatus(false, "JSON: " + e.message)
+      markError(jsonWrap)
+      markNeutral(rexcContainer)
+    }).finally(() => {
+      if (workerSeq !== id) return
+      rexcSpinner.classList.remove('active')
+      updateSizes()
+      updating = false
+    })
+  }, 300)
 }

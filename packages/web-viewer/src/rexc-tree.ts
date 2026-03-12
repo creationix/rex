@@ -168,7 +168,7 @@ export class RexcTreeView {
     }
   }
 
-  setValue(input: string) {
+  setValue(input: string, autoExpand = true) {
     const prevPaths = this.getExpandedPaths()
     const prevScroll = this.viewport.scrollTop
 
@@ -189,13 +189,15 @@ export class RexcTreeView {
     try {
       const root = this.parser.parseRoot(this.input)
       this.rows = [{ node: root, depth: 0, expanded: false }]
-      // Auto-expand the root
-      if (this.isExpandable(root)) {
-        this.expandRow(0)
-      }
-      // Restore previously expanded paths
-      if (prevPaths.size > 0) {
-        this.restoreExpandedPaths(prevPaths)
+      if (autoExpand) {
+        // Auto-expand the root
+        if (this.isExpandable(root)) {
+          this.expandRow(0)
+        }
+        // Restore previously expanded paths
+        if (prevPaths.size > 0) {
+          this.restoreExpandedPaths(prevPaths)
+        }
       }
     } catch (e: any) {
       this.rows = []
@@ -213,6 +215,20 @@ export class RexcTreeView {
     this.viewport.scrollTop = prevScroll
     this.renderStart = -1
     this.render()
+  }
+
+  /** Expand root and restore previously expanded paths. */
+  expandAndRestore() {
+    const root = this.rows[0]
+    if (root && !root.expanded && this.isExpandable(root.node)) {
+      const prevPaths = this.getExpandedPaths()
+      this.expandRow(0)
+      if (prevPaths.size > 0) {
+        this.restoreExpandedPaths(prevPaths)
+      }
+      this.renderStart = -1
+      this.render()
+    }
   }
 
   setError(msg: string) {
@@ -341,16 +357,23 @@ export class RexcTreeView {
       div.appendChild(span)
     }
 
-    // Raw bytes preview (dimmed, truncated — only decode a small slice)
+    // Raw bytes preview (dimmed, truncated from left — rexc reads right-to-left)
+    // For containers, show only the metadata (content..end), not the children area.
     if (node.end != null) {
-      const nodeLen = (node.offset ?? node.end) - node.start
+      const previewStart = node.offset ?? node.start
+      const previewEnd = node.end
+      const nodeLen = previewEnd - previewStart
       if (nodeLen > 0) {
-        const previewLen = Math.min(nodeLen, 80)
-        const raw = textDecoder.decode(this.input.subarray(node.start, node.start + previewLen))
+        const previewLen = Math.min(nodeLen, 40)
+        const raw = textDecoder.decode(this.input.subarray(previewEnd - previewLen, previewEnd))
         const rawSpan = document.createElement('span')
         rawSpan.style.cssText = 'color:#444;margin-left:12px;font-size:11px;'
-        rawSpan.textContent = nodeLen > 80 ? raw + '…' : raw
+        rawSpan.textContent = nodeLen > 40 ? '…' + raw : raw
         div.appendChild(rawSpan)
+
+        // Full untruncated rexc as tooltip
+        const full = textDecoder.decode(this.input.subarray(previewStart, previewEnd))
+        div.title = full
       }
     }
 
