@@ -11,6 +11,8 @@ import {
 	seekChild,
 	collectChildren,
 	rawBytes,
+	open,
+	handle,
 } from "./rx";
 
 function cur(value: unknown, opts?: Parameters<typeof encode>[1]) {
@@ -646,5 +648,261 @@ describe("error paths", () => {
 		const c = cur([1, 2, 3]);
 		const v = makeCursor(c.data);
 		expect(findKey(v, c, "key")).toBe(false);
+	});
+});
+
+// ── open() Proxy API ──
+
+function opened(value: unknown, opts?: Parameters<typeof encode>[1]) {
+	return open(encode(value, opts));
+}
+
+describe("open() primitives", () => {
+	test("integers", () => {
+		expect(opened(0)).toBe(0);
+		expect(opened(42)).toBe(42);
+		expect(opened(-7)).toBe(-7);
+	});
+
+	test("floats", () => {
+		expect(opened(3.14)).toBe(3.14);
+		expect(opened(Infinity)).toBe(Infinity);
+		expect(opened(-Infinity)).toBe(-Infinity);
+		expect(opened(NaN)).toBeNaN();
+	});
+
+	test("strings", () => {
+		expect(opened("")).toBe("");
+		expect(opened("hello")).toBe("hello");
+		expect(opened("🚀")).toBe("🚀");
+	});
+
+	test("booleans, null, undefined", () => {
+		expect(opened(true)).toBe(true);
+		expect(opened(false)).toBe(false);
+		expect(opened(null)).toBe(null);
+		expect(opened(undefined)).toBe(undefined);
+	});
+});
+
+describe("open() arrays", () => {
+	test("Array.isArray", () => {
+		expect(Array.isArray(opened([]))).toBe(true);
+		expect(Array.isArray(opened([1, 2]))).toBe(true);
+	});
+
+	test("length", () => {
+		const arr = opened([10, 20, 30]) as unknown[];
+		expect(arr.length).toBe(3);
+	});
+
+	test("index access", () => {
+		const arr = opened([10, 20, 30]) as unknown[];
+		expect(arr[0]).toBe(10);
+		expect(arr[1]).toBe(20);
+		expect(arr[2]).toBe(30);
+		expect(arr[3]).toBe(undefined);
+	});
+
+	test("for...of iteration", () => {
+		const arr = opened([1, 2, 3]) as unknown[];
+		const vals: unknown[] = [];
+		for (const v of arr) vals.push(v);
+		expect(vals).toEqual([1, 2, 3]);
+	});
+
+	test("spread", () => {
+		const arr = opened([1, 2, 3]) as unknown[];
+		expect([...arr]).toEqual([1, 2, 3]);
+	});
+
+	test("JSON.stringify", () => {
+		const arr = opened([1, "hello", true, null]);
+		expect(JSON.stringify(arr)).toBe('[1,"hello",true,null]');
+	});
+
+	test("nested arrays", () => {
+		const arr = opened([[1, 2], [3, 4]]) as unknown[][];
+		expect(arr[0]![0]).toBe(1);
+		expect(arr[0]![1]).toBe(2);
+		expect(arr[1]![0]).toBe(3);
+		expect(arr[1]![1]).toBe(4);
+		expect(JSON.stringify(arr)).toBe("[[1,2],[3,4]]");
+	});
+
+	test("empty array", () => {
+		const arr = opened([]) as unknown[];
+		expect(arr.length).toBe(0);
+		expect([...arr]).toEqual([]);
+	});
+
+	test("indexed array", () => {
+		const arr = opened([10, 20, 30, 40, 50], { indexes: 0 }) as unknown[];
+		expect(arr.length).toBe(5);
+		expect(arr[0]).toBe(10);
+		expect(arr[4]).toBe(50);
+		expect([...arr]).toEqual([10, 20, 30, 40, 50]);
+	});
+
+	test("'in' operator", () => {
+		const arr = opened([10, 20]) as unknown[];
+		expect(0 in arr).toBe(true);
+		expect(1 in arr).toBe(true);
+		expect(2 in arr).toBe(false);
+	});
+});
+
+describe("open() objects", () => {
+	test("property access", () => {
+		const obj = opened({ color: "red", size: 42 }) as any;
+		expect(obj.color).toBe("red");
+		expect(obj.size).toBe(42);
+	});
+
+	test("missing key returns undefined", () => {
+		const obj = opened({ a: 1 }) as any;
+		expect(obj.missing).toBe(undefined);
+	});
+
+	test("Object.keys", () => {
+		const obj = opened({ x: 1, y: 2 }) as any;
+		const keys = Object.keys(obj);
+		expect(keys.sort()).toEqual(["x", "y"]);
+	});
+
+	test("Object.entries", () => {
+		const obj = opened({ a: 1, b: 2 }) as any;
+		const entries = Object.entries(obj);
+		expect(entries.sort()).toEqual([["a", 1], ["b", 2]]);
+	});
+
+	test("'in' operator", () => {
+		const obj = opened({ a: 1 }) as any;
+		expect("a" in obj).toBe(true);
+		expect("b" in obj).toBe(false);
+	});
+
+	test("JSON.stringify", () => {
+		const obj = opened({ a: 1, b: "hello" }) as any;
+		const parsed = JSON.parse(JSON.stringify(obj));
+		expect(parsed.a).toBe(1);
+		expect(parsed.b).toBe("hello");
+	});
+
+	test("nested objects", () => {
+		const obj = opened({ outer: { inner: 42 } }) as any;
+		expect(obj.outer.inner).toBe(42);
+	});
+
+	test("object containing array", () => {
+		const obj = opened({ items: [10, 20, 30] }) as any;
+		expect(Array.isArray(obj.items)).toBe(true);
+		expect(obj.items.length).toBe(3);
+		expect(obj.items[1]).toBe(20);
+	});
+
+	test("array of objects", () => {
+		const data = opened([{ x: 1 }, { x: 2 }]) as any[];
+		expect(data[0].x).toBe(1);
+		expect(data[1].x).toBe(2);
+	});
+
+	test("empty object", () => {
+		const obj = opened({}) as any;
+		expect(Object.keys(obj)).toEqual([]);
+	});
+
+	test("length on object", () => {
+		const obj = opened({ a: 1, b: 2, c: 3 }) as any;
+		expect(obj.length).toBe(3);
+	});
+});
+
+describe("open() schema objects", () => {
+	test("property access on schema objects", () => {
+		const data = opened([
+			{ name: "alice", age: 30 },
+			{ name: "bob", age: 25 },
+			{ name: "carol", age: 20 },
+		]) as any[];
+		expect(data[0].name).toBe("alice");
+		expect(data[0].age).toBe(30);
+		expect(data[1].name).toBe("bob");
+		expect(data[2].age).toBe(20);
+	});
+
+	test("Object.keys on schema objects", () => {
+		const data = opened([
+			{ name: "alice", age: 30 },
+			{ name: "bob", age: 25 },
+			{ name: "carol", age: 20 },
+		]) as any[];
+		expect(Object.keys(data[0]).sort()).toEqual(["age", "name"]);
+		expect(Object.keys(data[1]).sort()).toEqual(["age", "name"]);
+		// carol has inline keys (no schema)
+		expect(Object.keys(data[2]).sort()).toEqual(["age", "name"]);
+	});
+
+	test("JSON.stringify with schema objects", () => {
+		const data = opened([
+			{ name: "alice", age: 30 },
+			{ name: "bob", age: 25 },
+		]) as any[];
+		const parsed = JSON.parse(JSON.stringify(data));
+		expect(parsed).toEqual([
+			{ name: "alice", age: 30 },
+			{ name: "bob", age: 25 },
+		]);
+	});
+});
+
+describe("open() pointers and chains", () => {
+	test("pointer values resolve transparently", () => {
+		const data = opened(["hello", "hello"]) as any[];
+		expect(data[0]).toBe("hello");
+		expect(data[1]).toBe("hello");
+	});
+
+	test("chain strings resolve", () => {
+		const data = opened(["/foo/bar/baz", "/foo/bar/qux"]) as any[];
+		expect(data[0]).toBe("/foo/bar/baz");
+		expect(data[1]).toBe("/foo/bar/qux");
+	});
+});
+
+describe("open() read-only", () => {
+	test("set throws", () => {
+		const obj = opened({ a: 1 }) as any;
+		expect(() => { obj.a = 2; }).toThrow("read-only");
+	});
+
+	test("delete throws", () => {
+		const obj = opened({ a: 1 }) as any;
+		expect(() => { delete obj.a; }).toThrow("read-only");
+	});
+});
+
+describe("open() handle escape hatch", () => {
+	test("handle returns data and right offset", () => {
+		const obj = opened({ a: 1 }) as any;
+		const h = handle(obj);
+		expect(h).toBeDefined();
+		expect(h!.data).toBeInstanceOf(Uint8Array);
+		expect(typeof h!.right).toBe("number");
+	});
+
+	test("handle returns undefined for non-proxy", () => {
+		expect(handle(42)).toBe(undefined);
+		expect(handle("hello")).toBe(undefined);
+		expect(handle({})).toBe(undefined);
+	});
+});
+
+describe("open() Symbol.iterator on objects", () => {
+	test("iterates [key, value] pairs", () => {
+		const obj = opened({ a: 1, b: 2 }) as any;
+		const entries: [string, unknown][] = [];
+		for (const pair of obj) entries.push(pair);
+		expect(entries.sort((a, b) => a[0].localeCompare(b[0]))).toEqual([["a", 1], ["b", 2]]);
 	});
 });
