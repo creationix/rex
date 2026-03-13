@@ -15,7 +15,7 @@ rx data.rexc                         # pretty-print as tree
 rx data.rexc --to json               # convert rexc → JSON
 rx data.json --to rexc               # convert JSON → rexc
 cat data.rexc | rx                   # read from stdin (auto-detect)
-rx -s .routes[0].op data.rexc        # select a sub-value
+rx data.rexc -s routes 0 op          # select a sub-value
 rx data.rexc --to json -o out.json   # write to file
 ```
 
@@ -50,7 +50,7 @@ Format is auto-detected from file extension (`.json`, `.rexc`) or by content sni
 
 | Flag | Description |
 |------|-------------|
-| `-s`, `--select <path>` | Dot-path selector (e.g. `.foo.bar[0].baz`) |
+| `-s`, `--select <seg>...` | Space-delimited selector segments (e.g. `-s foo bar 0 baz`) |
 
 ### Output
 

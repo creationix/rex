@@ -22,7 +22,7 @@ type RxOptions = {
 	files: string[];
 	fromFormat?: Format;
 	toFormat?: OutputFormat;
-	select?: string;
+	select?: string[];
 	out?: string;
 	indexes?: number | false;
 	color: boolean;
@@ -60,9 +60,13 @@ function parseArgs(argv: string[]): RxOptions {
 			continue;
 		}
 		if (arg === "-s" || arg === "--select") {
-			const v = argv[++i];
-			if (!v) throw new Error("Missing value for --select");
-			opts.select = v;
+			// Everything after -s until end-of-args or next flag is a selector segment
+			const segments: string[] = [];
+			while (i + 1 < argv.length && !argv[i + 1]!.startsWith("-")) {
+				segments.push(argv[++i]!);
+			}
+			if (segments.length === 0) throw new Error("Missing value for --select");
+			opts.select = segments;
 			continue;
 		}
 		if (arg === "-o" || arg === "--out") {
@@ -98,7 +102,7 @@ function usage(): string {
 		"  rx data.rexc --to json         Convert rexc to JSON",
 		"  rx data.json --to rexc         Convert JSON to rexc",
 		"  cat data.rexc | rx             Read from stdin (auto-detect)",
-		"  rx -s .routes[0].op data.rexc  Select a sub-value",
+		"  rx data.rexc -s routes 0 op    Select a sub-value",
 		"",
 		"Input:",
 		"  <file>              Read from file (format auto-detected by extension)",
@@ -119,7 +123,7 @@ function usage(): string {
 		"                      Use 'false' to disable indexes entirely",
 		"",
 		"Filtering:",
-		"  -s, --select <path> Dot-path selector (e.g. .foo.bar[0].baz)",
+		"  -s, --select <seg>  Space-delimited selector segments (e.g. -s foo bar 0 baz)",
 		"",
 		"Output:",
 		"  -o, --out <path>    Write to file instead of stdout",
@@ -182,7 +186,7 @@ async function readInput(opts: RxOptions): Promise<ParsedInput> {
 				`  ${cyan}rx${reset} ${dim}<file>${reset}               Pretty-print as a tree`,
 				`  ${cyan}rx${reset} ${dim}<file>${reset} ${cyan}--to json${reset}     Convert to JSON`,
 				`  cat data.rexc | ${cyan}rx${reset}      Read from stdin`,
-				`  ${cyan}rx${reset} ${dim}<file>${reset} ${cyan}-s${reset} ${dim}.path${reset}      Select a sub-value`,
+				`  ${cyan}rx${reset} ${dim}<file>${reset} ${cyan}-s${reset} ${dim}key 0 sub${reset}   Select a sub-value`,
 				"",
 				`Run ${cyan}rx --help${reset} for full usage.`,
 				"",
@@ -214,68 +218,27 @@ async function readInput(opts: RxOptions): Promise<ParsedInput> {
 
 // ── Selector ─────────────────────────────────────────────────
 
-type Segment = { type: "key"; name: string } | { type: "index"; value: number };
-
-const BARE_KEY = /^[a-zA-Z_][\w-]*$/;
-
-function formatSegment(key: string): string {
-	if (BARE_KEY.test(key)) return `.${key}`;
-	return `["${key.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`;
-}
-
-function parseSelector(selector: string): Segment[] {
-	const segments: Segment[] = [];
-	const re = /\.([a-zA-Z_][\w-]*)|\[(\d+)\]|\["((?:[^"\\]|\\.)*)"\]/g;
-	// Allow leading bare key without dot
-	let s = selector;
-	if (!s.startsWith(".") && !s.startsWith("[")) s = "." + s;
-
-	let match: RegExpExecArray | null;
-	let lastIndex = 0;
-	while ((match = re.exec(s)) !== null) {
-		if (match.index !== lastIndex) {
-			throw new Error(`Invalid selector at position ${lastIndex}: ${selector}`);
-		}
-		if (match[1] !== undefined) {
-			segments.push({ type: "key", name: match[1] });
-		} else if (match[2] !== undefined) {
-			segments.push({ type: "index", value: parseInt(match[2], 10) });
-		} else if (match[3] !== undefined) {
-			segments.push({ type: "key", name: match[3].replace(/\\(.)/g, "$1") });
-		}
-		lastIndex = re.lastIndex;
-	}
-	if (lastIndex !== s.length) {
-		throw new Error(`Invalid selector at position ${lastIndex}: ${selector}`);
-	}
-	return segments;
-}
-
-function applySelector(value: unknown, selector: string): unknown {
-	if (selector === "." || selector === "") return value;
-	const segments = parseSelector(selector);
+function applySelector(value: unknown, segments: string[]): unknown {
 	let current = value;
 	let path = "";
 	for (const seg of segments) {
-		if (seg.type === "key") {
-			path += `.${seg.name}`;
-			if (current === null || current === undefined || typeof current !== "object" || Array.isArray(current)) {
-				throw new Error(`Selector ${path}: cannot access property '${seg.name}' on ${typeLabel(current)}`);
+		const asIndex = /^\d+$/.test(seg) ? parseInt(seg, 10) : undefined;
+		if (Array.isArray(current) && asIndex !== undefined) {
+			path += `[${asIndex}]`;
+			if (asIndex < 0 || asIndex >= current.length) {
+				throw new Error(`Selector ${path}: index ${asIndex} out of range (length ${current.length})`);
 			}
+			current = current[asIndex];
+		} else if (current !== null && current !== undefined && typeof current === "object" && !Array.isArray(current)) {
+			path += ` ${seg}`;
 			const obj = current as Record<string, unknown>;
-			if (!(seg.name in obj)) {
-				throw new Error(`Selector ${path}: property '${seg.name}' not found`);
+			if (!(seg in obj)) {
+				throw new Error(`Selector${path}: property '${seg}' not found`);
 			}
-			current = obj[seg.name];
+			current = obj[seg];
 		} else {
-			path += `[${seg.value}]`;
-			if (!Array.isArray(current)) {
-				throw new Error(`Selector ${path}: cannot index into ${typeLabel(current)}`);
-			}
-			if (seg.value < 0 || seg.value >= current.length) {
-				throw new Error(`Selector ${path}: index ${seg.value} out of range (length ${current.length})`);
-			}
-			current = current[seg.value];
+			path += ` ${seg}`;
+			throw new Error(`Selector${path}: cannot access '${seg}' on ${typeLabel(current)}`);
 		}
 	}
 	return current;
@@ -290,64 +253,106 @@ function typeLabel(v: unknown): string {
 
 // ── Completions ──────────────────────────────────────────────
 
-function walkToPrefix(value: unknown, prefix: string): { target: unknown; resolvedPrefix: string } {
-	if (prefix === "" || prefix === ".") return { target: value, resolvedPrefix: "" };
-
-	// Parse as much of the prefix as possible
-	const segments = parseSelectorPartial(prefix);
+function walkSegments(value: unknown, segments: string[]): unknown {
 	let current = value;
-	let resolvedPrefix = "";
 	for (const seg of segments) {
-		if (seg.type === "key") {
-			if (current === null || current === undefined || typeof current !== "object" || Array.isArray(current)) return { target: undefined, resolvedPrefix };
+		const asIndex = /^\d+$/.test(seg) ? parseInt(seg, 10) : undefined;
+		if (Array.isArray(current) && asIndex !== undefined) {
+			if (asIndex < 0 || asIndex >= current.length) return undefined;
+			current = current[asIndex];
+		} else if (current !== null && current !== undefined && typeof current === "object" && !Array.isArray(current)) {
 			const obj = current as Record<string, unknown>;
-			if (!(seg.name in obj)) return { target: undefined, resolvedPrefix };
-			current = obj[seg.name];
-			resolvedPrefix += formatSegment(seg.name);
+			if (!(seg in obj)) return undefined;
+			current = obj[seg];
 		} else {
-			if (!Array.isArray(current) || seg.value >= current.length) return { target: undefined, resolvedPrefix };
-			current = current[seg.value];
-			resolvedPrefix += `[${seg.value}]`;
+			return undefined;
 		}
 	}
-	return { target: current, resolvedPrefix };
+	return current;
 }
 
-function parseSelectorPartial(selector: string): Segment[] {
-	// Parse complete segments from the prefix, ignoring trailing partial
-	const segments: Segment[] = [];
-	const re = /\.([a-zA-Z_][\w-]*)|\[(\d+)\]|\["((?:[^"\\]|\\.)*)"\]/g;
-	let s = selector;
-	if (!s.startsWith(".") && !s.startsWith("[")) s = "." + s;
+const MAX_COMPLETIONS = 50;
 
-	let match: RegExpExecArray | null;
-	while ((match = re.exec(s)) !== null) {
-		if (match[1] !== undefined) segments.push({ type: "key", name: match[1] });
-		else if (match[2] !== undefined) segments.push({ type: "index", value: parseInt(match[2], 10) });
-		else if (match[3] !== undefined) segments.push({ type: "key", name: match[3].replace(/\\(.)/g, "$1") });
+function collapseCompletions(matches: string[], partial: string): string[] {
+	if (matches.length <= MAX_COMPLETIONS) return matches;
+	// Sort once, then binary-search for the right prefix length.
+	// Sorted matches means we only need to compare adjacent entries
+	// to count distinct prefixes at a given length.
+	matches.sort();
+	const maxLen = matches[matches.length - 1]!.length;
+	// Count distinct prefixes at a given length
+	function distinctAt(len: number): number {
+		let count = 1;
+		for (let i = 1; i < matches.length; i++) {
+			const a = matches[i - 1]!, b = matches[i]!;
+			// Compare only up to len chars — since sorted, first diff means new prefix
+			let same = a.length >= len && b.length >= len;
+			if (same) {
+				for (let j = 0; j < len; j++) {
+					if (a.charCodeAt(j) !== b.charCodeAt(j)) { same = false; break; }
+				}
+			} else {
+				// Different lengths under len — check the shorter portion
+				const end = Math.min(a.length, b.length);
+				for (let j = 0; j < end; j++) {
+					if (a.charCodeAt(j) !== b.charCodeAt(j)) { same = false; break; }
+				}
+				if (same) same = a.length === b.length;
+			}
+			if (!same) count++;
+		}
+		return count;
 	}
-	return segments;
+	// Binary search for the longest prefix length where distinct <= MAX.
+	// As len increases, distinctAt(len) increases (more granular grouping).
+	// We want the largest len where it's still <= MAX.
+	let lo = partial.length + 1;
+	let hi = maxLen;
+	while (lo < hi) {
+		const mid = (lo + hi + 1) >>> 1;
+		if (distinctAt(mid) <= MAX_COMPLETIONS) lo = mid;
+		else hi = mid - 1;
+	}
+	// Collect unique prefixes at this length
+	const result: string[] = [matches[0]!.slice(0, lo)];
+	for (let i = 1; i < matches.length; i++) {
+		const p = matches[i]!.slice(0, lo);
+		if (p !== result[result.length - 1]) result.push(p);
+	}
+	return result;
 }
 
-function generateCompletions(value: unknown, prefix: string): string[] {
-	const { target, resolvedPrefix } = walkToPrefix(value, prefix);
+function generateCompletions(value: unknown, segments: string[], partial: string): string[] {
+	const target = walkSegments(value, segments);
 	if (target === null || target === undefined || typeof target !== "object") return [];
 
+	let matches: string[];
 	if (Array.isArray(target)) {
-		return target.map((_, i) => `${resolvedPrefix}[${i}]`);
+		matches = target.map((_, i) => String(i)).filter(s => s.startsWith(partial));
+	} else {
+		matches = Object.keys(target as Record<string, unknown>).filter(k => k.startsWith(partial));
 	}
-
-	const keys = Object.keys(target as Record<string, unknown>);
-	return keys.map((key) => resolvedPrefix + formatSegment(key));
+	return collapseCompletions(matches, partial);
 }
 
 // ── Shell completions engine ─────────────────────────────────
 
-// Flags that take a value argument
-const FLAGS_WITH_VALUE = new Set(["-s", "--select", "-o", "--out", "--from", "--to", "--indexes"]);
+// Flags that take a value argument (excluding -s which consumes all remaining non-flag args)
+const FLAGS_WITH_VALUE = new Set(["-o", "--out", "--from", "--to", "--indexes"]);
 const ALL_FLAGS = ["-h", "--help", "-j", "--json", "-r", "--rexc", "-t", "--tree",
 	"--from", "--to", "-s", "--select", "-o", "--out", "--indexes", "--color", "--no-color"];
 const DATA_EXTENSIONS = [".json", ".rexc", ".rex"];
+
+/** Find the index of -s/--select in words (before the current word), or -1 */
+function findSelectIndex(words: string[]): number {
+	// Scan words before the current (last) word
+	for (let i = 0; i < words.length - 1; i++) {
+		const w = words[i]!;
+		if (w === "-s" || w === "--select") return i;
+		if (FLAGS_WITH_VALUE.has(w)) { i++; continue; }
+	}
+	return -1;
+}
 
 async function handleCompletions(argv: string[]) {
 	// argv = words after "rx" on the command line, with the word being completed last
@@ -361,16 +366,18 @@ async function handleCompletions(argv: string[]) {
 	if (prev === "--to") return output(["json", "rexc", "tree"]);
 	if (prev === "-o" || prev === "--out") return output(await listFiles(current, false));
 
-	// Completing a selector value? Parse files from earlier args to generate paths
-	if (prev === "-s" || prev === "--select") {
-		const files = extractFiles(words.slice(0, -1));
+	// Inside a selector? (any position after -s that isn't a flag)
+	const selectIdx = findSelectIndex(words);
+	if (selectIdx >= 0 && !current.startsWith("-")) {
+		const files = extractFiles(words.slice(0, selectIdx));
 		if (files.length > 0) {
-			const prefix = current || ".";
+			// Segments are all words between -s and the current word
+			const segments = words.slice(selectIdx + 1, -1);
 			try {
 				const raw = await readFile(files[0]!, "utf8");
 				const format = formatFromExt(files[0]!) ?? detectFormat(raw);
 				const value = parseRaw(raw, format);
-				return output(generateCompletions(value, prefix));
+				return output(generateCompletions(value, segments, current));
 			} catch { /* can't parse, no completions */ }
 		}
 		return output([]);
@@ -387,6 +394,8 @@ function extractFiles(words: string[]): string[] {
 	const files: string[] = [];
 	for (let i = 0; i < words.length; i++) {
 		const w = words[i]!;
+		// Stop at -s since everything after it is selector segments
+		if (w === "-s" || w === "--select") break;
 		if (FLAGS_WITH_VALUE.has(w)) { i++; continue; }
 		if (w.startsWith("-")) continue;
 		files.push(w);
@@ -429,8 +438,14 @@ _rx() {
 	local -a results
 	results=("\${(@f)$(rx --completions -- "\${(@)words[2,$CURRENT]}" 2>/dev/null)}")
 	(( \${#results} == 0 )) && return
+	# Check if we're inside a selector (after -s/--select)
+	local in_select=0
+	local i
+	for (( i=2; i < CURRENT; i++ )); do
+		[[ "\${words[$i]}" == (-s|--select) ]] && in_select=1 && break
+	done
 	local last="\${words[$CURRENT]}"
-	if [[ "$last" == -* ]] || { local prev="\${words[$((CURRENT-1))]}"; [[ "$prev" == (-s|--select) ]]; }; then
+	if [[ "$last" == -* ]] || (( in_select )); then
 		compadd -Q -S '' -- "\${results[@]}"
 	else
 		compadd -Q -f -S '' -- "\${results[@]}"
