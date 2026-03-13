@@ -1,23 +1,274 @@
 # @creationix/rx
 
-Inspect, convert, and filter REXC and JSON data.
+REXC encoder, decoder, and data tool. Drop-in replacements for `JSON.stringify` and `JSON.parse` that produce smaller output, skip deserialization on read, and create near-zero heap allocations.
+
+## Why
+
+JSON forces a tradeoff: parse everything up front (slow, memory-heavy) or don't cache at all. REXC eliminates the tradeoff:
+
+- **18x smaller** — binary-encoded numbers, de-duplicated strings, shared schemas, prefix-compressed paths.
+- **23,000x faster single-key lookup** — O(log n) binary search on sorted indexes, directly on the encoded bytes. No parse step.
+- **Near-zero heap pressure** — the parsed result is a Proxy over a flat byte buffer. The GC doesn't trace its contents.
+
+Benchmarked on a real production dataset: a 35,000-key website deployment manifest.
 
 ## Install
 
 ```sh
-bun add -g @creationix/rx
+npm install @creationix/rx        # library
+npm install -g @creationix/rx     # CLI (global)
+npx @creationix/rx data.rx      # CLI (one-off)
 ```
+
+## Quick Start
+
+### Encoding (drop-in for `JSON.stringify`)
+
+```ts
+import { stringify } from "@creationix/rx";
+
+const payload = stringify({ users: ["alice", "bob"], version: 3 });
+// Returns a string — store it anywhere you'd store JSON
+```
+
+### Decoding (drop-in for `JSON.parse`)
+
+```ts
+import { parse } from "@creationix/rx";
+
+const data = parse(payload) as any;
+data.users[0]       // "alice"
+data.version         // 3
+Object.keys(data)    // ["users", "version"]
+JSON.stringify(data)  // works — full JS interop
+```
+
+The returned value supports property access, `Object.keys()`, `Object.entries()`, `for...of`, `for...in`, `Array.isArray()`, `.map()`, `.filter()`, `.find()`, `.reduce()`, spread, destructuring, and `JSON.stringify()`. Existing code that consumes the parsed result doesn't need to change.
 
 ## CLI Usage
 
 ```sh
-rx data.rexc                         # pretty-print as tree
-rx data.rexc --to json               # convert rexc → JSON
-rx data.json --to rexc               # convert JSON → rexc
-cat data.rexc | rx                   # read from stdin (auto-detect)
-rx data.rexc -s routes 0 op          # select a sub-value
-rx data.rexc --to json -o out.json   # write to file
+rx data.rx                         # pretty-print as tree
+rx data.rx --to json               # convert rexc → JSON
+rx data.json --to rexc             # convert JSON → rexc
+cat data.rx | rx                   # read from stdin (auto-detect)
+rx data.rx -s routes 0 op          # select a sub-value
+rx data.rx --to json -o out.json   # write to file
 ```
+
+See [CLI Reference](#cli-reference) below for full options.
+
+There is also a web-based viewer in development for inspecting REXC documents with expandable tree navigation, syntax-highlighted node types, and tabs for raw REXC, JSON, and ref dictionaries:
+
+![REXC Viewer — interactive tree inspector showing a website deployment manifest with chain-compressed paths, pointer deduplication, and nested object metadata](rexc-viewer-screenshot.png)
+
+### Binary API
+
+For performance-critical paths or when working with `Uint8Array` buffers directly:
+
+```ts
+import { encode, decode, open } from "@creationix/rx";
+
+// encode returns Uint8Array (no string conversion)
+const buf = encode({ path: "/api/users", status: 200 });
+
+// decode/open take Uint8Array, return Proxy-wrapped value
+const data = open(buf) as any;
+data.path    // "/api/users"
+data.status  // 200
+```
+
+## Encoding Options
+
+```ts
+import { stringify, encode } from "@creationix/rx";
+
+// Add sorted indexes to containers with >= 10 entries (enables O(log n) key lookup)
+stringify(data, { indexes: 10 });
+
+// Always index, even small containers
+stringify(data, { indexes: 0 });
+
+// Disable indexes entirely
+stringify(data, { indexes: false });
+
+// External refs — shared dictionary of known values
+const refs = { R: ["/api/users", "/api/teams"] };
+stringify(data, { refs });
+
+// Streaming — receive chunks as they're produced
+stringify(data, {
+  onChunk: (chunk, offset) => process.stdout.write(chunk),
+});
+```
+
+Both `stringify` and `encode` accept the same options. `stringify` returns a string; `encode` returns a `Uint8Array`.
+
+## Decoding with Refs
+
+If the encoder used external refs, pass the same dictionary to the decoder:
+
+```ts
+const refs = { R: ["/api/users", "/api/teams"] };
+const data = parse(payload, { refs });
+```
+
+Ref values are returned as-is — they can be strings, numbers, objects, arrays, or even functions and symbols.
+
+## Proxy Behavior
+
+The Proxy returned by `parse`/`decode`/`open` is read-only and behaves like a frozen JS object:
+
+```ts
+const obj = parse(payload) as any;
+
+obj.newKey = 1;     // throws TypeError("rexc data is read-only")
+delete obj.key;     // throws TypeError("rexc data is read-only")
+
+"key" in obj;       // works (uses zero-alloc key search)
+```
+
+Containers are memoized — repeated access to the same property returns the same Proxy instance:
+
+```ts
+obj.nested === obj.nested  // true
+```
+
+### Escape hatch to raw data
+
+```ts
+import { handle } from "@creationix/rx";
+
+const h = handle(obj.nested);
+// h.data: Uint8Array — the underlying buffer
+// h.right: number — byte offset of this node
+```
+
+## Low-Level Cursor API
+
+For zero-allocation traversal, streaming output, or byte-slicing passthrough, use the cursor API directly. The cursor is a mutable struct that the parser fills in — no objects are created per node visited.
+
+```ts
+import {
+  makeCursor, read, readStr, resolveStr,
+  strEquals, strCompare, strHasPrefix, prepareKey,
+  findKey, findByPrefix, seekChild, collectChildren,
+  rawBytes,
+} from "@creationix/rx";
+```
+
+### Basics
+
+```ts
+const c = makeCursor(data);  // one allocation, c.right = data.length
+read(c);                      // parse root node
+// c.tag, c.left, c.right, c.val, c.ixWidth, c.ixCount, c.schema
+```
+
+`read()` is always zero-alloc. It classifies the node and sets cursor fields:
+
+| Tag | `val` | Notes |
+|-----|-------|-------|
+| `"int"` | signed integer | zigzag decoded |
+| `"float"` | float value | includes `Infinity`, `-Infinity`, `NaN` |
+| `"str"` | byte length | raw UTF-8 at `data[left..left+val)` |
+| `"true"` / `"false"` / `"null"` / `"undef"` | — | tag says it all |
+| `"array"` / `"object"` | content boundary | iterate children below `val` |
+| `"ptr"` | target offset | resolve: `c.right = c.val; read(c)` |
+| `"chain"` | content boundary | concatenated string segments |
+
+### Iterating containers
+
+```ts
+// After read() returned "array" or "object":
+const end = c.left;
+let right = c.val;
+while (right > end) {
+  c.right = right;
+  read(c);
+  // process c.tag, c.val, etc.
+  right = c.left;
+}
+```
+
+For objects without a schema, children alternate: key, value, key, value (in iteration order).
+
+### Random access
+
+```ts
+// Indexed containers: O(1) access via index table
+seekChild(child, container, index);
+
+// Non-indexed: collect boundaries, then access by index
+const offsets: number[] = [];
+const count = collectChildren(container, offsets);
+c.right = offsets[i];
+read(c);
+```
+
+### String operations
+
+All comparison functions take pre-encoded UTF-8 bytes for zero-alloc repeated use:
+
+```ts
+const key = prepareKey("myKey");     // encode once
+
+strEquals(c, key);        // exact match, zero-alloc
+strCompare(c, key);       // ordering (<0, 0, >0), zero-alloc
+strHasPrefix(c, key);     // prefix check, zero-alloc
+
+readStr(c);               // decode to JS string (1 allocation)
+resolveStr(c);            // follow pointers/chains, then decode
+```
+
+`findKey` accepts either a string or pre-encoded bytes — it calls `prepareKey` internally when given a string:
+
+```ts
+findKey(c, container, "myKey");           // convenient
+findKey(c, container, prepareKey("myKey")); // pre-encoded for hot loops
+```
+
+### Object key lookup
+
+```ts
+const v = makeCursor(data);
+if (findKey(v, container, "key")) {
+  // v now points at the value node
+  // Works on inline keys, schema objects, pointer keys, and chain keys
+  // O(log n) on sorted+indexed objects, O(n) linear scan otherwise
+}
+```
+
+### Prefix search
+
+```ts
+findByPrefix(c, container, "/api/", (key, value) => {
+  console.log(resolveStr(key), value.val);
+  // return false to stop early
+});
+// O(log n + m) on indexed objects, O(n) on non-indexed
+```
+
+### Raw bytes
+
+```ts
+rawBytes(c)  // zero-copy Uint8Array view: data.subarray(c.left, c.right)
+```
+
+### Allocation summary
+
+| Operation | Allocations |
+|-----------|-------------|
+| `makeCursor()` | 1 object (reused) |
+| `read()` | 0 (always) |
+| `readStr()` | 1 string |
+| `strEquals()` / `strCompare()` / `strHasPrefix()` | 0 |
+| `findKey()` | 0 |
+| `seekChild()` | 0 |
+| `collectChildren()` | 0 (fills caller-owned array) |
+| `rawBytes()` | 0 (subarray view) |
+
+## CLI Reference
 
 ### Input
 
@@ -37,7 +288,7 @@ rx data.rexc --to json -o out.json   # write to file
 | `-r`, `--rexc` | Shortcut for `--to rexc` |
 | `-t`, `--tree` | Shortcut for `--to tree` |
 
-Format is auto-detected from file extension (`.json`, `.rexc`) or by content sniffing on stdin. Output defaults to tree view on a TTY, JSON when piped.
+Format is auto-detected from file extension (`.json`, `.rx`, `.rexc`) or by content sniffing on stdin. Both `.rx` and `.rexc` are recognized as REXC. Output defaults to tree view on a TTY, JSON when piped.
 
 ### Encoding
 
@@ -71,85 +322,13 @@ rx --completions zsh|bash            # print completion script to stdout
 ### Run without installing
 
 ```sh
-bun run rx data.rexc                 # from repo root
+bun run rx data.rx                 # from repo root
 ```
 
-## Programmatic API
+## Architecture
 
-The cursor-based parser provides zero-allocation reads over REXC binary data.
+See [rx-perf.md](rx-perf.md) for detailed design notes on the cursor API, Proxy wrapper internals, and performance characteristics.
 
-```ts
-import {
-  makeCursor,
-  read,
-  readStr,
-  resolveStr,
-  strEquals,
-  strCompare,
-  findKey,
-  seekChild,
-  collectChildren,
-  rawBytes,
-} from "@creationix/rx";
-```
+## License
 
-### Cursor basics
-
-```ts
-const c = makeCursor(data);   // allocate once, c.right = data.length
-read(c);                       // parse root node
-// c.tag, c.left, c.right, c.val are now populated
-```
-
-### Iterating containers
-
-```ts
-// After read() returned "array" or "object":
-const end = c.left;
-let right = c.val;
-while (right > end) {
-  c.right = right;
-  read(c);
-  // process c.tag, c.val, etc.
-  right = c.left;
-}
-```
-
-### Random access
-
-```ts
-// Indexed containers: O(1) access
-seekChild(child, container, index);
-
-// Non-indexed: collect boundaries first, then access by index
-const offsets: number[] = [];
-const count = collectChildren(container, offsets);
-c.right = offsets[i];
-read(c);
-```
-
-### String handling
-
-```ts
-readStr(c)                    // decode string at cursor to JS string (1 allocation)
-strEquals(c, "target")        // zero-alloc equality check
-strCompare(c, "target")       // zero-alloc ordering (<0, 0, >0)
-resolveStr(c)                 // follow pointers and concatenate chains
-```
-
-### Object key lookup
-
-```ts
-const v = makeCursor(data);
-if (findKey(v, container, "key")) {
-  // v now points at the value node
-}
-```
-
-### Raw bytes
-
-```ts
-rawBytes(c)                   // zero-copy Uint8Array view of node bytes
-```
-
-See [rx-perf.md](rx-perf.md) for detailed architecture notes and the Proxy wrapper design.
+MIT

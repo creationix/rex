@@ -4,7 +4,16 @@
 //
 //////////////////
 
-import { is as isB64, read as b64Read, fromZigZag } from "./b64";
+import {
+  is as isB64,
+  read as b64Read,
+  fromZigZag,
+  toZigZag,
+  stringify as b64Stringify
+} from "./b64";
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 
 // ── Tags ──
 
@@ -208,13 +217,10 @@ function strStart(c: Cursor): number {
   return c.left + (c.tag === "ref" ? 1 : 0);
 }
 
-// Shared TextDecoder for readStr
-const decoder = new TextDecoder();
-
 /** Decode the string at cursor position to a JS string. 1 allocation. */
 export function readStr(c: Cursor): string {
   const start = strStart(c);
-  return decoder.decode(c.data.subarray(start, start + c.val));
+  return textDecoder.decode(c.data.subarray(start, start + c.val));
 }
 
 /** Resolve a node to a string, following pointers and concatenating chains.
@@ -238,12 +244,9 @@ export function resolveStr(c: Cursor): string {
   throw new TypeError(`resolveStr: expected str, ptr, or chain, got ${c.tag}`);
 }
 
-// Shared TextEncoder for encoding targets
-const encoder = new TextEncoder();
-
 /** Encode a string to UTF-8 bytes for use with strEquals/strCompare. */
 export function prepareKey(target: string): Uint8Array {
-  return encoder.encode(target);
+  return textEncoder.encode(target);
 }
 
 /**
@@ -359,8 +362,29 @@ export function findKey(c: Cursor, container: Cursor, target: string | Uint8Arra
   const { data } = container;
   _k.data = data;
 
-  // TODO: sorted + indexed binary search path
-  // For now: linear scan through key/value pairs
+  // Sorted + indexed: O(log n) binary search
+  if (container.ixWidth > 0 && container.ixCount > 0 && container.schema === 0) {
+    let lo = 0, hi = container.ixCount;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      seekChild(c, container, mid);
+      const cmp = strCompare(c, target);
+      if (cmp < 0) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo < container.ixCount) {
+      seekChild(c, container, lo);
+      if (strEquals(c, target)) {
+        // c is positioned at the key; value is immediately after
+        c.data = data;
+        c.right = c.left;
+        read(c);
+        return true;
+      }
+    }
+    return false;
+  }
+
   let right = container.val;
   const end = container.left;
 
@@ -526,8 +550,6 @@ export function rawBytes(c: Cursor): Uint8Array {
 
 // ── High-level Proxy API ──
 
-export type Refs = Record<string, Uint8Array>;
-
 const HANDLE = Symbol("rexc.handle");
 
 type NodeInfo = {
@@ -549,7 +571,6 @@ type NodeInfo = {
 export function open(buffer: Uint8Array, refs?: Refs): unknown {
   const nodeMap = new WeakMap<object, NodeInfo>();
   const proxyCache = new Map<number, unknown>(); // right-offset → memoized value
-  const refCaches = refs ? new Map<Uint8Array, Map<number, unknown>>() : undefined;
   const scratch = makeCursor(buffer);
 
   function snap(c: Cursor): NodeInfo {
@@ -559,25 +580,28 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
     };
   }
 
-  function getCache(data: Uint8Array): Map<number, unknown> {
-    if (data === buffer) return proxyCache;
-    let cache = refCaches!.get(data);
-    if (!cache) { cache = new Map(); refCaches!.set(data, cache); }
-    return cache;
+  /** Resolve a ref name to its opaque value, or undefined if not found. */
+  function resolveRef(c: Cursor): unknown {
+    if (!refs) return undefined;
+    const name = readStr(c);
+    return name in refs ? refs[name] : undefined;
+  }
+
+  /** Resolve a cursor to a string, following ptrs, chains, and refs (for key positions). */
+  function resolveKeyStr(c: Cursor): string {
+    while (c.tag === "ptr") { c.right = c.val; read(c); }
+    if (c.tag === "ref" && refs) {
+      const val = resolveRef(c);
+      if (typeof val === "string") return val;
+    }
+    return resolveStr(c);
   }
 
   function wrap(c: Cursor): unknown {
     while (c.tag === "ptr") { c.right = c.val; read(c); }
-    if (c.tag === "ref") {
-      if (!refs) return undefined;
-      const refBuf = refs[readStr(c)];
-      if (!refBuf) return undefined;
-      c.data = refBuf; c.right = refBuf.length; read(c);
-      return wrap(c);
-    }
+    if (c.tag === "ref") return resolveRef(c);
     // Check cache for containers (primitives are cheap to recreate)
-    const cache = getCache(c.data);
-    const cached = cache.get(c.right);
+    const cached = proxyCache.get(c.right);
     if (cached !== undefined) return cached;
     switch (c.tag) {
       case "int": case "float": return c.val;
@@ -592,7 +616,7 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
     const target: object = c.tag === "array" ? [] : Object.create(null);
     nodeMap.set(target, info);
     const proxy = new Proxy(target, handler);
-    cache.set(c.right, proxy);
+    proxyCache.set(c.right, proxy);
     return proxy;
   }
 
@@ -634,7 +658,9 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
   }
 
   function getValue(info: NodeInfo, key: string): unknown {
-    // Use cached key map if available (built by enumKeys/ownKeys)
+    // Schema objects need ensureKeyMap (findKey can't resolve ref/ptr schemas).
+    // Non-schema objects use findKey directly (O(log n) with indexes).
+    if (!info._keyMap && info.schema !== 0) ensureKeyMap(info);
     if (info._keyMap) {
       const valRight = info._keyMap.get(key);
       if (valRight === undefined) return undefined;
@@ -659,47 +685,61 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
       const sc = makeCursor(info.data);
       sc.right = info.schema; read(sc);
       while (sc.tag === "ptr") { sc.right = sc.val; read(sc); }
-      let valRight = info.val;
-      if (sc.tag === "object") {
-        let keyRight = sc.val;
-        const keyEnd = sc.left;
-        while (keyRight > keyEnd) {
-          kc.right = keyRight; read(kc);
-          const nextRight = kc.left;
-          const name = resolveStr(kc);
+      // Resolve ref schemas to opaque values — extract keys from arrays/objects
+      if (sc.tag === "ref" && refs) {
+        const refVal = resolveRef(sc);
+        let valRight = info.val;
+        const keyStrings: string[] = Array.isArray(refVal)
+          ? refVal as string[]
+          : (refVal && typeof refVal === "object" ? Object.keys(refVal) : []);
+        for (const name of keyStrings) {
           keys.push(name);
           map.set(name, valRight);
-          // advance value cursor
           scratch.data = info.data; scratch.right = valRight; read(scratch);
           valRight = scratch.left;
-          // skip schema value
-          sc.right = nextRight; read(sc);
-          keyRight = sc.left;
         }
-      } else if (sc.tag === "array") {
-        let keyRight = sc.val;
-        const keyEnd = sc.left;
-        while (keyRight > keyEnd) {
-          kc.right = keyRight; read(kc);
-          const name = resolveStr(kc);
-          keys.push(name);
-          map.set(name, valRight);
-          // advance value cursor
-          scratch.data = info.data; scratch.right = valRight; read(scratch);
-          valRight = scratch.left;
-          keyRight = kc.left;
+      } else {
+        // Inline schema — read keys from the schema's buffer
+        kc.data = sc.data;
+        let valRight = info.val;
+        if (sc.tag === "object") {
+          let keyRight = sc.val;
+          const keyEnd = sc.left;
+          while (keyRight > keyEnd) {
+            kc.right = keyRight; read(kc);
+            const nextRight = kc.left;
+            const name = resolveKeyStr(kc);
+            keys.push(name);
+            map.set(name, valRight);
+            scratch.data = info.data; scratch.right = valRight; read(scratch);
+            valRight = scratch.left;
+            sc.right = nextRight; read(sc);
+            keyRight = sc.left;
+          }
+        } else if (sc.tag === "array") {
+          let keyRight = sc.val;
+          const keyEnd = sc.left;
+          while (keyRight > keyEnd) {
+            kc.right = keyRight; read(kc);
+            const name = resolveKeyStr(kc);
+            keys.push(name);
+            map.set(name, valRight);
+            scratch.data = info.data; scratch.right = valRight; read(scratch);
+            valRight = scratch.left;
+            keyRight = kc.left;
+          }
         }
       }
     } else {
       let right = info.val;
       while (right > info.left) {
-        kc.right = right; read(kc);
+        kc.data = info.data; kc.right = right; read(kc);
         const keyLeft = kc.left;
-        const name = resolveStr(kc);
+        const name = resolveKeyStr(kc);
         keys.push(name);
         map.set(name, keyLeft);
         // skip value
-        kc.right = keyLeft; read(kc);
+        kc.data = info.data; kc.right = keyLeft; read(kc);
         right = kc.left;
       }
     }
@@ -762,6 +802,7 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
         return Number.isInteger(idx) && idx >= 0 && idx < childCount(info);
       }
       if (info.tag === "object") {
+        if (!info._keyMap && info.schema !== 0) ensureKeyMap(info);
         if (info._keyMap) return info._keyMap.has(prop);
         scratch.data = info.data;
         return findKey(scratch, info as unknown as Cursor, prop);
@@ -794,6 +835,7 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
         return undefined;
       }
       if (info.tag === "object" && typeof prop === "string") {
+        if (!info._keyMap && info.schema !== 0) ensureKeyMap(info);
         if (info._keyMap) {
           if (info._keyMap.has(prop)) {
             return { configurable: true, enumerable: true, value: getValue(info, prop) };
@@ -824,4 +866,383 @@ export function handle(proxy: unknown): { data: Uint8Array; right: number } | un
     return (proxy as any)[HANDLE];
   }
   return undefined;
+}
+
+// ── High-level decode ──
+
+export type Refs = Record<string, unknown>;
+
+export interface DecodeOptions {
+  /** External dictionary of known values. Values are returned as-is when a ref is encountered. */
+  refs?: Refs;
+}
+
+/** Decode a rexc buffer into a plain JS value using the Proxy-based reader. */
+export function decode(input: Uint8Array, options?: DecodeOptions): unknown {
+  return open(input, options?.refs);
+}
+
+/** Parse a rexc string into a plain JS value. */
+export function parse(input: string, options?: DecodeOptions): unknown {
+  return decode(textEncoder.encode(input), options);
+}
+
+// ── Encoder ──
+
+export interface EncodeOptions {
+  /** Enable path chains (substring de-dupe in paths, requires pointers) */
+  chainSplit?: string | false;
+  /** Containers with at least this many children get indexes */
+  indexes?: number | false;
+  /** Stream chunks instead of returning a buffer */
+  onChunk?: (chunk: Uint8Array, offset: number) => void;
+  /** External dictionary of known values (UPPERCASE KEYS) */
+  refs?: Refs;
+}
+
+export type StringifyOptions = Omit<EncodeOptions, "onChunk"> & {
+  onChunk?: (chunk: string, offset: number) => void;
+};
+
+const ENCODE_DEFAULTS = {
+  chainSplit: "/",
+  indexes: 32,
+  refs: {},
+} as const satisfies Partial<EncodeOptions>;
+
+// ── Number helpers ──
+
+function trimZeroes(str: string): [number, number] {
+  const trimmed = str.replace(/0+$/, "");
+  return [parseInt(trimmed, 10), str.length - trimmed.length];
+}
+
+export function splitNumber(val: number): [number, number] {
+  if (Number.isInteger(val)) {
+    if (Math.abs(val) < 10) return [val, 0];
+    if (Math.abs(val) < 9.999999999999999e20) return trimZeroes(val.toString());
+  }
+  const decStr = val.toPrecision(14).match(/^([-+]?\d+)(?:\.(\d+))?$/);
+  if (decStr) {
+    const b1 = parseInt((decStr[1] ?? "") + (decStr[2] ?? ""), 10);
+    const e1 = -(decStr[2]?.length ?? 0);
+    if (e1 === 0) return [b1, 0];
+    const [b2, e2] = splitNumber(b1);
+    return [b2, e1 + e2];
+  }
+  const sciStr = val.toExponential(14).match(/^([+-]?\d+)(?:\.(\d+))?(?:e([+-]?\d+))$/);
+  if (sciStr) {
+    const e1 = -(sciStr[2]?.length ?? 0);
+    const e2 = parseInt(sciStr[3] ?? "0", 10);
+    const [b1, e3] = trimZeroes(sciStr[1] + (sciStr[2] ?? ""));
+    return [b1, e1 + e2 + e3];
+  }
+  throw new Error(`Invalid number format: ${val}`);
+}
+
+// Compare two strings in UTF-8 byte order (code point order preserves UTF-8 ordering)
+export function utf8Sort(a: string, b: string): number {
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len;) {
+    const cpA = a.codePointAt(i) ?? 0;
+    const cpB = b.codePointAt(i) ?? 0;
+    if (cpA !== cpB) return cpA - cpB;
+    i += cpA > 0xffff ? 2 : 1;
+  }
+  return a.length - b.length;
+}
+
+// ── Identity key for pointer dedup ──
+
+// Generates a stable cache key for dedup/ref lookups.
+// Primitives return themselves (work as Map keys via SameValueZero).
+// Objects get a structural string key so structurally equal objects deduplicate.
+// Non-serializable values (functions, symbols) fall back to identity.
+// TTL caps total work to avoid expensive cycles or huge objects.
+const KeyMap = new WeakMap<object, string>();
+export function makeKey(rootVal: unknown, ttl = 100): unknown {
+  return walk(rootVal) ?? rootVal;
+  function walk(val: unknown): string | undefined {
+    if (--ttl <= 0) return;
+    if (val === null || val === undefined) return String(val);
+    switch (typeof val) {
+      case "string": return JSON.stringify(val);
+      case "number": case "boolean": case "bigint": return String(val);
+      case "object": break;
+      default: return; // functions, symbols → identity fallback
+    }
+    let key = KeyMap.get(val);
+    if (key) return key;
+    if (Array.isArray(val)) {
+      const parts = new Array(val.length);
+      for (let i = 0, l = val.length; i < l; i++) {
+        const k = walk(val[i]); if (!k) return;
+        parts[i] = k;
+      }
+      key = `[${parts.join(",")}]`;
+    } else {
+      const entries = Object.entries(val);
+      const parts = new Array(entries.length);
+      for (let i = 0, l = entries.length; i < l; i++) {
+        const [ek, ev] = entries[i]!;
+        const kk = walk(ek); if (!kk) return;
+        const vk = walk(ev); if (!vk) return;
+        parts[i] = `${kk}:${vk}`;
+      }
+      key = `{${parts.join(",")}}`;
+    }
+    KeyMap.set(val, key);
+    return key;
+  }
+}
+
+// ── Tag writers ──
+
+function writeUnsigned(tag: string, value: number): string {
+  return `${tag}${b64Stringify(value)}`;
+}
+
+function writeSigned(tag: string, value: number): string {
+  return `${tag}${b64Stringify(toZigZag(value))}`;
+}
+
+// ── Public API ──
+
+export function stringify(
+  value: unknown,
+  options: StringifyOptions & { onChunk: (chunk: string, offset: number) => void },
+): undefined;
+export function stringify(value: unknown, options?: StringifyOptions): string;
+export function stringify(value: unknown, options?: StringifyOptions): string | undefined {
+  const { onChunk, ...rest } = options ?? {};
+  if (onChunk) {
+    encode(value, {
+      ...rest,
+      onChunk: (chunk, offset) => onChunk(textDecoder.decode(chunk), offset),
+    });
+    return undefined;
+  }
+  return textDecoder.decode(encode(value, rest));
+}
+
+export function encode(
+  value: unknown,
+  options: EncodeOptions & { onChunk: (chunk: Uint8Array, offset: number) => void },
+): undefined;
+export function encode(value: unknown, options?: EncodeOptions): Uint8Array;
+export function encode(rootValue: unknown, options?: EncodeOptions): Uint8Array | undefined {
+  const opts = { ...ENCODE_DEFAULTS, ...options };
+  const parts: Uint8Array[] = [];
+  let byteLength = 0;
+  const onChunk = opts.onChunk ?? ((chunk: Uint8Array) => parts.push(chunk));
+  const chainSplit = opts.chainSplit;
+  const refs = new Map<unknown, string>();
+  for (const [key, val] of Object.entries({ ...opts.refs })) {
+    refs.set(makeKey(val), key);
+  }
+  const indexThreshold = typeof opts.indexes === "number" ? opts.indexes : Infinity;
+  const seenOffsets = new Map<unknown, number>();
+  const schemaOffsets = new Map<unknown, number | string>();
+  const seenCosts = new Map<unknown, number>();
+
+  // Pre-scan refs for schema keys
+  for (const [key, val] of Object.entries(opts.refs)) {
+    if (typeof val === "object" && val !== null) {
+      schemaOffsets.set(makeKey(Array.isArray(val) ? val : Object.keys(val)), key);
+    }
+  }
+
+  // Pre-scan for reused path prefixes
+  const duplicatePrefixes = new Set<string>();
+  const seenPrefixes = new Set<string>();
+  scanPrefixes(rootValue);
+
+  function scanPrefixes(value: unknown) {
+    if (!chainSplit) return;
+    if (typeof value === "string" && value.indexOf(chainSplit) >= 0) {
+      if (!seenPrefixes.has(value)) {
+        let offset = 0;
+        while (offset < value.length) {
+          const next = value.indexOf(chainSplit, offset + 1);
+          if (next === -1) break;
+          const prefix = value.slice(0, next);
+          if (seenPrefixes.has(prefix)) duplicatePrefixes.add(prefix);
+          else seenPrefixes.add(prefix);
+          offset = next;
+        }
+      }
+    } else if (value && typeof value === "object") {
+      if (Array.isArray(value)) {
+        for (const item of value) scanPrefixes(item);
+      } else {
+        for (const [key, val] of Object.entries(value)) {
+          scanPrefixes(key);
+          scanPrefixes(val);
+        }
+      }
+    }
+  }
+
+  writeAny(rootValue);
+
+  if (opts.onChunk) return undefined;
+  const output = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of parts) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+
+  function pushBytes(bytes: Uint8Array) {
+    onChunk(bytes, byteLength);
+    return (byteLength += bytes.byteLength);
+  }
+
+  function pushString(str: string) {
+    return pushBytes(textEncoder.encode(str));
+  }
+
+  function writeAny(value: unknown) {
+    const key = makeKey(value);
+    const refKey = refs.get(key);
+    if (refKey !== undefined) return pushString(`'${refKey}`);
+    const seenOffset = seenOffsets.get(key);
+    if (seenOffset !== undefined) {
+      const delta = byteLength - seenOffset;
+      const seenCost = seenCosts.get(key) ?? 0;
+      const pointerCost = Math.ceil(Math.log(delta + 1) / Math.log(64)) + 1;
+      if (pointerCost < seenCost) return pushString(writeUnsigned("^", delta));
+    }
+    const before = byteLength;
+    const ret = writeAnyInner(value);
+    seenOffsets.set(key, byteLength);
+    seenCosts.set(key, byteLength - before);
+    return ret;
+  }
+
+  function writeAnyInner(value: unknown) {
+    switch (typeof value) {
+      case "string": return writeString(value);
+      case "number": return writeNumber(value);
+      case "boolean": return pushString(`'${value ? "t" : "f"}`);
+      case "undefined": return pushString("'u");
+      case "object":
+        if (value === null) return pushString("'n");
+        if (Array.isArray(value)) return writeArray(value);
+        return writeObject(value as Record<string, unknown>);
+      default:
+        throw new TypeError(`Unsupported value type: ${typeof value}`);
+    }
+  }
+
+  function writeString(value: string) {
+    if (chainSplit && value.indexOf(chainSplit) >= 0) {
+      let offset = value.length;
+      let head: string | undefined;
+      let tail: string | undefined;
+      while (offset > 0) {
+        offset = value.lastIndexOf(chainSplit, offset - 1);
+        if (offset <= 0) break;
+        const prefix = value.slice(0, offset);
+        if (duplicatePrefixes.has(prefix)) {
+          head = prefix;
+          tail = value.substring(offset);
+          break;
+        }
+      }
+      if (head && tail) {
+        const before = byteLength;
+        writeAny(tail);
+        writeAny(head);
+        return pushString(writeUnsigned(".", byteLength - before));
+      }
+    }
+    const utf8 = textEncoder.encode(value);
+    pushBytes(utf8);
+    return pushString(writeUnsigned(",", utf8.byteLength));
+  }
+
+  function writeNumber(value: number) {
+    if (Number.isNaN(value)) return pushString("'nan");
+    if (value === Infinity) return pushString("'inf");
+    if (value === -Infinity) return pushString("'nif");
+    const [base, exp] = splitNumber(value);
+    if (exp >= 0 && exp < 5 && Number.isInteger(base) && Number.isSafeInteger(base)) {
+      return pushString(writeSigned("+", value));
+    }
+    pushString(writeSigned("+", base));
+    return pushString(writeSigned("*", exp));
+  }
+
+  function writeArray(value: unknown[]) {
+    const start = byteLength;
+    writeValues(value);
+    return pushString(writeUnsigned(";", byteLength - start));
+  }
+
+  function writeValues(values: unknown[]) {
+    const length = values.length;
+    const offsets = length > indexThreshold ? new Array(length) : undefined;
+    for (let i = length - 1; i >= 0; i--) {
+      writeAny(values[i]);
+      if (offsets) offsets[i] = byteLength;
+    }
+    if (offsets) {
+      const lastOffset = offsets[offsets.length - 1] as number;
+      const width = Math.ceil(Math.log(byteLength - lastOffset + 1) / Math.log(64));
+      const pointers = offsets
+        .map((o: number) => b64Stringify(byteLength - o).padStart(width, "0"))
+        .join("");
+      pushString(pointers);
+      if (width > 8) throw new Error(`Index width exceeds maximum of 8 characters: ${width}`);
+      pushString(writeUnsigned("#", (values.length << 3) | (width - 1)));
+    }
+  }
+
+  function writeObject(value: Record<string, unknown>) {
+    const keys = Object.keys(value);
+    const length = keys.length;
+    if (length === 0) return pushString(":");
+
+    const keysKey = makeKey(keys);
+    const schemaTarget = schemaOffsets.get(keysKey) ?? seenOffsets.get(keysKey);
+    if (schemaTarget !== undefined) return writeSchemaObject(value, schemaTarget);
+
+    const before = byteLength;
+    const offsets = length > indexThreshold ? ({} as Record<string, number>) : undefined;
+    let lastOffset: number | undefined;
+    const entries = Object.entries(value);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const [key, val] = entries[i] as [string, unknown];
+      writeAny(val);
+      writeAny(key);
+      if (offsets) {
+        offsets[key] = byteLength;
+        lastOffset = lastOffset ?? byteLength;
+      }
+    }
+
+    if (offsets && lastOffset !== undefined) {
+      const width = Math.ceil(Math.log(byteLength - lastOffset + 1) / Math.log(64));
+      const pointers = Object.entries(offsets)
+        .sort(([a], [b]) => utf8Sort(a, b))
+        .map(([, o]) => b64Stringify(byteLength - o).padStart(width, "0"))
+        .join("");
+      pushString(pointers);
+      if (width > 8) throw new Error(`Index width exceeds maximum of 8 characters: ${width}`);
+      pushString(writeUnsigned("#", (length << 3) | (width - 1)));
+    }
+    const ret = pushString(writeUnsigned(":", byteLength - before));
+    schemaOffsets.set(keysKey, byteLength);
+    return ret;
+  }
+
+  function writeSchemaObject(value: Record<string, unknown>, target: string | number) {
+    const before = byteLength;
+    writeValues(Object.values(value));
+    if (typeof target === "string") pushString(`'${target}`);
+    else pushString(writeUnsigned("^", byteLength - target));
+    return pushString(writeUnsigned(":", byteLength - before));
+  }
 }
