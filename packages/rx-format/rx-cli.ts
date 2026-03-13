@@ -1,22 +1,26 @@
-import { stringify as rexcStringify, type RexCStringifyOptions } from "@creationix/rex/rexc";
-import { stringify as rexStringify } from "@creationix/rex";
-import {
-	setColorEnabled,
-	highlightLine,
-	highlightJSON,
-	highlightRexc,
-} from "@creationix/rex/rex-repl";
 import { open } from "./rx";
+import { readdirSync } from "node:fs";
 import { readFile, writeFile, mkdir, unlink, lstat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, basename } from "node:path";
 
-const textEncoder = new TextEncoder();
+// ── ANSI colors ──────────────────────────────────────────────
 
-// ── Types ────────────────────────────────────────────────────
+function createColors(on: boolean) {
+	const o = on ? (s: string) => s : () => "";
+	return {
+		reset: o("\x1b[0m"), dim: o("\x1b[2m"),
+		green: o("\x1b[38;5;114m"), yellow: o("\x1b[38;5;179m"),
+		cyan: o("\x1b[38;5;81m"), magenta: o("\x1b[38;5;141m"),
+	};
+}
+
+let C = createColors(false);
+
+// ── Types & arg parsing ──────────────────────────────────────
 
 type Format = "json" | "rexc";
-type OutputFormat = Format | "tree";
+type OutputFormat = "json" | "rexc" | "tree";
 
 type RxOptions = {
 	files: string[];
@@ -24,26 +28,21 @@ type RxOptions = {
 	toFormat?: OutputFormat;
 	select?: string[];
 	out?: string;
-	indexes?: number | false;
 	color: boolean;
-	colorExplicit: boolean;
 	help: boolean;
 };
-
-// ── Arg parsing ──────────────────────────────────────────────
 
 function parseArgs(argv: string[]): RxOptions {
 	const opts: RxOptions = {
 		files: [],
 		color: process.stdout.isTTY ?? false,
-		colorExplicit: false,
 		help: false,
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i]!;
 		if (arg === "-h" || arg === "--help") { opts.help = true; continue; }
-		if (arg === "--color") { opts.color = true; opts.colorExplicit = true; continue; }
-		if (arg === "--no-color") { opts.color = false; opts.colorExplicit = true; continue; }
+		if (arg === "--color") { opts.color = true; continue; }
+		if (arg === "--no-color") { opts.color = false; continue; }
 		if (arg === "-j" || arg === "--json") { opts.toFormat = "json"; continue; }
 		if (arg === "-r" || arg === "--rexc") { opts.toFormat = "rexc"; continue; }
 		if (arg === "-t" || arg === "--tree") { opts.toFormat = "tree"; continue; }
@@ -60,7 +59,6 @@ function parseArgs(argv: string[]): RxOptions {
 			continue;
 		}
 		if (arg === "-s" || arg === "--select") {
-			// Everything after -s until end-of-args or next flag is a selector segment
 			const segments: string[] = [];
 			while (i + 1 < argv.length && !argv[i + 1]!.startsWith("-")) {
 				segments.push(argv[++i]!);
@@ -73,15 +71,6 @@ function parseArgs(argv: string[]): RxOptions {
 			const v = argv[++i];
 			if (!v) throw new Error("Missing value for --out");
 			opts.out = v;
-			continue;
-		}
-		if (arg === "--indexes") {
-			const v = argv[++i];
-			if (v === undefined) throw new Error("Missing value for --indexes");
-			if (v === "false" || v === "off" || v === "no") { opts.indexes = false; continue; }
-			const n = parseInt(v, 10);
-			if (Number.isNaN(n) || n < 0) throw new Error("--indexes must be a non-negative integer or 'false'");
-			opts.indexes = n;
 			continue;
 		}
 		if (!arg.startsWith("-") || arg === "-") {
@@ -100,7 +89,6 @@ function usage(): string {
 		"Usage:",
 		"  rx data.rexc                   Pretty-print rexc as a tree",
 		"  rx data.rexc --to json         Convert rexc to JSON",
-		"  rx data.json --to rexc         Convert JSON to rexc",
 		"  cat data.rexc | rx             Read from stdin (auto-detect)",
 		"  rx data.rexc -s routes 0 op    Select a sub-value",
 		"",
@@ -111,16 +99,11 @@ function usage(): string {
 		"",
 		"Format control:",
 		"  --from json|rexc    Force input format (default: auto-detect)",
-		"  --to json|rexc|tree Output format",
+		"  --to json|tree      Output format",
 		"  -j, --json          Shortcut for --to json",
-		"  -r, --rexc          Shortcut for --to rexc",
 		"  -t, --tree          Shortcut for --to tree",
 		"",
 		"  Default output: tree on TTY, json when piped.",
-		"",
-		"Encoding:",
-		"  --indexes <n>       Add indexes to containers with >= n entries",
-		"                      Use 'false' to disable indexes entirely",
 		"",
 		"Filtering:",
 		"  -s, --select <seg>  Space-delimited selector segments (e.g. -s foo bar 0 baz)",
@@ -137,7 +120,7 @@ function usage(): string {
 	].join("\n");
 }
 
-// ── Format detection ─────────────────────────────────────────
+// ── Format detection & input reading ─────────────────────────
 
 function formatFromExt(path: string): Format | undefined {
 	if (path.endsWith(".json")) return "json";
@@ -153,8 +136,6 @@ function detectFormat(content: string): Format {
 	return "rexc";
 }
 
-// ── Input reading ────────────────────────────────────────────
-
 async function readStdin(): Promise<string> {
 	const chunks: Buffer[] = [];
 	for await (const chunk of process.stdin) {
@@ -163,16 +144,19 @@ async function readStdin(): Promise<string> {
 	return Buffer.concat(chunks).toString("utf8");
 }
 
-type ParsedInput = { value: unknown };
-
 function parseRaw(raw: string, format: Format): unknown {
 	if (format === "json") return JSON.parse(raw);
-	return open(textEncoder.encode(raw.trim()));
+	return open(new TextEncoder().encode(raw.trim()));
 }
 
-async function readInput(opts: RxOptions): Promise<ParsedInput> {
+async function readOne(file: string, fromFormat?: Format): Promise<unknown> {
+	const raw = file === "-" ? await readStdin() : await readFile(file, "utf8");
+	const format = fromFormat ?? (file === "-" ? detectFormat(raw) : formatFromExt(file) ?? detectFormat(raw));
+	return parseRaw(raw, format);
+}
+
+async function readInput(opts: RxOptions): Promise<unknown> {
 	if (opts.files.length === 0) {
-		// stdin
 		if (process.stdin.isTTY) {
 			const c = opts.color;
 			const bold = c ? "\x1b[1m" : "";
@@ -195,25 +179,14 @@ async function readInput(opts: RxOptions): Promise<ParsedInput> {
 		}
 		const raw = await readStdin();
 		if (!raw.trim()) throw new Error("Empty stdin.");
-		const format = opts.fromFormat ?? detectFormat(raw);
-		return { value: parseRaw(raw, format) };
+		return parseRaw(raw, opts.fromFormat ?? detectFormat(raw));
 	}
 
-	if (opts.files.length === 1) {
-		const file = opts.files[0]!;
-		const raw = file === "-" ? await readStdin() : await readFile(file, "utf8");
-		const format = opts.fromFormat ?? (file === "-" ? detectFormat(raw) : formatFromExt(file) ?? detectFormat(raw));
-		return { value: parseRaw(raw, format) };
-	}
+	if (opts.files.length === 1) return readOne(opts.files[0]!, opts.fromFormat);
 
-	// Multiple files → array
 	const values: unknown[] = [];
-	for (const file of opts.files) {
-		const raw = file === "-" ? await readStdin() : await readFile(file, "utf8");
-		const format = opts.fromFormat ?? (file === "-" ? detectFormat(raw) : formatFromExt(file) ?? detectFormat(raw));
-		values.push(parseRaw(raw, format));
-	}
-	return { value: values };
+	for (const file of opts.files) values.push(await readOne(file, opts.fromFormat));
+	return values;
 }
 
 // ── Selector ─────────────────────────────────────────────────
@@ -222,23 +195,19 @@ function applySelector(value: unknown, segments: string[]): unknown {
 	let current = value;
 	let path = "";
 	for (const seg of segments) {
-		const asIndex = /^\d+$/.test(seg) ? parseInt(seg, 10) : undefined;
-		if (Array.isArray(current) && asIndex !== undefined) {
-			path += `[${asIndex}]`;
-			if (asIndex < 0 || asIndex >= current.length) {
-				throw new Error(`Selector ${path}: index ${asIndex} out of range (length ${current.length})`);
+		const idx = /^\d+$/.test(seg) ? parseInt(seg, 10) : undefined;
+		if (Array.isArray(current) && idx !== undefined) {
+			path += `[${idx}]`;
+			if (idx < 0 || idx >= current.length) {
+				throw new Error(`Selector ${path}: index ${idx} out of range (length ${current.length})`);
 			}
-			current = current[asIndex];
-		} else if (current !== null && current !== undefined && typeof current === "object" && !Array.isArray(current)) {
-			path += ` ${seg}`;
-			const obj = current as Record<string, unknown>;
-			if (!(seg in obj)) {
-				throw new Error(`Selector${path}: property '${seg}' not found`);
-			}
-			current = obj[seg];
+			current = current[idx];
+		} else if (isObj(current)) {
+			path += `.${seg}`;
+			if (!(seg in current)) throw new Error(`Selector${path}: property '${seg}' not found`);
+			current = current[seg];
 		} else {
-			path += ` ${seg}`;
-			throw new Error(`Selector${path}: cannot access '${seg}' on ${typeLabel(current)}`);
+			throw new Error(`Selector${path}.${seg}: cannot index into ${typeLabel(current)}`);
 		}
 	}
 	return current;
@@ -246,24 +215,244 @@ function applySelector(value: unknown, segments: string[]): unknown {
 
 function typeLabel(v: unknown): string {
 	if (v === null) return "null";
-	if (v === undefined) return "undefined";
 	if (Array.isArray(v)) return "array";
 	return typeof v;
 }
 
-// ── Completions ──────────────────────────────────────────────
+// ── Tree pretty-printer ──────────────────────────────────────
+// Rex-style: bare keys, space-separated arrays, inline-first
+
+function isObj(v: unknown): v is Record<string, unknown> {
+	if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+	const p = Object.getPrototypeOf(v);
+	return p === Object.prototype || p === null;
+}
+
+function isBareKey(k: string): boolean { return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(k); }
+
+function fmtKey(k: string): string {
+	if (isBareKey(k)) return k;
+	if (k !== "" && String(Number(k)) === k && Number.isFinite(Number(k))) return k;
+	return JSON.stringify(k);
+}
+
+function fmtInline(v: unknown): string {
+	if (v === undefined) return "undefined";
+	if (v === null) return "null";
+	if (typeof v === "boolean") return String(v);
+	if (typeof v === "number") {
+		if (Number.isNaN(v)) return "nan";
+		if (v === Infinity) return "inf";
+		if (v === -Infinity) return "-inf";
+		return String(v);
+	}
+	if (typeof v === "string") return JSON.stringify(v);
+	if (Array.isArray(v)) {
+		if (v.length === 0) return "[]";
+		let s = "[";
+		for (let i = 0; i < v.length; i++) s += (i ? " " : "") + fmtInline(v[i]);
+		return s + "]";
+	}
+	if (isObj(v)) {
+		const ks = Object.keys(v);
+		if (ks.length === 0) return "{}";
+		let s = "{";
+		for (let i = 0; i < ks.length; i++) {
+			if (i) s += " ";
+			s += fmtKey(ks[i]!) + ": " + fmtInline(v[ks[i]!]);
+		}
+		return s + "}";
+	}
+	return String(v);
+}
+
+function fmtPretty(v: unknown, depth: number, ind: number, maxW: number): string {
+	if (v === undefined || v === null || typeof v !== "object") return fmtInline(v);
+	const budget = maxW - depth * ind;
+
+	if (Array.isArray(v)) {
+		if (v.length === 0) return "[]";
+		// try inline (bail on nested objects/arrays)
+		let s = "[", ok = true;
+		for (let i = 0; i < v.length; i++) {
+			if (typeof v[i] === "object" && v[i] !== null) { ok = false; break; }
+			s += (i ? " " : "") + fmtInline(v[i]);
+			if (s.length > budget) { ok = false; break; }
+		}
+		if (ok) { s += "]"; if (s.length <= budget) return s; }
+		const pad = " ".repeat(depth * ind), cp = " ".repeat((depth + 1) * ind);
+		let r = "[\n";
+		for (let i = 0; i < v.length; i++) {
+			if (i) r += "\n";
+			r += cp + fmtPretty(v[i], depth + 1, ind, maxW);
+		}
+		return r + "\n" + pad + "]";
+	}
+
+	if (isObj(v)) {
+		const ks = Object.keys(v);
+		if (ks.length === 0) return "{}";
+		let s = "{", ok = true;
+		for (const k of ks) {
+			if (typeof v[k] === "object" && v[k] !== null) { ok = false; break; }
+			if (s.length > 1) s += " ";
+			s += fmtKey(k) + ": " + fmtInline(v[k]);
+			if (s.length > budget) { ok = false; break; }
+		}
+		if (ok) { if (s.length === 1) return "{}"; s += "}"; if (s.length <= budget) return s; }
+		const pad = " ".repeat(depth * ind), cp = " ".repeat((depth + 1) * ind);
+		let r = "{\n", first = true;
+		for (const k of ks) {
+			if (!first) r += "\n";
+			first = false;
+			r += cp + fmtKey(k) + ": " + fmtPretty(v[k], depth + 1, ind, maxW);
+		}
+		return r + "\n" + pad + "}";
+	}
+
+	return fmtInline(v);
+}
+
+function treeStringify(value: unknown, onLine?: (line: string) => void): string {
+	const text = fmtPretty(value, 0, 2, 80);
+	if (onLine) { for (const line of text.split("\n")) onLine(line); return ""; }
+	return text;
+}
+
+// ── Syntax highlighting ──────────────────────────────────────
+
+function highlightTree(line: string): string {
+	let result = "", i = 0;
+	const len = line.length;
+	while (i < len) {
+		if (line[i] === " " || line[i] === "\t") { result += line[i]; i++; continue; }
+		// key followed by ':'
+		const km = line.slice(i).match(/^([A-Za-z_][A-Za-z0-9_-]*|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|"(?:[^"\\]|\\.)*")(\s*:)/);
+		if (km) { result += C.magenta + km[1] + C.reset + km[2]; i += km[0].length; continue; }
+		// string
+		if (line[i] === '"') {
+			const m = line.slice(i).match(/^"(?:[^"\\]|\\.)*"/);
+			if (m) { result += C.green + m[0] + C.reset; i += m[0].length; continue; }
+		}
+		// keywords
+		const kw = line.slice(i).match(/^(?:true|false|null|undefined|nan|-?inf)\b/);
+		if (kw) { result += C.yellow + kw[0] + C.reset; i += kw[0].length; continue; }
+		// numbers
+		const nm = line.slice(i).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?(?=[\s\]\}]|$)/);
+		if (nm) { result += C.cyan + nm[0] + C.reset; i += nm[0].length; continue; }
+		result += line[i]; i++;
+	}
+	return result;
+}
+
+const JSON_RE = /(?<key>"(?:[^"\\]|\\.)*")\s*:|(?<string>"(?:[^"\\]|\\.)*")|(?<number>-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|(?<bool>true|false)|(?<null>null)/g;
+
+function highlightJSON(json: string): string {
+	let result = "", last = 0;
+	JSON_RE.lastIndex = 0;
+	for (const m of json.matchAll(JSON_RE)) {
+		result += json.slice(last, m.index);
+		const g = m.groups!;
+		if (g.key) result += C.cyan + g.key + C.reset + ":";
+		else if (g.string) result += C.green + m[0] + C.reset;
+		else if (g.number || g.bool) result += C.yellow + m[0] + C.reset;
+		else if (g.null) result += C.dim + m[0] + C.reset;
+		else result += m[0];
+		last = m.index! + m[0].length;
+	}
+	return result + json.slice(last);
+}
+
+// ── Output formatting ────────────────────────────────────────
+
+function normalizeForJson(value: unknown, inArray: boolean): unknown {
+	if (value === undefined) return inArray ? null : undefined;
+	if (value === null || typeof value !== "object") return value;
+	if (Array.isArray(value)) return value.map(v => normalizeForJson(v, true));
+	const obj = value as Record<string, unknown>;
+	const out: Record<string, unknown> = {};
+	for (const key of Object.keys(obj)) {
+		const n = normalizeForJson(obj[key], false);
+		if (n !== undefined) out[key] = n;
+	}
+	return out;
+}
+
+function formatOutput(value: unknown, format: OutputFormat, color: boolean): string {
+	if (format === "tree") {
+		const text = treeStringify(value);
+		if (!color) return text;
+		return text.split("\n").map(highlightTree).join("\n");
+	}
+	if (format === "json") {
+		const text = JSON.stringify(normalizeForJson(value, false), null, 2) ?? "null";
+		return color ? highlightJSON(text) : text;
+	}
+	throw new Error("TODO: rexc encoding is not yet supported. Use --to json or --to tree.");
+}
+
+// ── Shell completions ────────────────────────────────────────
+
+const FLAGS_WITH_VALUE = new Set(["-o", "--out", "--from", "--to"]);
+const ALL_FLAGS = ["-h", "--help", "-j", "--json", "-r", "--rexc", "-t", "--tree",
+	"--from", "--to", "-s", "--select", "-o", "--out", "--color", "--no-color"];
+const DATA_EXTENSIONS = [".json", ".rexc", ".rex"];
+
+function findSelectIndex(words: string[]): number {
+	for (let i = 0; i < words.length - 1; i++) {
+		const w = words[i]!;
+		if (w === "-s" || w === "--select") return i;
+		if (FLAGS_WITH_VALUE.has(w)) { i++; continue; }
+	}
+	return -1;
+}
+
+function extractFiles(words: string[]): string[] {
+	const files: string[] = [];
+	for (let i = 0; i < words.length; i++) {
+		const w = words[i]!;
+		if (w === "-s" || w === "--select") break;
+		if (FLAGS_WITH_VALUE.has(w)) { i++; continue; }
+		if (w.startsWith("-")) continue;
+		files.push(w);
+	}
+	return files;
+}
+
+function listFiles(prefix: string, dataOnly: boolean): string[] {
+	const dir = prefix.includes("/") ? dirname(prefix) : ".";
+	const partial = prefix.includes("/") ? basename(prefix) : prefix;
+	try {
+		const entries = readdirSync(dir, { withFileTypes: true });
+		const results: string[] = [];
+		for (const entry of entries) {
+			if (!entry.name.startsWith(partial)) continue;
+			if (entry.name.startsWith(".") && !partial.startsWith(".")) continue;
+			const rel = dir === "." ? entry.name : join(dir, entry.name);
+			if (entry.isDirectory()) {
+				results.push(rel + "/");
+			} else if (!dataOnly || DATA_EXTENSIONS.some(ext => entry.name.endsWith(ext))) {
+				results.push(rel);
+			}
+		}
+		return results.sort();
+	} catch { return []; }
+}
+
+function printCompletions(completions: string[]) {
+	if (completions.length > 0) process.stdout.write(completions.join("\n") + "\n");
+}
 
 function walkSegments(value: unknown, segments: string[]): unknown {
 	let current = value;
 	for (const seg of segments) {
-		const asIndex = /^\d+$/.test(seg) ? parseInt(seg, 10) : undefined;
-		if (Array.isArray(current) && asIndex !== undefined) {
-			if (asIndex < 0 || asIndex >= current.length) return undefined;
-			current = current[asIndex];
-		} else if (current !== null && current !== undefined && typeof current === "object" && !Array.isArray(current)) {
-			const obj = current as Record<string, unknown>;
-			if (!(seg in obj)) return undefined;
-			current = obj[seg];
+		const idx = /^\d+$/.test(seg) ? parseInt(seg, 10) : undefined;
+		if (Array.isArray(current) && idx !== undefined) {
+			if (idx < 0 || idx >= current.length) return undefined;
+			current = current[idx];
+		} else if (isObj(current)) {
+			if (!(seg in current)) return undefined;
+			current = current[seg];
 		} else {
 			return undefined;
 		}
@@ -275,24 +464,18 @@ const MAX_COMPLETIONS = 50;
 
 function collapseCompletions(matches: string[], partial: string): string[] {
 	if (matches.length <= MAX_COMPLETIONS) return matches;
-	// Sort once, then binary-search for the right prefix length.
-	// Sorted matches means we only need to compare adjacent entries
-	// to count distinct prefixes at a given length.
 	matches.sort();
 	const maxLen = matches[matches.length - 1]!.length;
-	// Count distinct prefixes at a given length
 	function distinctAt(len: number): number {
 		let count = 1;
 		for (let i = 1; i < matches.length; i++) {
 			const a = matches[i - 1]!, b = matches[i]!;
-			// Compare only up to len chars — since sorted, first diff means new prefix
 			let same = a.length >= len && b.length >= len;
 			if (same) {
 				for (let j = 0; j < len; j++) {
 					if (a.charCodeAt(j) !== b.charCodeAt(j)) { same = false; break; }
 				}
 			} else {
-				// Different lengths under len — check the shorter portion
 				const end = Math.min(a.length, b.length);
 				for (let j = 0; j < end; j++) {
 					if (a.charCodeAt(j) !== b.charCodeAt(j)) { same = false; break; }
@@ -303,9 +486,6 @@ function collapseCompletions(matches: string[], partial: string): string[] {
 		}
 		return count;
 	}
-	// Binary search for the longest prefix length where distinct <= MAX.
-	// As len increases, distinctAt(len) increases (more granular grouping).
-	// We want the largest len where it's still <= MAX.
 	let lo = partial.length + 1;
 	let hi = maxLen;
 	while (lo < hi) {
@@ -313,7 +493,6 @@ function collapseCompletions(matches: string[], partial: string): string[] {
 		if (distinctAt(mid) <= MAX_COMPLETIONS) lo = mid;
 		else hi = mid - 1;
 	}
-	// Collect unique prefixes at this length
 	const result: string[] = [matches[0]!.slice(0, lo)];
 	for (let i = 1; i < matches.length; i++) {
 		const p = matches[i]!.slice(0, lo);
@@ -325,7 +504,6 @@ function collapseCompletions(matches: string[], partial: string): string[] {
 function generateCompletions(value: unknown, segments: string[], partial: string): string[] {
 	const target = walkSegments(value, segments);
 	if (target === null || target === undefined || typeof target !== "object") return [];
-
 	let matches: string[];
 	if (Array.isArray(target)) {
 		matches = target.map((_, i) => String(i)).filter(s => s.startsWith(partial));
@@ -335,110 +513,41 @@ function generateCompletions(value: unknown, segments: string[], partial: string
 	return collapseCompletions(matches, partial);
 }
 
-// ── Shell completions engine ─────────────────────────────────
-
-// Flags that take a value argument (excluding -s which consumes all remaining non-flag args)
-const FLAGS_WITH_VALUE = new Set(["-o", "--out", "--from", "--to", "--indexes"]);
-const ALL_FLAGS = ["-h", "--help", "-j", "--json", "-r", "--rexc", "-t", "--tree",
-	"--from", "--to", "-s", "--select", "-o", "--out", "--indexes", "--color", "--no-color"];
-const DATA_EXTENSIONS = [".json", ".rexc", ".rex"];
-
-/** Find the index of -s/--select in words (before the current word), or -1 */
-function findSelectIndex(words: string[]): number {
-	// Scan words before the current (last) word
-	for (let i = 0; i < words.length - 1; i++) {
-		const w = words[i]!;
-		if (w === "-s" || w === "--select") return i;
-		if (FLAGS_WITH_VALUE.has(w)) { i++; continue; }
-	}
-	return -1;
-}
-
 async function handleCompletions(argv: string[]) {
-	// argv = words after "rx" on the command line, with the word being completed last
-	// If empty, we're completing the first arg
 	const words = argv.length > 0 ? argv : [""];
 	const current = words[words.length - 1]!;
 	const prev = words.length >= 2 ? words[words.length - 2] : undefined;
 
-	// Completing a flag value?
-	if (prev === "--from") return output(["json", "rexc"]);
-	if (prev === "--to") return output(["json", "rexc", "tree"]);
-	if (prev === "-o" || prev === "--out") return output(await listFiles(current, false));
+	if (prev === "--from") return printCompletions(["json", "rexc"]);
+	if (prev === "--to") return printCompletions(["json", "rexc", "tree"]);
+	if (prev === "-o" || prev === "--out") return printCompletions(listFiles(current, false));
 
-	// Inside a selector? (any position after -s that isn't a flag)
 	const selectIdx = findSelectIndex(words);
 	if (selectIdx >= 0 && !current.startsWith("-")) {
 		const files = extractFiles(words.slice(0, selectIdx));
 		if (files.length > 0) {
-			// Segments are all words between -s and the current word
 			const segments = words.slice(selectIdx + 1, -1);
 			try {
 				const raw = await readFile(files[0]!, "utf8");
 				const format = formatFromExt(files[0]!) ?? detectFormat(raw);
 				const value = parseRaw(raw, format);
-				return output(generateCompletions(value, segments, current));
+				return printCompletions(generateCompletions(value, segments, current));
 			} catch { /* can't parse, no completions */ }
 		}
-		return output([]);
+		return printCompletions([]);
 	}
 
-	// Completing a flag?
-	if (current.startsWith("-")) return output(ALL_FLAGS.filter(f => f.startsWith(current)));
-
-	// Default: complete files
-	return output(await listFiles(current, true));
+	if (current.startsWith("-")) return printCompletions(ALL_FLAGS.filter(f => f.startsWith(current)));
+	return printCompletions(listFiles(current, true));
 }
 
-function extractFiles(words: string[]): string[] {
-	const files: string[] = [];
-	for (let i = 0; i < words.length; i++) {
-		const w = words[i]!;
-		// Stop at -s since everything after it is selector segments
-		if (w === "-s" || w === "--select") break;
-		if (FLAGS_WITH_VALUE.has(w)) { i++; continue; }
-		if (w.startsWith("-")) continue;
-		files.push(w);
-	}
-	return files;
-}
-
-async function listFiles(prefix: string, dataOnly: boolean): Promise<string[]> {
-	const { readdirSync, statSync } = await import("node:fs");
-	const { dirname: d, basename: b, join: j } = await import("node:path");
-
-	const dir = prefix.includes("/") ? d(prefix) : ".";
-	const partial = prefix.includes("/") ? b(prefix) : prefix;
-
-	try {
-		const entries = readdirSync(dir, { withFileTypes: true });
-		const results: string[] = [];
-		for (const entry of entries) {
-			if (!entry.name.startsWith(partial)) continue;
-			if (entry.name.startsWith(".") && !partial.startsWith(".")) continue;
-			const rel = dir === "." ? entry.name : j(dir, entry.name);
-			if (entry.isDirectory()) {
-				results.push(rel + "/");
-			} else if (!dataOnly || DATA_EXTENSIONS.some(ext => entry.name.endsWith(ext))) {
-				results.push(rel);
-			}
-		}
-		return results.sort();
-	} catch { return []; }
-}
-
-function output(completions: string[]) {
-	if (completions.length > 0) process.stdout.write(completions.join("\n") + "\n");
-}
-
-// ── Shell shims & setup ─────────────────────────────────────
+// ── Shell completion scripts & setup ─────────────────────────
 
 const ZSH_COMPLETION = `#compdef rx
 _rx() {
 	local -a results
 	results=("\${(@f)$(rx --completions -- "\${(@)words[2,$CURRENT]}" 2>/dev/null)}")
 	(( \${#results} == 0 )) && return
-	# Check if we're inside a selector (after -s/--select)
 	local in_select=0
 	local i
 	for (( i=2; i < CURRENT; i++ )); do
@@ -469,15 +578,11 @@ function detectShell(): Shell | undefined {
 	return undefined;
 }
 
-function completionScript(shell: Shell): string {
-	return shell === "zsh" ? ZSH_COMPLETION : BASH_COMPLETION;
-}
-
 async function removeIfSymlink(path: string) {
 	try {
 		const stat = await lstat(path);
 		if (stat.isSymbolicLink()) await unlink(path);
-	} catch { /* doesn't exist, fine */ }
+	} catch { /* doesn't exist */ }
 }
 
 async function setupCompletions(args: string[]) {
@@ -489,88 +594,22 @@ async function setupCompletions(args: string[]) {
 	if (!shell) throw new Error("Cannot detect shell. Specify: rx setup-completions zsh|bash");
 
 	const home = homedir();
-	let dest: string;
-	let extraInstructions = "";
+	const isZsh = shell === "zsh";
+	const dir = isZsh
+		? join(home, ".local", "share", "zsh", "site-functions")
+		: join(home, ".local", "share", "bash-completion", "completions");
+	const dest = join(dir, isZsh ? "_rx" : "rx");
+	const script = isZsh ? ZSH_COMPLETION : BASH_COMPLETION;
 
-	if (shell === "zsh") {
-		const dir = join(home, ".local", "share", "zsh", "site-functions");
-		await mkdir(dir, { recursive: true });
-		dest = join(dir, "_rx");
-		await removeIfSymlink(dest);
-		await writeFile(dest, ZSH_COMPLETION + "\n", "utf8");
-		extraInstructions = [
-			"",
-			"Ensure this is in your ~/.zshrc:",
-			"",
-			`  fpath=(${dir} $fpath)`,
-			"  autoload -Uz compinit && compinit",
-			"",
-			"Then restart your shell or run: exec zsh",
-		].join("\n");
-	} else {
-		const dir = join(home, ".local", "share", "bash-completion", "completions");
-		await mkdir(dir, { recursive: true });
-		dest = join(dir, "rx");
-		await removeIfSymlink(dest);
-		await writeFile(dest, BASH_COMPLETION + "\n", "utf8");
-		extraInstructions = [
-			"",
-			"Ensure bash-completion is loaded in your ~/.bashrc:",
-			"",
-			`  [[ -r ${dir}/rx ]] && source ${dir}/rx`,
-			"",
-			"Then restart your shell or run: source ~/.bashrc",
-		].join("\n");
-	}
+	await mkdir(dir, { recursive: true });
+	await removeIfSymlink(dest);
+	await writeFile(dest, script + "\n", "utf8");
 
-	process.stderr.write(`Installed ${shell} completions to ${dest}\n${extraInstructions}\n`);
-}
+	const instructions = isZsh
+		? `\nEnsure this is in your ~/.zshrc:\n\n  fpath=(${dir} $fpath)\n  autoload -Uz compinit && compinit\n\nThen restart your shell or run: exec zsh`
+		: `\nEnsure bash-completion is loaded in your ~/.bashrc:\n\n  [[ -r ${dir}/rx ]] && source ${dir}/rx\n\nThen restart your shell or run: source ~/.bashrc`;
 
-// ── Output formatting ────────────────────────────────────────
-
-function formatTree(value: unknown, color: boolean): string {
-	const text = rexStringify(value, { indent: 2, maxWidth: 80 });
-	if (!color) return text;
-	return text.split("\n").map((line) => highlightLine(line)).join("\n");
-}
-
-function normalizeForJson(value: unknown, inArray: boolean): unknown {
-	if (value === undefined) return inArray ? null : undefined;
-	if (value === null || typeof value !== "object") return value;
-	if (Array.isArray(value)) {
-		const arr: unknown[] = [];
-		for (let i = 0, len = (value as unknown[]).length; i < len; i++) {
-			arr.push(normalizeForJson((value as unknown[])[i], true));
-		}
-		return arr;
-	}
-	const out: Record<string, unknown> = {};
-	for (const key of Object.keys(value as Record<string, unknown>)) {
-		const n = normalizeForJson((value as Record<string, unknown>)[key], false);
-		if (n !== undefined) out[key] = n;
-	}
-	return out;
-}
-
-function formatOutput(value: unknown, format: OutputFormat, color: boolean, encodeOpts?: RexCStringifyOptions): string {
-	if (format === "tree") return formatTree(value, color);
-	if (format === "json") {
-		const text = JSON.stringify(normalizeForJson(value, false), null, 2) ?? "null";
-		return color ? highlightJSON(text) : text;
-	}
-	// rexc (non-streaming fallback for -o file output)
-	const text = rexcStringify(value, encodeOpts);
-	return color ? highlightRexc(text) : text;
-}
-
-function streamRexcOutput(value: unknown, encodeOpts?: RexCStringifyOptions) {
-	rexcStringify(value, {
-		...encodeOpts,
-		onChunk: (chunk: string) => {
-			process.stdout.write(chunk);
-		},
-	});
-	process.stdout.write("\n");
+	process.stderr.write(`Installed ${shell} completions to ${dest}${instructions}\n`);
 }
 
 // ── Main ─────────────────────────────────────────────────────
@@ -580,59 +619,40 @@ async function main() {
 
 	if (argv[0] === "--completions") {
 		const sub = argv[1];
-		if (sub === "setup") {
-			await setupCompletions(argv.slice(2));
-			return;
-		}
+		if (sub === "setup") { await setupCompletions(argv.slice(2)); return; }
 		if (sub === "zsh" || sub === "bash") {
-			process.stdout.write(completionScript(sub) + "\n");
+			process.stdout.write((sub === "zsh" ? ZSH_COMPLETION : BASH_COMPLETION) + "\n");
 			return;
 		}
-		// --completions -- word1 word2 ... (called by shell shim)
 		const dashDash = argv.indexOf("--");
-		const words = dashDash >= 0 ? argv.slice(dashDash + 1) : [];
-		await handleCompletions(words);
+		await handleCompletions(dashDash >= 0 ? argv.slice(dashDash + 1) : []);
 		return;
 	}
 
 	const opts = parseArgs(argv);
 	if (opts.help) { console.log(usage()); return; }
 
-	setColorEnabled(opts.color);
+	C = createColors(opts.color);
 
-	const toFormat: OutputFormat = opts.toFormat
-		?? (process.stdout.isTTY ? "tree" : "json");
-
-	const encodeOpts: RexCStringifyOptions | undefined =
-		opts.indexes !== undefined ? { indexes: opts.indexes } : undefined;
-
-	const { value: parsed } = await readInput(opts);
-
+	const toFormat: OutputFormat = opts.toFormat ?? (process.stdout.isTTY ? "tree" : "json");
+	const parsed = await readInput(opts);
 	const value = opts.select ? applySelector(parsed, opts.select) : parsed;
 
-	// Stream rexc directly to stdout (no color — chunks aren't full words yet)
-	if (toFormat === "rexc" && !opts.out && !opts.color) {
-		streamRexcOutput(value, encodeOpts);
-		return;
-	}
-
-	// Stream tree output to stdout line-by-line
+	// Stream tree to stdout line-by-line
 	if (toFormat === "tree" && !opts.out) {
-		rexStringify(value, {
-			indent: 2, maxWidth: 80,
-			onLine: opts.color
-				? (line: string) => { process.stdout.write(highlightLine(line) + "\n"); }
-				: (line: string) => { process.stdout.write(line + "\n"); },
-		});
+		treeStringify(value, opts.color
+			? (line: string) => { process.stdout.write(highlightTree(line) + "\n"); }
+			: (line: string) => { process.stdout.write(line + "\n"); },
+		);
 		return;
 	}
 
-	const output = formatOutput(value, toFormat, opts.color, encodeOpts);
+	const out = formatOutput(value, toFormat, opts.color);
 
 	if (opts.out) {
-		await writeFile(opts.out, output + "\n", "utf8");
+		await writeFile(opts.out, out + "\n", "utf8");
 	} else {
-		process.stdout.write(output + "\n");
+		process.stdout.write(out + "\n");
 	}
 }
 

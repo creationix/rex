@@ -94,3 +94,21 @@ export function write(
     throw new Error(`Cannot write ${num} as base64`);
   }
 }
+
+// Encode a signed integer as an unsigned zigzag value
+export function toZigZag(num: number): number {
+  // Bitwise path for int32 range; >>> 0 converts signed result to uint32
+  if (num >= -0x80000000 && num <= 0x7fffffff) {
+    return ((num << 1) ^ (num >> 31)) >>> 0;
+  }
+  return num < 0 ? num * -2 - 1 : num * 2;
+}
+
+// Decode an unsigned zigzag value back to a signed integer
+export function fromZigZag(num: number): number {
+  // Bitwise path for uint32 range
+  if (num <= 0xffffffff) {
+    return (num >>> 1) ^ -(num & 1);
+  }
+  return num % 2 === 0 ? num / 2 : (num + 1) / -2;
+}
