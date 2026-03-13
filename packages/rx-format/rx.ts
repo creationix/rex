@@ -238,41 +238,33 @@ export function resolveStr(c: Cursor): string {
   throw new TypeError(`resolveStr: expected str, ptr, or chain, got ${c.tag}`);
 }
 
-// Shared TextEncoder for strEquals/strCompare
+// Shared TextEncoder + reusable buffer for strEquals/strCompare
 const encoder = new TextEncoder();
+let encodeBuf = new Uint8Array(256);
 
 /** Zero-alloc equality check: does cursor's string match target? */
 export function strEquals(c: Cursor, target: string): boolean {
   const start = strStart(c);
   const { val: byteLen, data } = c;
-  let ti = 0;
-  for (let i = start, end = start + byteLen; i < end; i++) {
-    if (ti >= target.length) return false;
-    const cp = target.codePointAt(ti)!;
-    if (cp < 0x80) {
-      if (data[i] !== cp) return false;
-      ti++;
-    } else if (cp < 0x800) {
-      if (end - i < 2) return false;
-      if (data[i] !== (0xc0 | (cp >> 6))) return false;
-      if (data[++i] !== (0x80 | (cp & 0x3f))) return false;
-      ti++;
-    } else if (cp < 0x10000) {
-      if (end - i < 3) return false;
-      if (data[i] !== (0xe0 | (cp >> 12))) return false;
-      if (data[++i] !== (0x80 | ((cp >> 6) & 0x3f))) return false;
-      if (data[++i] !== (0x80 | (cp & 0x3f))) return false;
-      ti++;
-    } else {
-      if (end - i < 4) return false;
-      if (data[i] !== (0xf0 | (cp >> 18))) return false;
-      if (data[++i] !== (0x80 | ((cp >> 12) & 0x3f))) return false;
-      if (data[++i] !== (0x80 | ((cp >> 6) & 0x3f))) return false;
-      if (data[++i] !== (0x80 | (cp & 0x3f))) return false;
-      ti += cp > 0xffff ? 2 : 1; // surrogate pair in JS string
+  // Fast path: if target.length === byteLen, might be all-ASCII — compare charCodes directly
+  if (target.length === byteLen) {
+    let allAscii = true;
+    for (let i = 0; i < byteLen; i++) {
+      const ch = target.charCodeAt(i);
+      if (ch > 0x7f) { allAscii = false; break; }
+      if (data[start + i] !== ch) return false;
     }
+    if (allAscii) return true;
   }
-  return ti >= target.length;
+  // General path: encode target into reusable buffer, then memcmp
+  const maxBytes = target.length * 3; // UTF-8 worst case for BMP
+  if (encodeBuf.length < maxBytes) encodeBuf = new Uint8Array(maxBytes);
+  const { written } = encoder.encodeInto(target, encodeBuf);
+  if (written !== byteLen) return false;
+  for (let i = 0; i < byteLen; i++) {
+    if (data[start + i] !== encodeBuf[i]) return false;
+  }
+  return true;
 }
 
 /** Compare cursor's string against target. Returns <0, 0, or >0. Allocates 1 Uint8Array for target encoding. */
@@ -452,9 +444,229 @@ export type Refs = Record<string, Uint8Array>;
 
 const HANDLE = Symbol("rexc.handle");
 
+type NodeInfo = {
+  data: Uint8Array;
+  right: number;
+  tag: Tag;
+  val: number;
+  left: number;
+  ixWidth: number;
+  ixCount: number;
+  schema: number;
+  _count?: number;
+  _offsets?: number[];
+};
+
 /** Open a rexc buffer and return a Proxy-wrapped root value. */
 export function open(buffer: Uint8Array, refs?: Refs): unknown {
-  throw new Error("TODO: implement open");
+  const nodeMap = new WeakMap<object, NodeInfo>();
+  const scratch = makeCursor(buffer);
+
+  function snap(c: Cursor): NodeInfo {
+    return {
+      data: c.data, right: c.right, tag: c.tag, val: c.val,
+      left: c.left, ixWidth: c.ixWidth, ixCount: c.ixCount, schema: c.schema,
+    };
+  }
+
+  function wrap(c: Cursor): unknown {
+    while (c.tag === "ptr") { c.right = c.val; read(c); }
+    if (c.tag === "ref") {
+      if (!refs) return undefined;
+      const refBuf = refs[readStr(c)];
+      if (!refBuf) return undefined;
+      c.data = refBuf; c.right = refBuf.length; read(c);
+      return wrap(c);
+    }
+    switch (c.tag) {
+      case "int": case "float": return c.val;
+      case "str": return readStr(c);
+      case "chain": return resolveStr(c);
+      case "true": return true;
+      case "false": return false;
+      case "null": return null;
+      case "undef": return undefined;
+    }
+    const info = snap(c);
+    const target: object = c.tag === "array" ? [] : Object.create(null);
+    nodeMap.set(target, info);
+    return new Proxy(target, handler);
+  }
+
+  function childCount(info: NodeInfo): number {
+    if (info._count !== undefined) return info._count;
+    if (info.ixCount > 0) return info._count = info.ixCount;
+    if (info.tag === "array") {
+      ensureOffsets(info);
+      return info._count!;
+    }
+    // Object without index — scan children
+    let right = info.val, n = 0;
+    while (right > info.left) {
+      scratch.data = info.data; scratch.right = right;
+      read(scratch); right = scratch.left; n++;
+    }
+    return info._count = info.schema !== 0 ? n : n / 2;
+  }
+
+  function ensureOffsets(info: NodeInfo): number[] {
+    if (!info._offsets) {
+      info._offsets = [];
+      info._count = collectChildren(info as unknown as Cursor, info._offsets);
+    }
+    return info._offsets;
+  }
+
+  function getChild(info: NodeInfo, index: number): unknown {
+    if (index < 0 || index >= childCount(info)) return undefined;
+    if (info.ixWidth > 0) {
+      seekChild(scratch, info as unknown as Cursor, index);
+      return wrap(scratch);
+    }
+    const offsets = ensureOffsets(info);
+    scratch.data = info.data;
+    scratch.right = offsets[index]!;
+    read(scratch);
+    return wrap(scratch);
+  }
+
+  function getValue(info: NodeInfo, key: string): unknown {
+    scratch.data = info.data;
+    if (findKey(scratch, info as unknown as Cursor, key)) return wrap(scratch);
+    return undefined;
+  }
+
+  function enumKeys(info: NodeInfo): string[] {
+    const result: string[] = [];
+    const kc = makeCursor(info.data);
+    if (info.schema !== 0) {
+      const sc = makeCursor(info.data);
+      sc.right = info.schema; read(sc);
+      while (sc.tag === "ptr") { sc.right = sc.val; read(sc); }
+      if (sc.tag === "object") {
+        let keyRight = sc.val;
+        const keyEnd = sc.left;
+        while (keyRight > keyEnd) {
+          kc.right = keyRight; read(kc);
+          const nextRight = kc.left;
+          result.push(resolveStr(kc));
+          sc.right = nextRight; read(sc); // skip schema value
+          keyRight = sc.left;
+        }
+      } else if (sc.tag === "array") {
+        let keyRight = sc.val;
+        const keyEnd = sc.left;
+        while (keyRight > keyEnd) {
+          kc.right = keyRight; read(kc);
+          const nextRight = kc.left;
+          result.push(resolveStr(kc));
+          keyRight = nextRight;
+        }
+      }
+    } else {
+      let right = info.val;
+      while (right > info.left) {
+        kc.right = right; read(kc);
+        const keyLeft = kc.left;
+        result.push(resolveStr(kc));
+        kc.right = keyLeft; read(kc); // skip value
+        right = kc.left;
+      }
+    }
+    return result;
+  }
+
+  const handler: ProxyHandler<object> = {
+    get(target, prop) {
+      const info = nodeMap.get(target)!;
+      if (prop === HANDLE) return { data: info.data, right: info.right };
+
+      if (prop === Symbol.iterator) {
+        if (info.tag === "array") {
+          return function*() {
+            const n = childCount(info);
+            for (let i = 0; i < n; i++) yield getChild(info, i);
+          };
+        }
+        if (info.tag === "object") {
+          return function*() {
+            const ks = enumKeys(info);
+            for (const k of ks) yield [k, getValue(info, k)] as [string, unknown];
+          };
+        }
+        return undefined;
+      }
+
+      if (typeof prop === "symbol") return undefined;
+      if (prop === "length") return childCount(info);
+
+      if (info.tag === "array") {
+        const idx = Number(prop);
+        if (Number.isInteger(idx) && idx >= 0) return getChild(info, idx);
+        return undefined;
+      }
+
+      if (info.tag === "object") return getValue(info, prop);
+      return undefined;
+    },
+
+    has(target, prop) {
+      const info = nodeMap.get(target)!;
+      if (prop === HANDLE) return true;
+      if (typeof prop === "symbol") return false;
+      if (prop === "length") return true;
+      if (info.tag === "array") {
+        const idx = Number(prop);
+        return Number.isInteger(idx) && idx >= 0 && idx < childCount(info);
+      }
+      if (info.tag === "object") {
+        scratch.data = info.data;
+        return findKey(scratch, info as unknown as Cursor, prop);
+      }
+      return false;
+    },
+
+    ownKeys(target) {
+      const info = nodeMap.get(target)!;
+      if (info.tag === "array") {
+        const n = childCount(info);
+        const ks: string[] = [];
+        for (let i = 0; i < n; i++) ks.push(String(i));
+        ks.push("length");
+        return ks;
+      }
+      return enumKeys(info);
+    },
+
+    getOwnPropertyDescriptor(target, prop) {
+      const info = nodeMap.get(target)!;
+      if (info.tag === "array") {
+        if (prop === "length") {
+          return { configurable: false, enumerable: false, value: childCount(info), writable: false };
+        }
+        const idx = Number(prop);
+        if (typeof prop === "string" && Number.isInteger(idx) && idx >= 0 && idx < childCount(info)) {
+          return { configurable: true, enumerable: true, value: getChild(info, idx) };
+        }
+        return undefined;
+      }
+      if (info.tag === "object" && typeof prop === "string") {
+        scratch.data = info.data;
+        if (findKey(scratch, info as unknown as Cursor, prop)) {
+          return { configurable: true, enumerable: true, value: wrap(scratch) };
+        }
+      }
+      return undefined;
+    },
+
+    set() { throw new TypeError("rexc data is read-only"); },
+    deleteProperty() { throw new TypeError("rexc data is read-only"); },
+  };
+
+  // Read and wrap root
+  scratch.right = buffer.length;
+  read(scratch);
+  return wrap(scratch);
 }
 
 /** Get the raw handle from a Proxy-wrapped value (escape hatch). */
