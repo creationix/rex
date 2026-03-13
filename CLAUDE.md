@@ -26,6 +26,18 @@ rex -c --expr "when x do y end"
 rex --expr "a and b" --ir
 ```
 
+## Data Tool
+
+Use `rx` to inspect, convert, and filter REXC/JSON data:
+
+```sh
+bun run rx data.rexc                   # pretty-print as tree
+bun run rx data.rexc --to json         # convert rexc → JSON
+bun run rx data.json --to rexc         # convert JSON → rexc
+bun run rx -s .foo.bar[0] data.rexc    # select sub-value by path
+cat data.rexc | bun run rx             # read from stdin
+```
+
 ## Common Commands
 
 From repo root:

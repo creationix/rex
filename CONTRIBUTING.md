@@ -54,6 +54,20 @@ bunx @creationix/rex --expr "when x do y end"
 npx -y @creationix/rex -- --expr "when x do y end"
 ```
 
+## Data Tool (`rx`)
+
+`rx` is a companion CLI for inspecting, converting, and filtering REXC and JSON data. It lives at `packages/rex-lang/rx-cli.ts`.
+
+```sh
+bun run rx data.rexc                   # pretty-print rexc as tree
+bun run rx data.rexc --to json         # convert rexc → JSON
+bun run rx data.json --to rexc         # convert JSON → rexc
+cat data.rexc | bun run rx             # read from stdin
+bun run rx -s .routes[0].op data.rexc  # select a sub-value
+```
+
+See `bun run rx --help` for full usage.
+
 ## Architecture
 
 The compiler pipeline lives in `packages/rex-lang/rex.ts`:
