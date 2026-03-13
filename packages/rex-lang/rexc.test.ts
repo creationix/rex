@@ -957,16 +957,27 @@ describe("rexc stringify", () => {
 		});
 
 		test("getEntries and getValues return correct metadata for arrays and objects", () => {
+			// Regular object: keys are real RxNodes from the byte stream
 			let context = encodeToContext({ a: 1, b: 2 });
 			expect([...getEntries(context, get(context.data) as RxObject)]).toEqual([
 				// `+4b,1+2a,1:a`
-				["a", {
+				[{
+					type: "primitive",
+					left: 7,
+					right: 10,
+					value: "a",
+				}, {
 					type: "primitive",
 					left: 5,
 					right: 7,
 					value: 1,
 				}],
-				["b", {
+				[{
+					type: "primitive",
+					left: 2,
+					right: 5,
+					value: "b",
+				}, {
 					type: "primitive",
 					left: 0,
 					right: 2,
@@ -997,16 +1008,27 @@ describe("rexc stringify", () => {
 				},
 			])
 
+			// Schema object with array ref: keys are synthetic RxNodes (left/right = -1)
 			context = encodeToContext({ a: 1, b: 2 }, { refs: { K: ["a", "b"] } });
 			expect([...getEntries(context, get(context.data) as RxObject)]).toEqual([
 				// `+4+2'K:6`
-				["a", {
+				[{
+					type: "primitive",
+					left: -1,
+					right: -1,
+					value: "a",
+				}, {
 					type: "primitive",
 					left: 2,
 					right: 4,
 					value: 1,
 				}],
-				["b", {
+				[{
+					type: "primitive",
+					left: -1,
+					right: -1,
+					value: "b",
+				}, {
 					type: "primitive",
 					left: 0,
 					right: 2,
@@ -1014,16 +1036,40 @@ describe("rexc stringify", () => {
 				}],
 			]);
 
+			// Schema object with pointer schema: keys are real RxNodes from the schema target
+			// encode two objects with same shape to trigger schema dedup
+			context = encodeToContext([{ a: 1, b: 2 }, { a: 3, b: 4 }]);
+			const arr = get(context.data) as RxArray;
+			const items = [...getEach(context, arr)];
+			// First item in iteration order is the schema object (written first, closer to left)
+			const schemaObj = items.find(i => (i as RxObject).schema !== undefined) as RxObject;
+			expect(schemaObj.schema).toBeDefined();
+			const entries = [...getEntries(context, schemaObj)];
+			// Keys should be real nodes with valid byte positions (not -1)
+			expect(entries[0]![0].left).toBeGreaterThanOrEqual(0);
+			expect(entries[0]![0].right).toBeGreaterThan(entries[0]![0].left);
+
+			// Schema object with object ref: keys are also synthetic
 			context = encodeToContext({ a: 1, b: 2 }, { refs: { K: { a: 3, b: 4 } } });
 			expect([...getEntries(context, get(context.data) as RxObject)]).toEqual([
 				// `+4+2'K:6`
-				["a", {
+				[{
+					type: "primitive",
+					left: -1,
+					right: -1,
+					value: "a",
+				}, {
 					type: "primitive",
 					left: 2,
 					right: 4,
 					value: 1,
 				}],
-				["b", {
+				[{
+					type: "primitive",
+					left: -1,
+					right: -1,
+					value: "b",
+				}, {
 					type: "primitive",
 					left: 0,
 					right: 2,
