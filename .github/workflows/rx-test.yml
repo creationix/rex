@@ -1,0 +1,21 @@
+name: rx tests
+
+on:
+  push:
+    paths:
+      - 'packages/rx-format/**'
+  pull_request:
+    paths:
+      - 'packages/rx-format/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun test
+        working-directory: packages/rx-format
+      - run: bun run build
+        working-directory: packages/rx-format
