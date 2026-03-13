@@ -1,3 +1,4 @@
 {
-  "outputDirectory": "packages/web-viewer"
+  "buildCommand": "cd packages/web-viewer && bun install && bun run build",
+  "outputDirectory": "packages/web-viewer/dist"
 }
