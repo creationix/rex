@@ -275,7 +275,7 @@ export function strEquals(c: Cursor, target: string): boolean {
   return ti >= target.length;
 }
 
-/** Zero-alloc ordering: compare cursor's string against target. Returns <0, 0, or >0. */
+/** Compare cursor's string against target. Returns <0, 0, or >0. Allocates 1 Uint8Array for target encoding. */
 export function strCompare(c: Cursor, target: string): number {
   const start = strStart(c);
   const { val: byteLen, data } = c;
@@ -374,10 +374,11 @@ export function findKey(c: Cursor, container: Cursor, target: string): boolean {
       while (keyRight > keyEnd && valRight > end) {
         _k.right = keyRight;
         read(_k);
+        const keyLeft = _k.left; // save before keyEquals may follow pointers/chains
         const matched = keyEquals(target);
-        // Skip schema value using _s (preserves _k state for left boundary)
+        // Skip schema value using _s
         _s.data = data;
-        _s.right = _k.left;
+        _s.right = keyLeft;
         read(_s);
         keyRight = _s.left;
 

@@ -4,6 +4,7 @@ import {
 	makeCursor,
 	read,
 	readStr,
+	resolveStr,
 	strEquals,
 	strCompare,
 	findKey,
@@ -307,5 +308,343 @@ describe("rawBytes", () => {
 		const c = cur(42);
 		const bytes = rawBytes(c);
 		expect(new TextDecoder().decode(bytes)).toBe("+1k");
+	});
+});
+
+describe("resolveStr", () => {
+	test("plain string", () => {
+		const c = cur("hello");
+		expect(resolveStr(c)).toBe("hello");
+	});
+
+	test("pointer to string", () => {
+		// Create data with a pointer: ["hello", "hello"] → second is a ptr
+		const c = cur(["hello", "hello"]);
+		const tmp = makeCursor(c.data);
+		// First child in read order is the pointer
+		tmp.right = c.val;
+		read(tmp);
+		expect(tmp.tag).toBe("ptr");
+		expect(resolveStr(tmp)).toBe("hello");
+	});
+
+	test("chain string", () => {
+		// Paths with shared prefixes produce chains
+		const arr = ["/foo/bar/baz", "/foo/bar/qux"];
+		const c = cur(arr);
+		const tmp = makeCursor(c.data);
+		// Iterate children and resolve each
+		const results: string[] = [];
+		let right = c.val;
+		while (right > c.left) {
+			tmp.right = right;
+			read(tmp);
+			results.push(resolveStr(tmp));
+			right = tmp.left;
+		}
+		expect(results).toEqual(["/foo/bar/baz", "/foo/bar/qux"]);
+	});
+
+	test("throws on non-string node", () => {
+		const c = cur(42);
+		expect(() => resolveStr(c)).toThrow();
+	});
+});
+
+describe("read() floats extended", () => {
+	test("negative exponent (small decimal)", () => {
+		const c = cur(0.001);
+		expect(c.tag).toBe("float");
+		expect(c.val).toBe(0.001);
+	});
+
+	test("large float", () => {
+		const c = cur(1.23e15);
+		expect(c.tag).toBe("float");
+		expect(c.val).toBe(1.23e15);
+	});
+
+	test("small float", () => {
+		const c = cur(1.5e-10);
+		expect(c.tag).toBe("float");
+		expect(c.val).toBe(1.5e-10);
+	});
+
+	test("negative float", () => {
+		const c = cur(-3.14);
+		expect(c.tag).toBe("float");
+		expect(c.val).toBe(-3.14);
+	});
+
+	test("negative float with exponent", () => {
+		const c = cur(-2.5e8);
+		expect(c.tag).toBe("float");
+		expect(c.val).toBe(-2.5e8);
+	});
+});
+
+describe("read() large integers", () => {
+	test("large positive without trailing zeroes", () => {
+		const c = cur(123457);
+		expect(c.tag).toBe("int");
+		expect(c.val).toBe(123457);
+	});
+
+	test("large negative without trailing zeroes", () => {
+		const c = cur(-999997);
+		expect(c.tag).toBe("int");
+		expect(c.val).toBe(-999997);
+	});
+
+	test("trailing zeroes encode as float with exponent", () => {
+		// 1000000 = 1e6, encoder uses exponent form
+		const c = cur(1000000);
+		expect(c.tag).toBe("float");
+		expect(c.val).toBe(1000000);
+	});
+});
+
+describe("nested containers", () => {
+	test("nested arrays", () => {
+		const c = cur([[1, 2], [3, 4]]);
+		expect(c.tag).toBe("array");
+		const tmp = makeCursor(c.data);
+		const inner = makeCursor(c.data);
+		const results: number[][] = [];
+		let right = c.val;
+		while (right > c.left) {
+			tmp.right = right;
+			read(tmp);
+			expect(tmp.tag).toBe("array");
+			const vals: number[] = [];
+			let innerRight = tmp.val;
+			while (innerRight > tmp.left) {
+				inner.right = innerRight;
+				read(inner);
+				vals.push(inner.val);
+				innerRight = inner.left;
+			}
+			results.push(vals);
+			right = tmp.left;
+		}
+		expect(results).toEqual([[1, 2], [3, 4]]);
+	});
+
+	test("nested objects", () => {
+		const c = cur({ a: { b: 1 } });
+		expect(c.tag).toBe("object");
+		const v = makeCursor(c.data);
+		expect(findKey(v, c, "a")).toBe(true);
+		expect(v.tag).toBe("object");
+		const inner = makeCursor(v.data);
+		expect(findKey(inner, v, "b")).toBe(true);
+		expect(inner.tag).toBe("int");
+		expect(inner.val).toBe(1);
+	});
+
+	test("object containing array", () => {
+		const c = cur({ items: [10, 20, 30] });
+		const v = makeCursor(c.data);
+		expect(findKey(v, c, "items")).toBe(true);
+		expect(v.tag).toBe("array");
+		const child = makeCursor(v.data);
+		const vals: number[] = [];
+		let right = v.val;
+		while (right > v.left) {
+			child.right = right;
+			read(child);
+			vals.push(child.val);
+			right = child.left;
+		}
+		expect(vals).toEqual([10, 20, 30]);
+	});
+
+	test("array of objects", () => {
+		const c = cur([{ x: 1 }, { x: 2 }]);
+		expect(c.tag).toBe("array");
+		const tmp = makeCursor(c.data);
+		const v = makeCursor(c.data);
+		const results: number[] = [];
+		let right = c.val;
+		while (right > c.left) {
+			tmp.right = right;
+			read(tmp);
+			expect(tmp.tag).toBe("object");
+			expect(findKey(v, tmp, "x")).toBe(true);
+			results.push(v.val);
+			right = tmp.left;
+		}
+		expect(results).toEqual([1, 2]);
+	});
+});
+
+describe("seekChild on indexed objects", () => {
+	test("random access indexed object entries", () => {
+		const obj = { a: 10, b: 20, c: 30 };
+		const c = cur(obj, { indexes: 0 });
+		expect(c.tag).toBe("object");
+		expect(c.ixCount).toBe(3);
+		// Each entry is a key/value pair — seekChild gives the key node
+		const child = makeCursor(c.data);
+		const keys: string[] = [];
+		for (let i = 0; i < c.ixCount; i++) {
+			seekChild(child, c, i);
+			// In indexed objects, each index entry points to a key
+			keys.push(readStr(child));
+		}
+		expect(keys.length).toBe(3);
+		// Indexed objects are sorted by UTF-8 key order
+		expect(keys).toEqual(["a", "b", "c"]);
+	});
+});
+
+describe("collectChildren on objects", () => {
+	test("collects key/value boundaries", () => {
+		const c = cur({ x: 1, y: 2 });
+		const offsets: number[] = [];
+		const count = collectChildren(c, offsets);
+		// Objects without schema: children are interleaved key, value, key, value
+		expect(count).toBe(4);
+		const tmp = makeCursor(c.data);
+		const tags: string[] = [];
+		for (let i = 0; i < count; i++) {
+			tmp.right = offsets[i]!;
+			read(tmp);
+			tags.push(tmp.tag);
+		}
+		// Alternating: str (key), int (value), str (key), int (value)
+		expect(tags.filter(t => t === "str").length).toBe(2);
+		expect(tags.filter(t => t === "int").length).toBe(2);
+	});
+});
+
+describe("findKey with schema objects", () => {
+	test("finds key in schema object (repeated shape)", () => {
+		// Three objects with same keys. The encoder writes last-to-first,
+		// so carol (index 2) is encoded first with inline keys.
+		// alice and bob get schema pointers referencing carol's key layout.
+		// Read order = logical order: alice, bob, carol.
+		const data = [
+			{ name: "alice", age: 30 },
+			{ name: "bob", age: 25 },
+			{ name: "carol", age: 20 },
+		];
+		const c = cur(data);
+		expect(c.tag).toBe("array");
+		const tmp = makeCursor(c.data);
+		const v = makeCursor(c.data);
+
+		// alice (first in read order) has a schema — last encoded, references carol's keys
+		tmp.right = c.val;
+		read(tmp);
+		expect(tmp.tag).toBe("object");
+		expect(tmp.schema).not.toBe(0);
+
+		// findKey should work on schema objects
+		expect(findKey(v, tmp, "name")).toBe(true);
+		expect(v.tag).toBe("str");
+		expect(readStr(v)).toBe("alice");
+
+		expect(findKey(v, tmp, "age")).toBe(true);
+		expect(v.tag).toBe("int");
+		expect(v.val).toBe(30);
+
+		expect(findKey(v, tmp, "missing")).toBe(false);
+
+		// bob (second in read order) also has a schema
+		tmp.right = tmp.left;
+		read(tmp);
+		expect(tmp.tag).toBe("object");
+		expect(tmp.schema).not.toBe(0);
+
+		expect(findKey(v, tmp, "name")).toBe(true);
+		expect(readStr(v)).toBe("bob");
+
+		expect(findKey(v, tmp, "age")).toBe(true);
+		expect(v.val).toBe(25);
+
+		// carol (third in read order) has inline keys, no schema
+		tmp.right = tmp.left;
+		read(tmp);
+		expect(tmp.tag).toBe("object");
+		expect(tmp.schema).toBe(0);
+
+		expect(findKey(v, tmp, "name")).toBe(true);
+		expect(readStr(v)).toBe("carol");
+
+		expect(findKey(v, tmp, "age")).toBe(true);
+		expect(v.val).toBe(20);
+	});
+});
+
+describe("findKey with pointer keys", () => {
+	test("finds key that is a pointer (deduplicated key string)", () => {
+		// When the same key string appears in multiple objects, the encoder
+		// deduplicates it with a pointer. Use enough objects to trigger this.
+		const data = [
+			{ name: "alice" },
+			{ name: "bob" },
+			{ name: "carol" },
+		];
+		const c = cur(data);
+		const tmp = makeCursor(c.data);
+		const v = makeCursor(c.data);
+
+		// Iterate all objects and findKey "name" in each
+		let right = c.val;
+		const names: string[] = [];
+		while (right > c.left) {
+			tmp.right = right;
+			read(tmp);
+			expect(tmp.tag).toBe("object");
+			expect(findKey(v, tmp, "name")).toBe(true);
+			expect(v.tag).toBe("str");
+			names.push(readStr(v));
+			right = tmp.left;
+		}
+		expect(names).toEqual(["alice", "bob", "carol"]);
+	});
+});
+
+describe("strEquals with multi-byte UTF-8", () => {
+	test("2-byte UTF-8 (accented characters)", () => {
+		const c = cur("café");
+		expect(strEquals(c, "café")).toBe(true);
+		expect(strEquals(c, "cafe")).toBe(false);
+		expect(strEquals(c, "caféé")).toBe(false);
+	});
+
+	test("3-byte UTF-8 (CJK characters)", () => {
+		const c = cur("日本語");
+		expect(strEquals(c, "日本語")).toBe(true);
+		expect(strEquals(c, "日本")).toBe(false);
+		expect(strEquals(c, "中文")).toBe(false);
+	});
+
+	test("mixed ASCII and multi-byte", () => {
+		const c = cur("hello 世界 🌍");
+		expect(strEquals(c, "hello 世界 🌍")).toBe(true);
+		expect(strEquals(c, "hello 世界")).toBe(false);
+	});
+});
+
+describe("error paths", () => {
+	test("seekChild throws on non-indexed container", () => {
+		const c = cur([1, 2, 3]); // no indexes option
+		const child = makeCursor(c.data);
+		expect(() => seekChild(child, c, 0)).toThrow("indexed");
+	});
+
+	test("seekChild throws on out-of-range index", () => {
+		const c = cur([1, 2, 3], { indexes: 0 });
+		const child = makeCursor(c.data);
+		expect(() => seekChild(child, c, -1)).toThrow();
+		expect(() => seekChild(child, c, 3)).toThrow();
+	});
+
+	test("findKey returns false on non-object", () => {
+		const c = cur([1, 2, 3]);
+		const v = makeCursor(c.data);
+		expect(findKey(v, c, "key")).toBe(false);
 	});
 });
