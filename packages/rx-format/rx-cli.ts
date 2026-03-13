@@ -1,4 +1,4 @@
-import * as rexc from "@creationix/rex/rexc";
+import { stringify as rexcStringify, type RexCStringifyOptions } from "@creationix/rex/rexc";
 import { stringify as rexStringify } from "@creationix/rex";
 import {
 	setColorEnabled,
@@ -6,9 +6,12 @@ import {
 	highlightJSON,
 	highlightRexc,
 } from "@creationix/rex/rex-repl";
+import { open } from "./rx";
 import { readFile, writeFile, mkdir, unlink, lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+const textEncoder = new TextEncoder();
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -160,7 +163,7 @@ type ParsedInput = { value: unknown };
 
 function parseRaw(raw: string, format: Format): unknown {
 	if (format === "json") return JSON.parse(raw);
-	return rexc.parse(raw.trim());
+	return open(textEncoder.encode(raw.trim()));
 }
 
 async function readInput(opts: RxOptions): Promise<ParsedInput> {
@@ -519,30 +522,36 @@ function formatTree(value: unknown, color: boolean): string {
 function normalizeForJson(value: unknown, inArray: boolean): unknown {
 	if (value === undefined) return inArray ? null : undefined;
 	if (value === null || typeof value !== "object") return value;
-	if (Array.isArray(value)) return value.map((item) => normalizeForJson(item, true));
+	if (Array.isArray(value)) {
+		const arr: unknown[] = [];
+		for (let i = 0, len = (value as unknown[]).length; i < len; i++) {
+			arr.push(normalizeForJson((value as unknown[])[i], true));
+		}
+		return arr;
+	}
 	const out: Record<string, unknown> = {};
-	for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-		const n = normalizeForJson(val, false);
+	for (const key of Object.keys(value as Record<string, unknown>)) {
+		const n = normalizeForJson((value as Record<string, unknown>)[key], false);
 		if (n !== undefined) out[key] = n;
 	}
 	return out;
 }
 
-function formatOutput(value: unknown, format: OutputFormat, color: boolean, encodeOpts?: rexc.RexCStringifyOptions): string {
+function formatOutput(value: unknown, format: OutputFormat, color: boolean, encodeOpts?: RexCStringifyOptions): string {
 	if (format === "tree") return formatTree(value, color);
 	if (format === "json") {
 		const text = JSON.stringify(normalizeForJson(value, false), null, 2) ?? "null";
 		return color ? highlightJSON(text) : text;
 	}
 	// rexc (non-streaming fallback for -o file output)
-	const text = rexc.stringify(value, encodeOpts);
+	const text = rexcStringify(value, encodeOpts);
 	return color ? highlightRexc(text) : text;
 }
 
-function streamRexcOutput(value: unknown, encodeOpts?: rexc.RexCStringifyOptions) {
-	rexc.stringify(value, {
+function streamRexcOutput(value: unknown, encodeOpts?: RexCStringifyOptions) {
+	rexcStringify(value, {
 		...encodeOpts,
-		onChunk: (chunk) => {
+		onChunk: (chunk: string) => {
 			process.stdout.write(chunk);
 		},
 	});
@@ -579,7 +588,7 @@ async function main() {
 	const toFormat: OutputFormat = opts.toFormat
 		?? (process.stdout.isTTY ? "tree" : "json");
 
-	const encodeOpts: rexc.RexCStringifyOptions | undefined =
+	const encodeOpts: RexCStringifyOptions | undefined =
 		opts.indexes !== undefined ? { indexes: opts.indexes } : undefined;
 
 	const { value: parsed } = await readInput(opts);
@@ -589,6 +598,17 @@ async function main() {
 	// Stream rexc directly to stdout (no color — chunks aren't full words yet)
 	if (toFormat === "rexc" && !opts.out && !opts.color) {
 		streamRexcOutput(value, encodeOpts);
+		return;
+	}
+
+	// Stream tree output to stdout line-by-line
+	if (toFormat === "tree" && !opts.out) {
+		rexStringify(value, {
+			indent: 2, maxWidth: 80,
+			onLine: opts.color
+				? (line: string) => { process.stdout.write(highlightLine(line) + "\n"); }
+				: (line: string) => { process.stdout.write(line + "\n"); },
+		});
 		return;
 	}
 

@@ -54,6 +54,7 @@ export function makeCursor(data: Uint8Array): Cursor {
 const _empty = new Uint8Array(0);
 const _k: Cursor = makeCursor(_empty); // key/temp cursor
 const _s: Cursor = makeCursor(_empty); // schema cursor
+const _cc: Cursor = makeCursor(_empty); // collectChildren cursor (separate from _k to avoid conflict with read())
 
 // ── Core parsing ──
 
@@ -238,47 +239,70 @@ export function resolveStr(c: Cursor): string {
   throw new TypeError(`resolveStr: expected str, ptr, or chain, got ${c.tag}`);
 }
 
-// Shared TextEncoder + reusable buffer for strEquals/strCompare
+// Shared TextEncoder for encoding targets
 const encoder = new TextEncoder();
-let encodeBuf = new Uint8Array(256);
 
-/** Zero-alloc equality check: does cursor's string match target? */
-export function strEquals(c: Cursor, target: string): boolean {
-  const start = strStart(c);
-  const { val: byteLen, data } = c;
-  // Fast path: if target.length === byteLen, might be all-ASCII — compare charCodes directly
-  if (target.length === byteLen) {
-    let allAscii = true;
-    for (let i = 0; i < byteLen; i++) {
-      const ch = target.charCodeAt(i);
-      if (ch > 0x7f) { allAscii = false; break; }
-      if (data[start + i] !== ch) return false;
-    }
-    if (allAscii) return true;
-  }
-  // General path: encode target into reusable buffer, then memcmp
-  const maxBytes = target.length * 3; // UTF-8 worst case for BMP
-  if (encodeBuf.length < maxBytes) encodeBuf = new Uint8Array(maxBytes);
-  const { written } = encoder.encodeInto(target, encodeBuf);
-  if (written !== byteLen) return false;
-  for (let i = 0; i < byteLen; i++) {
-    if (data[start + i] !== encodeBuf[i]) return false;
-  }
-  return true;
+/** Encode a string to UTF-8 bytes for use with strEquals/strCompare. */
+export function prepareKey(target: string): Uint8Array {
+  return encoder.encode(target);
 }
 
-/** Compare cursor's string against target. Returns <0, 0, or >0. Allocates 1 Uint8Array for target encoding. */
-export function strCompare(c: Cursor, target: string): number {
-  const start = strStart(c);
-  const { val: byteLen, data } = c;
-  // Encode target to UTF-8 for byte comparison (1 allocation — unavoidable for ordering)
-  const targetBytes = encoder.encode(target);
-  const len = Math.min(byteLen, targetBytes.length);
-  for (let i = 0; i < len; i++) {
-    const diff = data[start + i]! - targetBytes[i]!;
-    if (diff !== 0) return diff;
+/**
+ * Compare a node's string bytes against key bytes starting at offset.
+ * Handles str, ptr, and chain (zero-alloc for all).
+ * Returns { cmp, offset } where cmp is <0, 0, or >0 for the first difference,
+ * NaN if the node is not a string type, and offset is how far into the key bytes.
+ */
+function nodeCompare(c: Cursor, key: Uint8Array, offset: number): { cmp: number; offset: number } {
+  while (c.tag === "ptr") { c.right = c.val; read(c); }
+
+  if (c.tag === "str" || c.tag === "ref") {
+    const start = strStart(c);
+    const byteLen = c.val;
+    const { data } = c;
+    const len = Math.min(byteLen, key.length - offset);
+    for (let i = 0; i < len; i++) {
+      const diff = data[start + i]! - key[offset + i]!;
+      if (diff !== 0) return { cmp: diff, offset: offset + i };
+    }
+    if (byteLen > key.length - offset) return { cmp: 1, offset: key.length };
+    return { cmp: 0, offset: offset + byteLen };
   }
-  return byteLen - targetBytes.length;
+
+  if (c.tag === "chain") {
+    let right = c.val;
+    const left = c.left;
+    while (right > left) {
+      c.right = right;
+      read(c);
+      right = c.left;
+      const result = nodeCompare(c, key, offset);
+      if (result.cmp !== 0) return result;
+      offset = result.offset;
+    }
+    return { cmp: 0, offset };
+  }
+
+  return { cmp: NaN, offset };
+}
+
+/** Compare cursor's string against target. Returns <0, 0, >0, or NaN if not a string node. */
+export function strCompare(c: Cursor, target: Uint8Array): number {
+  const { cmp, offset } = nodeCompare(c, target, 0);
+  if (cmp !== 0) return cmp;
+  return offset < target.length ? -1 : 0;
+}
+
+/** Zero-alloc equality check: does cursor's string match target? */
+export function strEquals(c: Cursor, target: Uint8Array): boolean {
+  return strCompare(c, target) === 0;
+}
+
+/** Zero-alloc prefix check: does cursor's string start with prefix? */
+export function strHasPrefix(c: Cursor, prefix: Uint8Array): boolean {
+  if (prefix.length === 0) return true;
+  const { offset } = nodeCompare(c, prefix, 0);
+  return offset === prefix.length;
 }
 
 // ── Container access ──
@@ -306,7 +330,9 @@ export function seekChild(c: Cursor, container: Cursor, index: number): void {
 
 /** Collect child right-boundaries into caller-owned array (logical order). Returns count. */
 export function collectChildren(container: Cursor, offsets: number[]): number {
-  _k.data = container.data;
+  // Uses _cc instead of _k because read() internally uses _k for object
+  // schema/index detection — calling read(_k) on an object node would self-conflict.
+  _cc.data = container.data;
   let right = container.val;
   const end = container.left;
   let count = 0;
@@ -314,28 +340,22 @@ export function collectChildren(container: Cursor, offsets: number[]): number {
     if (count >= offsets.length) offsets.push(right);
     else offsets[count] = right;
     count++;
-    _k.right = right;
-    read(_k);
-    right = _k.left;
+    _cc.right = right;
+    read(_cc);
+    right = _cc.left;
   }
   return count;
 }
 
-// Compare a key node (in _k) against target string.
-// Handles str (zero-alloc), ptr→str (zero-alloc), chain (allocates).
-function keyEquals(target: string): boolean {
-  // Resolve pointers
-  while (_k.tag === "ptr") { _k.right = _k.val; read(_k); }
-  // Fast path: plain string — zero-alloc comparison
-  if (_k.tag === "str") return strEquals(_k, target);
-  // Slow path: chain — must allocate to concatenate
-  if (_k.tag === "chain") return resolveStr(_k) === target;
-  return false;
+// Compare a key node (in _k) against target. Zero-alloc for str, ptr, and chain.
+function keyEquals(target: Uint8Array): boolean {
+  return strEquals(_k, target);
 }
 
 /** Find a key in an object. Fills c with the value node if found. */
-export function findKey(c: Cursor, container: Cursor, target: string): boolean {
+export function findKey(c: Cursor, container: Cursor, target: string | Uint8Array): boolean {
   if (container.tag !== "object") return false;
+  if (typeof target === "string") target = prepareKey(target);
 
   const { data } = container;
   _k.data = data;
@@ -431,6 +451,73 @@ export function findKey(c: Cursor, container: Cursor, target: string): boolean {
   return false;
 }
 
+/**
+ * Find all keys matching a prefix in an object.
+ * On indexed objects: O(log n) binary search + O(m) iteration over matches.
+ * On non-indexed objects: O(n) linear scan.
+ * Calls visitor(keyCursor, valueCursor) for each match — use resolveStr(key)
+ * only if you need the string. Stops if visitor returns false.
+ */
+export function findByPrefix(
+  c: Cursor,
+  container: Cursor,
+  prefix: string | Uint8Array,
+  visitor: (key: Cursor, value: Cursor) => boolean | void,
+): void {
+  if (container.tag !== "object") return;
+  if (typeof prefix === "string") prefix = prepareKey(prefix);
+
+  const { data } = container;
+
+  // TODO: schema-based objects
+  if (container.schema !== 0) return;
+
+  if (container.ixWidth > 0 && container.ixCount > 0) {
+    // Binary search: index entries are sorted and point to keys
+    let lo = 0, hi = container.ixCount;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      seekChild(c, container, mid);
+      const cmp = strCompare(c, prefix);
+      if (cmp < 0) lo = mid + 1;
+      else hi = mid;
+    }
+    // lo is the first key >= prefix. Iterate while prefix matches.
+    for (let i = lo; i < container.ixCount; i++) {
+      seekChild(c, container, i);
+      const keyRight = c.right;
+      const keyLeft = c.left;
+      if (!strHasPrefix(c, prefix)) break;
+      // Re-read key into _cc (safe from read() internal _k usage)
+      _cc.data = data; _cc.right = keyRight; read(_cc);
+      // Read value (immediately after key)
+      c.data = data; c.right = keyLeft; read(c);
+      if (visitor(_cc, c) === false) return;
+    }
+    return;
+  }
+
+  // Non-indexed: linear scan
+  _k.data = data;
+  let right = container.val;
+  const end = container.left;
+  while (right > end) {
+    _k.right = right;
+    read(_k);
+    const keyLeft = _k.left;
+    const keyRight = right;
+    if (strHasPrefix(_k, prefix)) {
+      // Re-read key into _cc (safe from read() internal _k usage)
+      _cc.data = data; _cc.right = keyRight; read(_cc);
+      c.data = data; c.right = keyLeft; read(c);
+      if (visitor(_cc, c) === false) return;
+    } else {
+      c.data = data; c.right = keyLeft; read(c);
+    }
+    right = c.left;
+  }
+}
+
 // ── Raw bytes ──
 
 /** Zero-copy view of the raw rexc bytes for the node at cursor position. */
@@ -455,11 +542,15 @@ type NodeInfo = {
   schema: number;
   _count?: number;
   _offsets?: number[];
+  _keys?: string[];
+  _keyMap?: Map<string, number>; // key → value right-offset, built by ensureKeyMap
 };
 
 /** Open a rexc buffer and return a Proxy-wrapped root value. */
 export function open(buffer: Uint8Array, refs?: Refs): unknown {
   const nodeMap = new WeakMap<object, NodeInfo>();
+  const proxyCache = new Map<number, unknown>(); // right-offset → memoized value
+  const refCaches = refs ? new Map<Uint8Array, Map<number, unknown>>() : undefined;
   const scratch = makeCursor(buffer);
 
   function snap(c: Cursor): NodeInfo {
@@ -467,6 +558,13 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
       data: c.data, right: c.right, tag: c.tag, val: c.val,
       left: c.left, ixWidth: c.ixWidth, ixCount: c.ixCount, schema: c.schema,
     };
+  }
+
+  function getCache(data: Uint8Array): Map<number, unknown> {
+    if (data === buffer) return proxyCache;
+    let cache = refCaches!.get(data);
+    if (!cache) { cache = new Map(); refCaches!.set(data, cache); }
+    return cache;
   }
 
   function wrap(c: Cursor): unknown {
@@ -478,6 +576,10 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
       c.data = refBuf; c.right = refBuf.length; read(c);
       return wrap(c);
     }
+    // Check cache for containers (primitives are cheap to recreate)
+    const cache = getCache(c.data);
+    const cached = cache.get(c.right);
+    if (cached !== undefined) return cached;
     switch (c.tag) {
       case "int": case "float": return c.val;
       case "str": return readStr(c);
@@ -490,7 +592,9 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
     const info = snap(c);
     const target: object = c.tag === "array" ? [] : Object.create(null);
     nodeMap.set(target, info);
-    return new Proxy(target, handler);
+    const proxy = new Proxy(target, handler);
+    cache.set(c.right, proxy);
+    return proxy;
   }
 
   function childCount(info: NodeInfo): number {
@@ -531,26 +635,46 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
   }
 
   function getValue(info: NodeInfo, key: string): unknown {
+    // Use cached key map if available (built by enumKeys/ownKeys)
+    if (info._keyMap) {
+      const valRight = info._keyMap.get(key);
+      if (valRight === undefined) return undefined;
+      scratch.data = info.data;
+      scratch.right = valRight;
+      read(scratch);
+      return wrap(scratch);
+    }
     scratch.data = info.data;
     if (findKey(scratch, info as unknown as Cursor, key)) return wrap(scratch);
     return undefined;
   }
 
-  function enumKeys(info: NodeInfo): string[] {
-    const result: string[] = [];
+  function ensureKeyMap(info: NodeInfo): { keys: string[]; map: Map<string, number> } {
+    if (info._keyMap) {
+      return { keys: info._keys!, map: info._keyMap };
+    }
+    const keys: string[] = [];
+    const map = new Map<string, number>();
     const kc = makeCursor(info.data);
     if (info.schema !== 0) {
       const sc = makeCursor(info.data);
       sc.right = info.schema; read(sc);
       while (sc.tag === "ptr") { sc.right = sc.val; read(sc); }
+      let valRight = info.val;
       if (sc.tag === "object") {
         let keyRight = sc.val;
         const keyEnd = sc.left;
         while (keyRight > keyEnd) {
           kc.right = keyRight; read(kc);
           const nextRight = kc.left;
-          result.push(resolveStr(kc));
-          sc.right = nextRight; read(sc); // skip schema value
+          const name = resolveStr(kc);
+          keys.push(name);
+          map.set(name, valRight);
+          // advance value cursor
+          scratch.data = info.data; scratch.right = valRight; read(scratch);
+          valRight = scratch.left;
+          // skip schema value
+          sc.right = nextRight; read(sc);
           keyRight = sc.left;
         }
       } else if (sc.tag === "array") {
@@ -558,9 +682,13 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
         const keyEnd = sc.left;
         while (keyRight > keyEnd) {
           kc.right = keyRight; read(kc);
-          const nextRight = kc.left;
-          result.push(resolveStr(kc));
-          keyRight = nextRight;
+          const name = resolveStr(kc);
+          keys.push(name);
+          map.set(name, valRight);
+          // advance value cursor
+          scratch.data = info.data; scratch.right = valRight; read(scratch);
+          valRight = scratch.left;
+          keyRight = kc.left;
         }
       }
     } else {
@@ -568,12 +696,17 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
       while (right > info.left) {
         kc.right = right; read(kc);
         const keyLeft = kc.left;
-        result.push(resolveStr(kc));
-        kc.right = keyLeft; read(kc); // skip value
+        const name = resolveStr(kc);
+        keys.push(name);
+        map.set(name, keyLeft);
+        // skip value
+        kc.right = keyLeft; read(kc);
         right = kc.left;
       }
     }
-    return result;
+    info._keys = keys;
+    info._keyMap = map;
+    return { keys, map };
   }
 
   const handler: ProxyHandler<object> = {
@@ -590,7 +723,7 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
         }
         if (info.tag === "object") {
           return function*() {
-            const ks = enumKeys(info);
+            const ks = ensureKeyMap(info).keys;
             for (const k of ks) yield [k, getValue(info, k)] as [string, unknown];
           };
         }
@@ -603,6 +736,16 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
       if (info.tag === "array") {
         const idx = Number(prop);
         if (Number.isInteger(idx) && idx >= 0) return getChild(info, idx);
+        // Delegate Array.prototype methods to a materialized snapshot
+        const method = (Array.prototype as any)[prop];
+        if (typeof method === "function") {
+          return function(...args: unknown[]) {
+            const n = childCount(info);
+            const arr: unknown[] = new Array(n);
+            for (let i = 0; i < n; i++) arr[i] = getChild(info, i);
+            return method.apply(arr, args);
+          };
+        }
         return undefined;
       }
 
@@ -620,6 +763,7 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
         return Number.isInteger(idx) && idx >= 0 && idx < childCount(info);
       }
       if (info.tag === "object") {
+        if (info._keyMap) return info._keyMap.has(prop);
         scratch.data = info.data;
         return findKey(scratch, info as unknown as Cursor, prop);
       }
@@ -635,14 +779,14 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
         ks.push("length");
         return ks;
       }
-      return enumKeys(info);
+      return ensureKeyMap(info).keys;
     },
 
     getOwnPropertyDescriptor(target, prop) {
       const info = nodeMap.get(target)!;
       if (info.tag === "array") {
         if (prop === "length") {
-          return { configurable: false, enumerable: false, value: childCount(info), writable: false };
+          return { configurable: true, enumerable: false, value: childCount(info), writable: false };
         }
         const idx = Number(prop);
         if (typeof prop === "string" && Number.isInteger(idx) && idx >= 0 && idx < childCount(info)) {
@@ -651,9 +795,15 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
         return undefined;
       }
       if (info.tag === "object" && typeof prop === "string") {
-        scratch.data = info.data;
-        if (findKey(scratch, info as unknown as Cursor, prop)) {
-          return { configurable: true, enumerable: true, value: wrap(scratch) };
+        if (info._keyMap) {
+          if (info._keyMap.has(prop)) {
+            return { configurable: true, enumerable: true, value: getValue(info, prop) };
+          }
+        } else {
+          scratch.data = info.data;
+          if (findKey(scratch, info as unknown as Cursor, prop)) {
+            return { configurable: true, enumerable: true, value: wrap(scratch) };
+          }
         }
       }
       return undefined;

@@ -13,6 +13,9 @@ import {
 	rawBytes,
 	open,
 	handle,
+	prepareKey,
+	strHasPrefix,
+	findByPrefix,
 } from "./rx";
 
 function cur(value: unknown, opts?: Parameters<typeof encode>[1]) {
@@ -205,25 +208,27 @@ describe("read() chains", () => {
 	});
 });
 
+const p = prepareKey;
+
 describe("strEquals", () => {
 	test("matches ASCII strings", () => {
 		const c = cur("hello");
-		expect(strEquals(c, "hello")).toBe(true);
-		expect(strEquals(c, "world")).toBe(false);
-		expect(strEquals(c, "hell")).toBe(false);
-		expect(strEquals(c, "helloo")).toBe(false);
+		expect(strEquals(c, p("hello"))).toBe(true);
+		expect(strEquals(c, p("world"))).toBe(false);
+		expect(strEquals(c, p("hell"))).toBe(false);
+		expect(strEquals(c, p("helloo"))).toBe(false);
 	});
 
 	test("matches unicode strings", () => {
 		const c = cur("🚀");
-		expect(strEquals(c, "🚀")).toBe(true);
-		expect(strEquals(c, "🔥")).toBe(false);
+		expect(strEquals(c, p("🚀"))).toBe(true);
+		expect(strEquals(c, p("🔥"))).toBe(false);
 	});
 
 	test("matches empty string", () => {
 		const c = cur("");
-		expect(strEquals(c, "")).toBe(true);
-		expect(strEquals(c, "a")).toBe(false);
+		expect(strEquals(c, p(""))).toBe(true);
+		expect(strEquals(c, p("a"))).toBe(false);
 	});
 });
 
@@ -231,9 +236,9 @@ describe("strCompare", () => {
 	test("ordering", () => {
 		const a = cur("apple");
 		const b = cur("banana");
-		expect(strCompare(a, "apple")).toBe(0);
-		expect(strCompare(a, "banana")).toBeLessThan(0);
-		expect(strCompare(b, "apple")).toBeGreaterThan(0);
+		expect(strCompare(a, p("apple"))).toBe(0);
+		expect(strCompare(a, p("banana"))).toBeLessThan(0);
+		expect(strCompare(b, p("apple"))).toBeGreaterThan(0);
 	});
 });
 
@@ -611,22 +616,22 @@ describe("findKey with pointer keys", () => {
 describe("strEquals with multi-byte UTF-8", () => {
 	test("2-byte UTF-8 (accented characters)", () => {
 		const c = cur("café");
-		expect(strEquals(c, "café")).toBe(true);
-		expect(strEquals(c, "cafe")).toBe(false);
-		expect(strEquals(c, "caféé")).toBe(false);
+		expect(strEquals(c, p("café"))).toBe(true);
+		expect(strEquals(c, p("cafe"))).toBe(false);
+		expect(strEquals(c, p("caféé"))).toBe(false);
 	});
 
 	test("3-byte UTF-8 (CJK characters)", () => {
 		const c = cur("日本語");
-		expect(strEquals(c, "日本語")).toBe(true);
-		expect(strEquals(c, "日本")).toBe(false);
-		expect(strEquals(c, "中文")).toBe(false);
+		expect(strEquals(c, p("日本語"))).toBe(true);
+		expect(strEquals(c, p("日本"))).toBe(false);
+		expect(strEquals(c, p("中文"))).toBe(false);
 	});
 
 	test("mixed ASCII and multi-byte", () => {
 		const c = cur("hello 世界 🌍");
-		expect(strEquals(c, "hello 世界 🌍")).toBe(true);
-		expect(strEquals(c, "hello 世界")).toBe(false);
+		expect(strEquals(c, p("hello 世界 🌍"))).toBe(true);
+		expect(strEquals(c, p("hello 世界"))).toBe(false);
 	});
 });
 
@@ -904,5 +909,223 @@ describe("open() Symbol.iterator on objects", () => {
 		const entries: [string, unknown][] = [];
 		for (const pair of obj) entries.push(pair);
 		expect(entries.sort((a, b) => a[0].localeCompare(b[0]))).toEqual([["a", 1], ["b", 2]]);
+	});
+});
+
+// ── strHasPrefix ──
+
+describe("strHasPrefix", () => {
+	test("matches ASCII prefix", () => {
+		const c = cur("hello world");
+		expect(strHasPrefix(c, p("hello"))).toBe(true);
+		expect(strHasPrefix(c, p("hello world"))).toBe(true);
+		expect(strHasPrefix(c, p("world"))).toBe(false);
+	});
+
+	test("empty prefix matches everything", () => {
+		const c = cur("hello");
+		expect(strHasPrefix(c, p(""))).toBe(true);
+		const empty = cur("");
+		expect(strHasPrefix(empty, p(""))).toBe(true);
+	});
+
+	test("prefix longer than string does not match", () => {
+		const c = cur("hi");
+		expect(strHasPrefix(c, p("hello"))).toBe(false);
+	});
+
+	test("unicode prefix", () => {
+		const c = cur("café latte");
+		expect(strHasPrefix(c, p("café"))).toBe(true);
+		expect(strHasPrefix(c, p("cafe"))).toBe(false);
+	});
+
+	test("chain strings match prefix", () => {
+		const arr = cur(["/foo/bar/baz", "/foo/bar/qux"]);
+		const tmp = makeCursor(arr.data);
+		tmp.right = arr.val;
+		read(tmp);
+		// First child is a chain
+		expect(strHasPrefix(tmp, p("/foo/bar"))).toBe(true);
+		expect(strHasPrefix(tmp, p("/foo/baz"))).toBe(false);
+	});
+});
+
+// ── strCompare / strEquals on non-string nodes ──
+
+describe("strCompare on non-string nodes", () => {
+	test("returns NaN for integer", () => {
+		const c = cur(42);
+		expect(strCompare(c, p("hello"))).toBeNaN();
+	});
+
+	test("strEquals returns false for non-string", () => {
+		const c = cur(42);
+		expect(strEquals(c, p("42"))).toBe(false);
+	});
+
+	test("strHasPrefix returns false for non-string", () => {
+		const c = cur(42);
+		expect(strHasPrefix(c, p("4"))).toBe(false);
+	});
+});
+
+// ── findByPrefix ──
+
+describe("findByPrefix", () => {
+	test("finds matching keys (non-indexed)", () => {
+		const obj = cur({ apple: 1, apricot: 2, banana: 3, avocado: 4 });
+		const c = makeCursor(obj.data);
+		const results: [string, number][] = [];
+		findByPrefix(c, obj, "ap", (key, value) => {
+			results.push([resolveStr(key), value.val]);
+		});
+		expect(results.sort()).toEqual([["apple", 1], ["apricot", 2]]);
+	});
+
+	test("finds matching keys (indexed)", () => {
+		const obj = cur({ apple: 1, apricot: 2, banana: 3, avocado: 4 }, { indexes: 0 });
+		const c = makeCursor(obj.data);
+		const results: [string, number][] = [];
+		findByPrefix(c, obj, "ap", (key, value) => {
+			results.push([resolveStr(key), value.val]);
+		});
+		expect(results.sort()).toEqual([["apple", 1], ["apricot", 2]]);
+	});
+
+	test("no matches returns nothing", () => {
+		const obj = cur({ apple: 1, banana: 2 });
+		const c = makeCursor(obj.data);
+		const results: string[] = [];
+		findByPrefix(c, obj, "zzz", (key) => { results.push(resolveStr(key)); });
+		expect(results).toEqual([]);
+	});
+
+	test("empty prefix matches all keys", () => {
+		const obj = cur({ a: 1, b: 2 });
+		const c = makeCursor(obj.data);
+		const results: string[] = [];
+		findByPrefix(c, obj, "", (key) => { results.push(resolveStr(key)); });
+		expect(results.sort()).toEqual(["a", "b"]);
+	});
+
+	test("visitor returning false stops iteration", () => {
+		const obj = cur({ a: 1, b: 2, c: 3 });
+		const c = makeCursor(obj.data);
+		const results: string[] = [];
+		findByPrefix(c, obj, "", (key) => {
+			results.push(resolveStr(key));
+			return false; // stop after first
+		});
+		expect(results.length).toBe(1);
+	});
+
+	test("works with chain keys", () => {
+		const obj = cur({ "/foo/bar": 1, "/foo/baz": 2, "/qux": 3 });
+		const c = makeCursor(obj.data);
+		const results: [string, number][] = [];
+		findByPrefix(c, obj, "/foo/", (key, value) => {
+			results.push([resolveStr(key), value.val]);
+		});
+		expect(results.sort()).toEqual([["/foo/bar", 1], ["/foo/baz", 2]]);
+	});
+
+	test("on non-object does nothing", () => {
+		const arr = cur([1, 2, 3]);
+		const c = makeCursor(arr.data);
+		let called = false;
+		findByPrefix(c, arr, "x", () => { called = true; });
+		expect(called).toBe(false);
+	});
+});
+
+// ── Proxy identity (memoization) ──
+
+describe("open() proxy identity", () => {
+	test("same container returns same proxy", () => {
+		const obj = opened({ nested: { a: 1 } }) as any;
+		expect(obj.nested).toBe(obj.nested);
+	});
+
+	test("same array element returns same proxy", () => {
+		const arr = opened([{ x: 1 }, { x: 2 }]) as any[];
+		expect(arr[0]).toBe(arr[0]);
+	});
+
+	test("pointer dedup returns same proxy", () => {
+		// Two objects sharing the same nested value via pointer
+		const shared = { inner: 42 };
+		const arr = opened([shared, shared]) as any[];
+		expect(arr[0]).toBe(arr[1]);
+	});
+});
+
+// ── Proxy Array.prototype delegation ──
+
+describe("open() array methods", () => {
+	test("map", () => {
+		const arr = opened([1, 2, 3]) as any[];
+		const doubled = arr.map((x: number) => x * 2);
+		expect(doubled).toEqual([2, 4, 6]);
+	});
+
+	test("filter", () => {
+		const arr = opened([1, 2, 3, 4, 5]) as any[];
+		const evens = arr.filter((x: number) => x % 2 === 0);
+		expect(evens).toEqual([2, 4]);
+	});
+
+	test("indexOf", () => {
+		const arr = opened([10, 20, 30]) as any[];
+		expect(arr.indexOf(20)).toBe(1);
+		expect(arr.indexOf(99)).toBe(-1);
+	});
+
+	test("includes", () => {
+		const arr = opened(["a", "b", "c"]) as any[];
+		expect(arr.includes("b")).toBe(true);
+		expect(arr.includes("z")).toBe(false);
+	});
+
+	test("every / some", () => {
+		const arr = opened([2, 4, 6]) as any[];
+		expect(arr.every((x: number) => x % 2 === 0)).toBe(true);
+		expect(arr.some((x: number) => x > 5)).toBe(true);
+		expect(arr.some((x: number) => x > 10)).toBe(false);
+	});
+
+	test("reduce", () => {
+		const arr = opened([1, 2, 3]) as any[];
+		const sum = arr.reduce((acc: number, x: number) => acc + x, 0);
+		expect(sum).toBe(6);
+	});
+
+	test("find", () => {
+		const arr = opened([{ x: 1 }, { x: 2 }, { x: 3 }]) as any[];
+		const found = arr.find((item: any) => item.x === 2);
+		expect(found.x).toBe(2);
+	});
+
+	test("slice", () => {
+		const arr = opened([10, 20, 30, 40]) as any[];
+		expect(arr.slice(1, 3)).toEqual([20, 30]);
+	});
+});
+
+// ── Proxy for...in iteration ──
+
+describe("open() for...in", () => {
+	test("iterates object keys", () => {
+		const obj = opened({ x: 1, y: 2, z: 3 }) as any;
+		const keys: string[] = [];
+		for (const k in obj) keys.push(k);
+		expect(keys.sort()).toEqual(["x", "y", "z"]);
+	});
+
+	test("accesses values during for...in", () => {
+		const obj = opened({ a: 10, b: 20 }) as any;
+		const entries: [string, number][] = [];
+		for (const k in obj) entries.push([k, obj[k]]);
+		expect(entries.sort()).toEqual([["a", 10], ["b", 20]]);
 	});
 });
