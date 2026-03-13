@@ -1,5 +1,6 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {},
     "packages/rex-lang": {
@@ -22,10 +23,7 @@
       "name": "@creationix/rx",
       "version": "0.1.0",
       "bin": {
-        "rx": "rx-cli.ts",
-      },
-      "dependencies": {
-        "@creationix/rex": "workspace:*",
+        "rx": "dist/rx-cli.js",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -47,9 +45,9 @@
       },
       "devDependencies": {
         "@sveltejs/vite-plugin-svelte": "^7.0.0",
-        "@tailwindcss/vite": "^4.1.0",
-        "svelte": "^5.53.7",
-        "tailwindcss": "^4.1.0",
+        "@tailwindcss/vite": "^4.2.1",
+        "svelte": "^5.53.11",
+        "tailwindcss": "^4.2.1",
         "typescript": "~5.9.3",
         "vite": "^8.0.0",
       },
