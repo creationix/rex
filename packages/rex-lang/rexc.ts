@@ -1,4 +1,4 @@
-import * as B64 from "./b64";
+import * as B64 from "../rx-format/b64";
 
 export interface RexCEncodeOptions {
 	// Enable path chains. (substring de-dupe in paths, requires pointers)

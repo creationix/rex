@@ -49,27 +49,7 @@ npx -y @creationix/rex -- --expr "when x do y end"
 
 ## Data Tool (`rx`)
 
-`rx` inspects, converts, and filters REXC and JSON data.
-
-```sh
-rx data.rexc                         # pretty-print as tree
-rx data.rexc --to json               # convert rexc → JSON
-rx data.json --to rexc               # convert JSON → rexc
-cat data.rexc | rx                   # read from stdin (auto-detect)
-rx -s .routes[0].op data.rexc        # select a sub-value
-rx data.rexc --to json -o out.json   # write to file
-```
-
-Format is auto-detected from file extension (`.json`, `.rexc`) or by content sniffing on stdin. Override with `--from json|rexc`.
-
-Output defaults to tree view on a TTY, JSON when piped. Override with `--to json|rexc|tree` (shortcuts: `-j`, `-r`, `-t`).
-
-Run without installing:
-
-```sh
-bun run rx data.rexc                             # from repo root
-bun run packages/rex-lang/rx-cli.ts data.rexc    # from anywhere
-```
+The `rx` CLI for inspecting, converting, and filtering REXC/JSON data lives in [`packages/rx-format`](../rx-format/) (published as `@creationix/rx`). See its [README](../rx-format/README.md) for full usage.
 
 ## Programmatic API
 

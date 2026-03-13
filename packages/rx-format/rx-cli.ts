@@ -1,11 +1,11 @@
-import * as rexc from "./rexc.ts";
-import { stringify as rexStringify } from "./rex.ts";
+import * as rexc from "@creationix/rex/rexc";
+import { stringify as rexStringify } from "@creationix/rex";
 import {
 	setColorEnabled,
 	highlightLine,
 	highlightJSON,
 	highlightRexc,
-} from "./rex-repl.ts";
+} from "@creationix/rex/rex-repl";
 import { readFile, writeFile, mkdir, unlink, lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";

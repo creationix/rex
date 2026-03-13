@@ -4,6 +4,7 @@
 
 ```
 packages/rex-lang    — compiler: grammar, parser, IR, optimizer, encoder, CLI
+packages/rx-format   — rx data tool: REXC cursor parser and CLI (@creationix/rx)
 packages/vscode-rex  — VS Code extension: syntax highlighting, diagnostics, symbols
 samples/             — example programs (fibonacci, primes, HTTP domain policies)
 ```
@@ -56,17 +57,7 @@ npx -y @creationix/rex -- --expr "when x do y end"
 
 ## Data Tool (`rx`)
 
-`rx` is a companion CLI for inspecting, converting, and filtering REXC and JSON data. It lives at `packages/rex-lang/rx-cli.ts`.
-
-```sh
-bun run rx data.rexc                   # pretty-print rexc as tree
-bun run rx data.rexc --to json         # convert rexc → JSON
-bun run rx data.json --to rexc         # convert JSON → rexc
-cat data.rexc | bun run rx             # read from stdin
-bun run rx -s .routes[0].op data.rexc  # select a sub-value
-```
-
-See `bun run rx --help` for full usage.
+The `rx` CLI lives in `packages/rx-format` (published as `@creationix/rx`). See its [README](packages/rx-format/README.md) for full usage.
 
 ## Architecture
 
@@ -85,6 +76,7 @@ The bytecode interpreter (`rexc-interpreter.ts`) executes `rexc` for tests and t
 |---|---|
 | `rex.ohm` grammar | `bun run build:grammar` then `bun test` in `packages/rex-lang` |
 | Parser, IR, encoder, or interpreter | `bun test` in `packages/rex-lang` |
+| rx cursor parser or CLI | `bun test` in `packages/rx-format` |
 | Doc examples (`language.md`, `rexc-bytecode.md`) | `bun run rex:verify-docs` from repo root |
 | VS Code grammar or tokenizer | `bun test` and `bun run build` in `packages/vscode-rex` |
 

@@ -28,14 +28,11 @@ rex --expr "a and b" --ir
 
 ## Data Tool
 
-Use `rx` to inspect, convert, and filter REXC/JSON data:
+Use `rx` to inspect, convert, and filter REXC/JSON data. See [packages/rx-format/README.md](packages/rx-format/README.md) for full usage.
 
 ```sh
-bun run rx data.rexc                   # pretty-print as tree
-bun run rx data.rexc --to json         # convert rexc → JSON
-bun run rx data.json --to rexc         # convert JSON → rexc
-bun run rx -s .foo.bar[0] data.rexc    # select sub-value by path
-cat data.rexc | bun run rx             # read from stdin
+bun run rx data.rexc                   # quick example
+bun run rx --help                      # full usage
 ```
 
 ## Common Commands
@@ -54,6 +51,12 @@ bun run build:grammar
 bun test
 ```
 
+From `packages/rx-format`:
+
+```sh
+bun test
+```
+
 From `packages/vscode-rex`:
 
 ```sh
@@ -66,6 +69,7 @@ bun run reinstall
 
 - After editing `packages/rex-lang/rex.ohm`, run `bun run build:grammar` in `packages/rex-lang`.
 - After parser/IR/encoding changes, run `bun test` in `packages/rex-lang`.
+- After rx cursor parser or CLI changes, run `bun test` in `packages/rx-format`.
 - After docs examples change, run `bun run rex:verify-docs` from repo root.
 - After VS Code extension tokenizer/grammar changes, run `bun test` and `bun run build` in `packages/vscode-rex`.
 

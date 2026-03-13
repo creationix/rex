@@ -5,7 +5,7 @@
 //////////////////
 
 import { is as isB64, read as b64Read, decodeTable as b64Decode, encodeTable as b64Encode } from "./b64";
-import { fromZigZag } from "./rexc";
+import { fromZigZag } from "@creationix/rex/rexc";
 
 // ── Tags ──
 
