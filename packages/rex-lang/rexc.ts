@@ -628,7 +628,7 @@ export function get(data: Uint8Array, right = data.length): Readonly<RxNode> {
 	}
 }
 
-export function* getEntries(context: RxContext, node: RxObject): Generator<[string, RxNode]> {
+export function* getEntries(context: RxContext, node: RxObject): Generator<[RxNode, RxNode]> {
 	if (node.type !== "object") {
 		throw new TypeError("Node must be an object");
 	}
@@ -636,7 +636,7 @@ export function* getEntries(context: RxContext, node: RxObject): Generator<[stri
 	const { schema } = node
 	let right = node.content;
 	if (schema !== undefined) {
-		let keys: Iterable<string>;
+		let keyNodes: Iterable<RxNode>;
 		if (typeof schema === "string") {
 			if (!(schema in refs)) {
 				throw new ReferenceError(`Unknown schema reference: ${schema}`);
@@ -645,36 +645,32 @@ export function* getEntries(context: RxContext, node: RxObject): Generator<[stri
 			if (typeof ref !== "object" || ref === null) {
 				throw new TypeError("Schema reference must point to an object or array");
 			}
-			keys = Array.isArray(ref) ? ref : Object.keys(ref);
+			// Synthesize primitive nodes for ref-sourced keys (no byte range in this stream)
+			const keyStrings: string[] = Array.isArray(ref) ? ref as string[] : Object.keys(ref);
+			keyNodes = keyStrings.map((k): RxPrimitive => ({
+				type: "primitive",
+				left: -1,
+				right: -1,
+				value: k,
+			}));
 		} else if (typeof schema === "number") {
 			let targetNode = get(data, schema);
 			if (targetNode.type === "array") {
-				keys = getEach(context, targetNode).map((k) => {
-					const resolved = resolve(context, k);
-					if (typeof resolved === "string") {
-						return resolved;
-					}
-					throw new TypeError("Schema reference array must contain only string primitives");
-				}) as Iterable<string>;
+				keyNodes = getEach(context, targetNode);
 			} else if (targetNode.type === "object") {
-				keys = getEntries(context, targetNode).map(([k]) => k);
+				keyNodes = getEntries(context, targetNode).map(([k]) => k);
 			} else {
-				console.log({ targetNode })
 				throw new TypeError("Schema reference must point to an object or array");
 			}
 		} else {
 			throw new TypeError("Invalid schema reference type");
 		}
 		const values = getEach(context, node);
-		// Zip keys and values together, with keys coming from the schema reference and values coming from the object content.
-		const keysIter = keys[Symbol.iterator]();
+		const keysIter = keyNodes[Symbol.iterator]();
 		for (const value of values) {
 			const key = keysIter.next();
 			if (key.done) {
 				throw new SyntaxError("Not enough keys in schema reference for object entries");
-			}
-			if (typeof key.value !== "string") {
-				throw new TypeError("Schema reference keys must be strings");
 			}
 			yield [key.value, value];
 		}
@@ -682,14 +678,10 @@ export function* getEntries(context: RxContext, node: RxObject): Generator<[stri
 	}
 	while (right > node.left) {
 		const key = get(data, right);
-		const keyValue = resolve(context, key);
-		if (typeof keyValue !== "string") {
-			throw new SyntaxError("Expected string key in object");
-		}
 		right = key.left;
 		const value = get(data, right);
 		right = value.left;
-		yield [keyValue, value];
+		yield [key, value];
 	}
 }
 
@@ -751,7 +743,11 @@ export function resolve(context: RxContext, node: RxNode, lazy = false): unknown
 	}
 	if (node.type === "object") {
 		const obj: Record<string, unknown> = {};
-		for (const [key, value] of getEntries(context, node)) {
+		for (const [keyNode, value] of getEntries(context, node)) {
+			const key = resolve(context, keyNode);
+			if (typeof key !== "string") {
+				throw new SyntaxError("Expected string key in object");
+			}
 			obj[key] = resolve(context, value);
 		}
 		return obj;
@@ -870,5 +866,4 @@ function withData<T extends object>(data: Uint8Array, refs: Record<string, unkno
 	Object.defineProperty(fields, "data", { value: data });
 	Object.defineProperty(fields, "refs", { value: refs });
 	return Object.freeze(fields) as Readonly<T> & RxContext;
-}
-
+} 
