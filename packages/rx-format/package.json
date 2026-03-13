@@ -1,6 +1,6 @@
 {
 	"name": "@creationix/rx",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "REXC encoder, decoder, and CLI data tool",
 	"keywords": [
 		"rexc",
@@ -22,6 +22,7 @@
 	"files": [
 		"README.md",
 		"LICENSE",
+		"b64.ts",
 		"rx.ts",
 		"rx-cli.ts",
 		"dist/rx-cli.js"
