@@ -34,7 +34,7 @@
 	],
 	"scripts": {
 		"build": "bun build rx.ts --outfile dist/rx.js --target node && bun build rx-cli.ts --outfile dist/rx-cli.js --target node --banner \"#!/usr/bin/env node\" && tsc",
-		"prepublishOnly": "bun run build",
+		"prepublishOnly": "bun test && bun run build",
 		"test": "bun test"
 	},
 	"publishConfig": {
