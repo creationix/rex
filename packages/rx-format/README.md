@@ -1,5 +1,7 @@
 # @creationix/rx
 
+[![rx tests](https://github.com/creationix/rex/actions/workflows/rx-test.yml/badge.svg)](https://github.com/creationix/rex/actions/workflows/rx-test.yml)
+
 REXC encoder, decoder, and data tool. Drop-in replacements for `JSON.stringify` and `JSON.parse` that produce smaller output, skip deserialization on read, and create near-zero heap allocations.
 
 ## Why
