@@ -166,7 +166,26 @@ function parseRaw(raw: string, format: Format): unknown {
 async function readInput(opts: RxOptions): Promise<ParsedInput> {
 	if (opts.files.length === 0) {
 		// stdin
-		if (process.stdin.isTTY) throw new Error("No input. Provide a file or pipe data via stdin.");
+		if (process.stdin.isTTY) {
+			const c = opts.color;
+			const bold = c ? "\x1b[1m" : "";
+			const dim = c ? "\x1b[2m" : "";
+			const cyan = c ? "\x1b[36m" : "";
+			const reset = c ? "\x1b[0m" : "";
+			process.stderr.write([
+				`${bold}rx${reset} — inspect, convert, and filter REXC & JSON data.`,
+				"",
+				`${dim}Usage:${reset}`,
+				`  ${cyan}rx${reset} ${dim}<file>${reset}               Pretty-print as a tree`,
+				`  ${cyan}rx${reset} ${dim}<file>${reset} ${cyan}--to json${reset}     Convert to JSON`,
+				`  cat data.rexc | ${cyan}rx${reset}      Read from stdin`,
+				`  ${cyan}rx${reset} ${dim}<file>${reset} ${cyan}-s${reset} ${dim}.path${reset}      Select a sub-value`,
+				"",
+				`Run ${cyan}rx --help${reset} for full usage.`,
+				"",
+			].join("\n"));
+			process.exit(1);
+		}
 		const raw = await readStdin();
 		if (!raw.trim()) throw new Error("Empty stdin.");
 		const format = opts.fromFormat ?? detectFormat(raw);
