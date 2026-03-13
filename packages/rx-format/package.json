@@ -1,0 +1,46 @@
+{
+	"name": "@creationix/rx",
+	"version": "0.1.0",
+	"description": "REXC encoder, decoder, and CLI data tool",
+	"keywords": [
+		"rexc",
+		"rx",
+		"encoder",
+		"decoder",
+		"streaming",
+		"data"
+	],
+	"type": "module",
+	"bin": {
+		"rx": "rx-cli.ts"
+	},
+	"main": "rx.ts",
+	"types": "./rx.ts",
+	"exports": {
+		".": "./rx.ts"
+	},
+	"files": [
+		"README.md",
+		"LICENSE",
+		"rx.ts",
+		"rx-cli.ts"
+	],
+	"scripts": {
+		"test": "bun test"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/creationix/rex.git",
+		"directory": "packages/rx-format"
+	},
+	"license": "MIT",
+	"dependencies": {
+		"@creationix/rex": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/bun": "latest"
+	}
+}

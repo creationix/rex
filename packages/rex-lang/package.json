@@ -16,7 +16,12 @@
 	"main": "rex.js",
 	"types": "./rex.ts",
 	"exports": {
-		".": "./rex.js"
+		".": {
+			"bun": "./rex.ts",
+			"default": "./rex.js"
+		},
+		"./rexc": "./rexc.ts",
+		"./rex-repl": "./rex-repl.ts"
 	},
 	"files": [
 		"README.md",
@@ -53,6 +58,7 @@
 	},
 	"license": "MIT",
 	"dependencies": {
+		"@creationix/rx": "workspace:*",
 		"ohm-js": "^17.1.0"
 	},
 	"devDependencies": {

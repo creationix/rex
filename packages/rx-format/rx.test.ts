@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { encode } from "./rexc";
+import { encode } from "@creationix/rex/rexc";
 import {
 	makeCursor,
 	read,
