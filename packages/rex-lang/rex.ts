@@ -720,54 +720,97 @@ function stringifyInline(value: unknown): string {
 	}
 	if (typeof value === "string") return stringifyString(value);
 	if (Array.isArray(value)) {
-		if (value.length === 0) return "[]";
-		return `[${value.map((item) => stringifyInline(item)).join(" ")}]`;
+		const len = value.length;
+		if (len === 0) return "[]";
+		let body = stringifyInline(value[0]);
+		for (let i = 1; i < len; i++) body += " " + stringifyInline(value[i]);
+		return `[${body}]`;
 	}
 	if (isPlainObject(value)) {
-		const entries = Object.entries(value);
-		if (entries.length === 0) return "{}";
-		const body = entries
-			.map(([key, item]) => `${stringifyKey(key)}: ${stringifyInline(item)}`)
-			.join(" ");
-		return `{${body}}`;
+		let body = "";
+		for (const k in value) {
+			if (body) body += " ";
+			body += `${stringifyKey(k)}: ${stringifyInline(value[k])}`;
+		}
+		return body ? `{${body}}` : "{}";
 	}
 	throw new Error(`Rex stringify() cannot encode value of type ${typeof value}`);
 }
 
-function fitsInline(rendered: string, depth: number, indentSize: number, maxWidth: number): boolean {
-	if (rendered.includes("\n")) return false;
-	return depth * indentSize + rendered.length <= maxWidth;
-}
-
 function stringifyPretty(value: unknown, depth: number, indentSize: number, maxWidth: number): string {
-	const inline = stringifyInline(value);
-	if (fitsInline(inline, depth, indentSize, maxWidth)) return inline;
+	// Primitives — no need to try inline then expand
+	if (value === undefined) return "undefined";
+	if (value === null) return "null";
+	if (typeof value === "boolean") return value ? "true" : "false";
+	if (typeof value === "number") {
+		if (Number.isNaN(value)) return "nan";
+		if (value === Infinity) return "inf";
+		if (value === -Infinity) return "-inf";
+		return String(value);
+	}
+	if (typeof value === "string") return stringifyString(value);
 
-	const indent = " ".repeat(depth * indentSize);
-	const childIndent = " ".repeat((depth + 1) * indentSize);
+	const budget = maxWidth - depth * indentSize;
 
 	if (Array.isArray(value)) {
-		if (value.length === 0) return "[]";
-		const lines = value.map((item) => {
-			const rendered = stringifyPretty(item, depth + 1, indentSize, maxWidth);
-			if (!rendered.includes("\n")) return `${childIndent}${rendered}`;
-			return `${childIndent}${rendered}`;
-		});
-		return `[\n${lines.join("\n")}\n${indent}]`;
+		const len = value.length;
+		if (len === 0) return "[]";
+		// Try inline first with early bail
+		let inline = "[";
+		let fits = true;
+		for (let i = 0; i < len; i++) {
+			const item = value[i];
+			if (typeof item === "object" && item !== null) { fits = false; break; }
+			const part = stringifyInline(item);
+			inline += (i > 0 ? " " : "") + part;
+			if (inline.length > budget) { fits = false; break; }
+		}
+		if (fits) {
+			inline += "]";
+			if (inline.length <= budget) return inline;
+		}
+		// Multi-line
+		const indent = " ".repeat(depth * indentSize);
+		const childIndent = " ".repeat((depth + 1) * indentSize);
+		let result = "[\n";
+		for (let i = 0; i < len; i++) {
+			if (i > 0) result += "\n";
+			result += childIndent + stringifyPretty(value[i], depth + 1, indentSize, maxWidth);
+		}
+		return result + "\n" + indent + "]";
 	}
 
 	if (isPlainObject(value)) {
-		const entries = Object.entries(value);
-		if (entries.length === 0) return "{}";
-		const lines = entries.map(([key, item]) => {
-			const keyText = stringifyKey(key);
-			const rendered = stringifyPretty(item, depth + 1, indentSize, maxWidth);
-			return `${childIndent}${keyText}: ${rendered}`;
-		});
-		return `{\n${lines.join("\n")}\n${indent}}`;
+		// Try inline first with early bail
+		let inline = "{";
+		let fits = true;
+		for (const k in value) {
+			const v = value[k];
+			if (typeof v === "object" && v !== null) { fits = false; break; }
+			const part = `${stringifyKey(k)}: ${stringifyInline(v)}`;
+			if (inline.length > 1) inline += " ";
+			inline += part;
+			if (inline.length > budget) { fits = false; break; }
+		}
+		if (fits) {
+			if (inline.length === 1) return "{}";
+			inline += "}";
+			if (inline.length <= budget) return inline;
+		}
+		// Multi-line
+		const indent = " ".repeat(depth * indentSize);
+		const childIndent = " ".repeat((depth + 1) * indentSize);
+		let result = "{\n";
+		let first = true;
+		for (const k in value) {
+			if (!first) result += "\n";
+			first = false;
+			result += `${childIndent}${stringifyKey(k)}: ${stringifyPretty(value[k], depth + 1, indentSize, maxWidth)}`;
+		}
+		return result + "\n" + indent + "}";
 	}
 
-	return inline;
+	return stringifyInline(value);
 }
 
 export function parse(source: string): unknown {
@@ -835,12 +878,102 @@ function mapConfigEntries(entries: Record<string, unknown>, refs: Record<string,
 	}
 }
 
-export function stringify(value: unknown, options?: { indent?: number; maxWidth?: number }): string {
+export function stringify(value: unknown, options?: { indent?: number; maxWidth?: number; onLine?: (line: string) => void }): string {
 	const indent = options?.indent ?? 2;
 	const maxWidth = options?.maxWidth ?? 80;
 	if (!Number.isInteger(indent) || indent < 0) throw new Error("Rex stringify() indent must be a non-negative integer");
 	if (!Number.isInteger(maxWidth) || maxWidth < 20) throw new Error("Rex stringify() maxWidth must be an integer >= 20");
+	if (options?.onLine) {
+		stringifyStream(value, 0, indent, maxWidth, options.onLine);
+		return "";
+	}
 	return stringifyPretty(value, 0, indent, maxWidth);
+}
+
+function stringifyStream(value: unknown, depth: number, indentSize: number, maxWidth: number, onLine: (line: string) => void): void {
+	// Primitives — emit inline
+	if (value === undefined || value === null || typeof value !== "object") {
+		onLine(stringifyInline(value));
+		return;
+	}
+
+	const budget = maxWidth - depth * indentSize;
+	const pad = " ".repeat(depth * indentSize);
+	const childPad = " ".repeat((depth + 1) * indentSize);
+
+	if (Array.isArray(value)) {
+		const len = value.length;
+		if (len === 0) { onLine("[]"); return; }
+		// Try inline
+		let inline = "[";
+		let fits = true;
+		for (let i = 0; i < len; i++) {
+			const item = value[i];
+			if (typeof item === "object" && item !== null) { fits = false; break; }
+			if (i > 0) inline += " ";
+			inline += stringifyInline(item);
+			if (inline.length > budget) { fits = false; break; }
+		}
+		if (fits) { inline += "]"; if (inline.length <= budget) { onLine(inline); return; } }
+		// Stream multi-line
+		onLine("[");
+		for (let i = 0; i < len; i++) {
+			const item = value[i];
+			if (typeof item !== "object" || item === null) {
+				onLine(childPad + stringifyPretty(item, depth + 1, indentSize, maxWidth));
+			} else {
+				streamNested(item, depth + 1, indentSize, maxWidth, childPad, onLine);
+			}
+		}
+		onLine(pad + "]");
+		return;
+	}
+
+	if (isPlainObject(value)) {
+		// Try inline
+		let inline = "{";
+		let fits = true;
+		for (const k in value) {
+			const v = value[k];
+			if (typeof v === "object" && v !== null) { fits = false; break; }
+			if (inline.length > 1) inline += " ";
+			inline += `${stringifyKey(k)}: ${stringifyInline(v)}`;
+			if (inline.length > budget) { fits = false; break; }
+		}
+		if (fits) {
+			if (inline.length === 1) { onLine("{}"); return; }
+			inline += "}";
+			if (inline.length <= budget) { onLine(inline); return; }
+		}
+		// Stream multi-line
+		onLine("{");
+		for (const k in value) {
+			const keyText = stringifyKey(k);
+			const v = value[k];
+			if (typeof v !== "object" || v === null) {
+				onLine(`${childPad}${keyText}: ${stringifyPretty(v, depth + 1, indentSize, maxWidth)}`);
+			} else {
+				streamNestedEntry(v, keyText, depth + 1, indentSize, maxWidth, childPad, onLine);
+			}
+		}
+		onLine(pad + "}");
+	}
+}
+
+function streamNested(value: unknown, depth: number, indentSize: number, maxWidth: number, pad: string, onLine: (line: string) => void): void {
+	const rendered = stringifyPretty(value, depth, indentSize, maxWidth);
+	if (!rendered.includes("\n")) { onLine(pad + rendered); return; }
+	const lines = rendered.split("\n");
+	onLine(pad + lines[0]!);
+	for (let i = 1; i < lines.length; i++) onLine(lines[i]!);
+}
+
+function streamNestedEntry(value: unknown, keyText: string, depth: number, indentSize: number, maxWidth: number, pad: string, onLine: (line: string) => void): void {
+	const rendered = stringifyPretty(value, depth, indentSize, maxWidth);
+	if (!rendered.includes("\n")) { onLine(`${pad}${keyText}: ${rendered}`); return; }
+	const lines = rendered.split("\n");
+	onLine(`${pad}${keyText}: ${lines[0]!}`);
+	for (let i = 1; i < lines.length; i++) onLine(lines[i]!);
 }
 
 const DIGIT_SET = new Set(DIGITS.split(""));

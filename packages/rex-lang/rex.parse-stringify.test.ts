@@ -106,6 +106,47 @@ describe("rex parse/stringify", () => {
 		expect(output).not.toContain('"404"');
 	});
 
+	test("stringify onLine emits same content as default for flat values", () => {
+		const value = { name: "service", enabled: true, retries: 5 };
+		const lines: string[] = [];
+		stringify(value, { onLine: (line) => lines.push(line) });
+		expect(lines.join("\n")).toBe(stringify(value));
+	});
+
+	test("stringify onLine returns empty string", () => {
+		const result = stringify({ a: 1 }, { onLine: () => {} });
+		expect(result).toBe("");
+	});
+
+	test("stringify onLine streams multi-line output line-by-line", () => {
+		const value = {
+			section: {
+				title: "a very long title to force line wrapping",
+				flags: ["alpha", "beta", "gamma", "delta"],
+			},
+		};
+		const lines: string[] = [];
+		stringify(value, { maxWidth: 40, onLine: (line) => lines.push(line) });
+		expect(lines.length).toBeGreaterThan(1);
+		expect(lines.join("\n")).toBe(stringify(value, { maxWidth: 40 }));
+	});
+
+	test("stringify onLine handles primitives", () => {
+		for (const val of [42, "hello", true, null, undefined]) {
+			const lines: string[] = [];
+			stringify(val, { onLine: (line) => lines.push(line) });
+			expect(lines).toHaveLength(1);
+		}
+	});
+
+	test("stringify onLine handles empty containers", () => {
+		for (const val of [[], {}] as unknown[]) {
+			const lines: string[] = [];
+			stringify(val, { onLine: (line) => lines.push(line) });
+			expect(lines).toHaveLength(1);
+		}
+	});
+
 	test("stringify handles mixed bare, integer, and quoted keys", () => {
 		const value = {
 			name: "test",
