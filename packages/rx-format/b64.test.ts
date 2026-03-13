@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parse, stringify, is, read, write, sizeof } from "./b64";
+import { parse, stringify, is, read, write, sizeof, toZigZag, fromZigZag } from "./b64";
 
 describe('b64 stringify', () => {
   test('encoding b64 digits in correct order', () => {
@@ -218,6 +218,66 @@ describe('b64 sizeof+write+read', () => {
       const data = new Uint8Array(size);
       write(data, 0, size, n);
       expect(read(data, 0, size)).toBe(n);
+    }
+  });
+});
+
+describe('zigzag toZigZag', () => {
+  test('encodes small values', () => {
+    expect(toZigZag(0)).toBe(0);
+    expect(toZigZag(-1)).toBe(1);
+    expect(toZigZag(1)).toBe(2);
+    expect(toZigZag(-2)).toBe(3);
+    expect(toZigZag(2)).toBe(4);
+  });
+  test('encodes 31-bit boundary values', () => {
+    expect(toZigZag(0x3fffffff)).toBe(0x7ffffffe);
+    expect(toZigZag(-0x40000000)).toBe(0x7fffffff);
+    expect(toZigZag(0x40000000)).toBe(0x80000000);
+    expect(toZigZag(-0x40000001)).toBe(0x80000001);
+  });
+  test('encodes at bitwise/arithmetic boundary (int32)', () => {
+    expect(toZigZag(0x7fffffff)).toBe(0xfffffffe);
+    expect(toZigZag(-0x80000000)).toBe(0xffffffff);
+    expect(toZigZag(0x80000000)).toBe(0x100000000);
+    expect(toZigZag(-0x80000001)).toBe(0x100000001);
+  });
+});
+
+describe('zigzag fromZigZag', () => {
+  test('decodes small values', () => {
+    expect(fromZigZag(0)).toBe(0);
+    expect(fromZigZag(1)).toBe(-1);
+    expect(fromZigZag(2)).toBe(1);
+    expect(fromZigZag(3)).toBe(-2);
+    expect(fromZigZag(4)).toBe(2);
+  });
+  test('decodes 31-bit boundary values', () => {
+    expect(fromZigZag(0x7ffffffe)).toBe(0x3fffffff);
+    expect(fromZigZag(0x7fffffff)).toBe(-0x40000000);
+    expect(fromZigZag(0x80000000)).toBe(0x40000000);
+    expect(fromZigZag(0x80000001)).toBe(-0x40000001);
+  });
+  test('decodes at bitwise/arithmetic boundary (uint32)', () => {
+    expect(fromZigZag(0xfffffffe)).toBe(0x7fffffff);
+    expect(fromZigZag(0xffffffff)).toBe(-0x80000000);
+    expect(fromZigZag(0x100000000)).toBe(0x80000000);
+    expect(fromZigZag(0x100000001)).toBe(-0x80000001);
+  });
+});
+
+describe('zigzag roundtrip', () => {
+  test('small values', () => {
+    for (let i = -1000; i <= 1000; i++) {
+      expect(fromZigZag(toZigZag(i))).toBe(i);
+    }
+  });
+  test('random fuzzing', () => {
+    // Zigzag doubles the magnitude, so limit to half MAX_SAFE_INTEGER
+    const half = Math.floor(Number.MAX_SAFE_INTEGER / 2);
+    for (let i = 0; i < 100000; i++) {
+      const n = Math.floor(Math.random() * half) * (Math.random() < 0.5 ? 1 : -1);
+      expect(fromZigZag(toZigZag(n))).toBe(n);
     }
   });
 });

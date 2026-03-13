@@ -4,8 +4,7 @@
 //
 //////////////////
 
-import { is as isB64, read as b64Read, decodeTable as b64Decode, encodeTable as b64Encode } from "./b64";
-import { fromZigZag } from "@creationix/rex/rexc";
+import { is as isB64, read as b64Read, fromZigZag } from "./b64";
 
 // ── Tags ──
 
@@ -716,13 +715,13 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
 
       if (prop === Symbol.iterator) {
         if (info.tag === "array") {
-          return function*() {
+          return function* () {
             const n = childCount(info);
             for (let i = 0; i < n; i++) yield getChild(info, i);
           };
         }
         if (info.tag === "object") {
-          return function*() {
+          return function* () {
             const ks = ensureKeyMap(info).keys;
             for (const k of ks) yield [k, getValue(info, k)] as [string, unknown];
           };
@@ -739,7 +738,7 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
         // Delegate Array.prototype methods to a materialized snapshot
         const method = (Array.prototype as any)[prop];
         if (typeof method === "function") {
-          return function(...args: unknown[]) {
+          return function (...args: unknown[]) {
             const n = childCount(info);
             const arr: unknown[] = new Array(n);
             for (let i = 0; i < n; i++) arr[i] = getChild(info, i);
