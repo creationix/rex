@@ -27,12 +27,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-      - name: Verify import and round-trip
-        run: |
-          node --input-type=module -e "
-            import { encode, open } from './packages/rx-format/rx.ts';
-            const buf = encode({a:1});
-            const val = open(buf);
-            if (val.a !== 1) { console.log('FAIL'); process.exit(1); }
-            console.log('PASS');
-          "
+      - run: npm install
+      - run: npx vitest run
+        working-directory: packages/rx-format
