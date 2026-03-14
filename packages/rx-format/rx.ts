@@ -392,10 +392,10 @@ export function findKey(c: Cursor, container: Cursor, target: string | Uint8Arra
     }
     if (lo < container.ixCount) {
       seekChild(c, container, lo);
+      const keyLeft = c.left; // save before strEquals may follow pointers/chains
       if (strEquals(c, target)) {
-        // c is positioned at the key; value is immediately after
         c.data = data;
-        c.right = c.left;
+        c.right = keyLeft;
         read(c);
         return true;
       }
