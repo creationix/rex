@@ -43,6 +43,7 @@
 	"homepage": "https://github.com/creationix/rex/tree/main/packages/rx-format#readme",
 	"license": "MIT",
 	"devDependencies": {
-		"@types/bun": "latest"
+		"@types/bun": "latest",
+		"vitest": "^4.1.0"
 	}
 }

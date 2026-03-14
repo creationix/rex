@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { parse, stringify, is, read, write, sizeof, toZigZag, fromZigZag } from "./b64";
 
 describe('b64 stringify', () => {
