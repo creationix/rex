@@ -548,6 +548,8 @@ export function rawBytes(c: Cursor): Uint8Array {
   return c.data.subarray(c.left, c.right);
 }
 
+export type Refs = Record<string, unknown>;
+
 // ── High-level Proxy API ──
 
 const HANDLE = Symbol("rexc.handle");
@@ -567,8 +569,12 @@ type NodeInfo = {
   _keyMap?: Map<string, number>; // key → value right-offset, built by ensureKeyMap
 };
 
-/** Open a rexc buffer and return a Proxy-wrapped root value. */
-export function open(buffer: Uint8Array, refs?: Refs): unknown {
+type OpenContext = {
+  root: unknown;
+  resolve(right: number): unknown;
+};
+
+function _openContext(buffer: Uint8Array, refs?: Refs): OpenContext {
   const nodeMap = new WeakMap<object, NodeInfo>();
   const proxyCache = new Map<number, unknown>(); // right-offset → memoized value
   const scratch = makeCursor(buffer);
@@ -823,10 +829,11 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
     },
 
     getOwnPropertyDescriptor(target, prop) {
+      if (typeof prop === "symbol") return undefined;
       const info = nodeMap.get(target)!;
       if (info.tag === "array") {
         if (prop === "length") {
-          return { configurable: true, enumerable: false, value: childCount(info), writable: false };
+          return { configurable: false, enumerable: false, value: childCount(info), writable: true };
         }
         const idx = Number(prop);
         if (typeof prop === "string" && Number.isInteger(idx) && idx >= 0 && idx < childCount(info)) {
@@ -854,10 +861,21 @@ export function open(buffer: Uint8Array, refs?: Refs): unknown {
     deleteProperty() { throw new TypeError("rexc data is read-only"); },
   };
 
+  function resolve(right: number): unknown {
+    scratch.data = buffer;
+    scratch.right = right;
+    read(scratch);
+    return wrap(scratch);
+  }
+
   // Read and wrap root
-  scratch.right = buffer.length;
-  read(scratch);
-  return wrap(scratch);
+  const root = resolve(buffer.length);
+  return { root, resolve };
+}
+
+/** Open a rexc buffer and return a Proxy-wrapped root value. */
+export function open(buffer: Uint8Array, refs?: Refs): unknown {
+  return _openContext(buffer, refs).root;
 }
 
 /** Get the raw handle from a Proxy-wrapped value (escape hatch). */
@@ -868,9 +886,469 @@ export function handle(proxy: unknown): { data: Uint8Array; right: number } | un
   return undefined;
 }
 
-// ── High-level decode ──
+// ── Inspect API ──
 
-export type Refs = Record<string, unknown>;
+/** AST node mapping 1:1 to a REXC tag+b64 pair in the byte stream.
+ *  Acts like an array of its children: node[0], node.length, for...of, JSON.stringify all work.
+ *  Named properties provide the encoding metadata.
+ */
+export interface ASTNode {
+  /** Backing buffer (non-enumerable, shared). */
+  readonly data: Uint8Array;
+  /** Byte offset of the tag byte. */
+  readonly left: number;
+  /** Byte offset after the node (after tag + b64 suffix). */
+  readonly right: number;
+  /** Byte length of content preceding the tag. Children live in [left - size, left). */
+  readonly size: number;
+  /** Single-character tag: '+' '*' ',' "'" ':' ';' '^' '.' '#' */
+  readonly tag: string;
+  /** b64 payload — type depends on tag. */
+  readonly b64: number | string | { count: number; width: number };
+  /** Resolved JS value via open() — lazy. Primitives or open() Proxy. */
+  readonly value: unknown;
+
+  // Array-like: numeric index → child ASTNode, .length → child count
+  readonly length: number;
+  readonly [index: number]: ASTNode;
+  [Symbol.iterator](): Iterator<ASTNode>;
+
+  // Semantic utilities (meaningful on containers)
+  keys(): Iterable<ASTNode>;
+  values(): Iterable<ASTNode>;
+  entries(): Iterable<[ASTNode, ASTNode]>;
+  filteredKeys(prefix: string): Iterable<[ASTNode, ASTNode]>;
+  index(key: number | string): ASTNode | undefined;
+  /** Follow pointers (^) to the target node. Returns self if not a pointer. */
+  readonly resolve: ASTNode;
+}
+
+const TAG_CHARS: Record<number, string> = {
+  0x2b: "+", 0x2a: "*", 0x2c: ",", 0x27: "'",
+  0x3a: ":", 0x3b: ";", 0x5e: "^", 0x2e: ".", 0x23: "#",
+};
+
+// Internal state for each ASTNode's incremental child parsing
+type NodeState = {
+  data: Uint8Array;
+  left: number;
+  right: number;
+  size: number;
+  tag: string;
+  b64: number | string | { count: number; width: number };
+  // Incremental child cache
+  cache: ASTNode[];
+  nextPos: number;  // next byte offset to parse from (scanning right-to-left)
+  end: number;      // left boundary of content region
+  done: boolean;    // true when all children have been parsed
+};
+
+/** Inspect a rexc buffer, returning a lazy AST that maps 1:1 to the encoding. */
+export function inspect(buffer: Uint8Array, refs?: Refs): ASTNode {
+  const ctx = _openContext(buffer, refs);
+  const stateMap = new WeakMap<object, NodeState>();
+
+  /** Follow pointers (^) to the target node. Returns self if not a pointer. */
+  function resolveNode(node: ASTNode): ASTNode {
+    let current = node;
+    let depth = 0;
+    while (current.tag === "^" && depth++ < 100) {
+      const target = current.left - (current.b64 as number);
+      current = makeNode(target);
+    }
+    return current;
+  }
+
+  function parseTag(right: number): { left: number; tagByte: number; tagChar: string; b64val: number | string | { count: number; width: number }; size: number } {
+    const c = makeCursor(buffer);
+    c.right = right;
+    const tagByte = peekTag(c);
+    const left = c.left;
+    const tagChar = TAG_CHARS[tagByte] ?? String.fromCharCode(tagByte);
+
+    let b64val: number | string | { count: number; width: number };
+    let size: number;
+
+    switch (tagByte) {
+      case 0x2b: // + integer (signed)
+        b64val = fromZigZag(b64Read(buffer, left + 1, right));
+        size = 0;
+        break;
+      case 0x2a: { // * decimal (signed exponent)
+        b64val = fromZigZag(b64Read(buffer, left + 1, right));
+        const inner = makeCursor(buffer);
+        inner.right = left;
+        read(inner);
+        size = left - inner.left;
+        break;
+      }
+      case 0x2c: // , string
+        b64val = b64Read(buffer, left + 1, right);
+        size = b64val as number;
+        break;
+      case 0x27: // ' ref
+        b64val = textDecoder.decode(buffer.subarray(left + 1, right));
+        size = 0;
+        break;
+      case 0x3a: // : object
+        b64val = b64Read(buffer, left + 1, right);
+        size = b64val as number;
+        break;
+      case 0x3b: // ; array
+        b64val = b64Read(buffer, left + 1, right);
+        size = b64val as number;
+        break;
+      case 0x5e: // ^ pointer
+        b64val = b64Read(buffer, left + 1, right);
+        size = 0;
+        break;
+      case 0x2e: // . chain
+        b64val = b64Read(buffer, left + 1, right);
+        size = b64val as number;
+        break;
+      case 0x23: { // # index
+        const packed = b64Read(buffer, left + 1, right);
+        const width = (packed & 0b111) + 1;
+        const count = packed >> 3;
+        b64val = { count, width };
+        size = width * count;
+        break;
+      }
+      default:
+        throw new SyntaxError(`inspect: unknown tag 0x${tagByte.toString(16)}`);
+    }
+
+    return { left, tagByte, tagChar, b64val, size };
+  }
+
+  /** Parse children up to (and including) the target index. Returns the child or undefined. */
+  function ensureChild(state: NodeState, idx: number): ASTNode | undefined {
+    if (idx < state.cache.length) return state.cache[idx];
+    if (state.done) return undefined;
+
+    while (state.cache.length <= idx) {
+      if (state.nextPos <= state.end) {
+        state.done = true;
+        return undefined;
+      }
+      const child = makeNode(state.nextPos);
+      state.cache.push(child);
+      const cs = stateMap.get(child as unknown as object)!;
+      state.nextPos = cs.left - cs.size;
+    }
+    return state.cache[idx];
+  }
+
+  /** Parse all remaining children. */
+  function ensureAll(state: NodeState): void {
+    if (state.done) return;
+    while (state.nextPos > state.end) {
+      const child = makeNode(state.nextPos);
+      state.cache.push(child);
+      const cs = stateMap.get(child as unknown as object)!;
+      state.nextPos = cs.left - cs.size;
+    }
+    state.done = true;
+  }
+
+  function makeNode(right: number): ASTNode {
+    const { left, tagChar, b64val, size } = parseTag(right);
+
+    const state: NodeState = {
+      data: buffer,
+      left,
+      right,
+      size,
+      tag: tagChar,
+      b64: b64val,
+      cache: [],
+      nextPos: left, // start scanning right-to-left from just before the tag
+      end: left - size,
+      // Only container-like tags have parseable children
+      done: !(tagChar === ":" || tagChar === ";" || tagChar === "." || tagChar === "*"),
+    };
+
+    let _value: unknown;
+    let _hasValue = false;
+
+    const target = Object.create(null);
+    const proxy = new Proxy(target, {
+      get(_, prop) {
+        // Numeric index
+        if (typeof prop === "string") {
+          const idx = Number(prop);
+          if (Number.isInteger(idx) && idx >= 0) {
+            return ensureChild(state, idx);
+          }
+        }
+
+        switch (prop) {
+          case "data": return buffer;
+          case "left": return state.left;
+          case "right": return state.right;
+          case "size": return state.size;
+          case "tag": return state.tag;
+          case "b64": return state.b64;
+          case "value":
+            if (!_hasValue) { _value = ctx.resolve(right); _hasValue = true; }
+            return _value;
+          case "length":
+            ensureAll(state);
+            return state.cache.length;
+          case "keys": return () => keysOf(proxy as ASTNode);
+          case "values": return () => valuesOf(proxy as ASTNode);
+          case "entries": return () => entriesOf(proxy as ASTNode);
+          case "filteredKeys": return (prefix: string) => filteredKeysOf(proxy as ASTNode, prefix);
+          case "index": return (key: number | string) => indexOf(proxy as ASTNode, key);
+          case "resolve": return resolveNode(proxy as ASTNode);
+          case Symbol.iterator:
+            return function* () {
+              let i = 0;
+              while (true) {
+                const child = ensureChild(state, i);
+                if (child === undefined) return;
+                yield child;
+                i++;
+              }
+            };
+          case "toJSON":
+            return () => {
+              const obj: any = { tag: state.tag, b64: state.b64, left: state.left, right: state.right, size: state.size };
+              // Only tags with parseable children: containers, chain, decimal
+              if (state.size > 0 && (state.tag === ":" || state.tag === ";" || state.tag === "." || state.tag === "*")) {
+                const children: unknown[] = [];
+                for (const child of proxy as any) children.push(child);
+                obj.children = children;
+              }
+              return obj;
+            };
+        }
+
+        // Array methods — materialize and delegate
+        if (typeof prop === "string" && typeof (Array.prototype as any)[prop] === "function") {
+          return function (...args: unknown[]) {
+            ensureAll(state);
+            return (Array.prototype as any)[prop].apply(state.cache, args);
+          };
+        }
+
+        return undefined;
+      },
+
+      has(_, prop) {
+        if (typeof prop === "string") {
+          const idx = Number(prop);
+          if (Number.isInteger(idx) && idx >= 0) {
+            return ensureChild(state, idx) !== undefined;
+          }
+        }
+        if (prop === "length" || prop === "tag" || prop === "b64" || prop === "left" ||
+          prop === "right" || prop === "size" || prop === "value" || prop === "data" ||
+          prop === "keys" || prop === "values" || prop === "entries" ||
+          prop === "filteredKeys" || prop === "index" || prop === "resolve" || prop === Symbol.iterator) {
+          return true;
+        }
+        return false;
+      },
+
+      ownKeys() {
+        ensureAll(state);
+        const ks: string[] = [];
+        for (let i = 0; i < state.cache.length; i++) ks.push(String(i));
+        ks.push("length", "tag", "b64", "left", "right", "size");
+        return ks;
+      },
+
+      getOwnPropertyDescriptor(_, prop) {
+        if (prop === "length") {
+          ensureAll(state);
+          return { configurable: true, enumerable: false, value: state.cache.length, writable: false };
+        }
+        if (typeof prop === "string") {
+          const idx = Number(prop);
+          if (Number.isInteger(idx) && idx >= 0) {
+            const child = ensureChild(state, idx);
+            if (child !== undefined) {
+              return { configurable: true, enumerable: true, value: child, writable: false };
+            }
+          }
+        }
+        // Named metadata props
+        if (prop === "tag") return { configurable: true, enumerable: true, value: state.tag, writable: false };
+        if (prop === "b64") return { configurable: true, enumerable: true, value: state.b64, writable: false };
+        if (prop === "left") return { configurable: true, enumerable: true, value: state.left, writable: false };
+        if (prop === "right") return { configurable: true, enumerable: true, value: state.right, writable: false };
+        if (prop === "size") return { configurable: true, enumerable: true, value: state.size, writable: false };
+        return undefined;
+      },
+
+      set() { throw new TypeError("inspect nodes are read-only"); },
+      deleteProperty() { throw new TypeError("inspect nodes are read-only"); },
+    });
+
+    stateMap.set(proxy, state);
+    return proxy as unknown as ASTNode;
+  }
+
+  // -- Semantic utilities --
+
+  function* entriesOf(node: ASTNode): Iterable<[ASTNode, ASTNode]> {
+    if (node.tag !== ":") return;
+    const c = makeCursor(buffer);
+    c.data = buffer; c.right = node.right; read(c);
+    const hasSchema = c.schema !== 0;
+
+    if (hasSchema) {
+      const sc = makeCursor(buffer);
+      sc.right = c.schema; read(sc);
+      while (sc.tag === "ptr") { sc.right = sc.val; read(sc); }
+
+      const contentEnd = node.left - node.size;
+      let valPos = c.val;
+      if (sc.tag === "array") {
+        let keyPos = sc.val;
+        const keyEnd = sc.left;
+        while (keyPos > keyEnd && valPos > contentEnd) {
+          const keyNode = makeNode(keyPos);
+          const valNode = makeNode(valPos);
+          yield [keyNode, valNode];
+          const ks = stateMap.get(keyNode as unknown as object)!;
+          const vs = stateMap.get(valNode as unknown as object)!;
+          keyPos = ks.left - ks.size;
+          valPos = vs.left - vs.size;
+        }
+      } else if (sc.tag === "object") {
+        const kc = makeCursor(buffer);
+        let keyPos = sc.val;
+        const keyEnd = sc.left;
+        while (keyPos > keyEnd && valPos > contentEnd) {
+          const keyNode = makeNode(keyPos);
+          const valNode = makeNode(valPos);
+          yield [keyNode, valNode];
+          const ks = stateMap.get(keyNode as unknown as object)!;
+          const vs = stateMap.get(valNode as unknown as object)!;
+          kc.data = buffer; kc.right = ks.left - ks.size; read(kc);
+          keyPos = kc.left;
+          valPos = vs.left - vs.size;
+        }
+      }
+      return;
+    }
+
+    const contentEnd = node.left - node.size;
+    let pos = c.val;
+    while (pos > contentEnd) {
+      const keyNode = makeNode(pos);
+      const ks = stateMap.get(keyNode as unknown as object)!;
+      const keyLeft = ks.left - ks.size;
+      if (keyLeft <= contentEnd) break;
+      const valNode = makeNode(keyLeft);
+      const vs = stateMap.get(valNode as unknown as object)!;
+      yield [keyNode, valNode];
+      pos = vs.left - vs.size;
+    }
+  }
+
+  function* keysOf(node: ASTNode): Iterable<ASTNode> {
+    for (const [k] of entriesOf(node)) yield k;
+  }
+
+  function* valuesOf(node: ASTNode): Iterable<ASTNode> {
+    if (node.tag === ";") {
+      const c = makeCursor(buffer);
+      c.data = buffer; c.right = node.right; read(c);
+      const contentEnd = node.left - node.size;
+      let pos = c.val;
+      while (pos > contentEnd) {
+        const child = makeNode(pos);
+        yield child;
+        const cs = stateMap.get(child as unknown as object)!;
+        pos = cs.left - cs.size;
+      }
+      return;
+    }
+    if (node.tag === ":") {
+      for (const [, v] of entriesOf(node)) yield v;
+    }
+  }
+
+  function* filteredKeysOf(node: ASTNode, prefix: string): Iterable<[ASTNode, ASTNode]> {
+    if (node.tag !== ":") return;
+    const prefixBytes = prepareKey(prefix);
+
+    const c = makeCursor(buffer);
+    c.data = buffer; c.right = node.right; read(c);
+    if (c.ixWidth > 0 && c.ixCount > 0 && c.schema === 0) {
+      const container = { ...c, data: buffer } as unknown as Cursor;
+      const sc2 = makeCursor(buffer);
+
+      let lo = 0, hi = c.ixCount;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        seekChild(sc2, container, mid);
+        const cmp = strCompare(sc2, prefixBytes);
+        if (cmp < 0) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo; i < container.ixCount; i++) {
+        seekChild(sc2, container, i);
+        if (!strHasPrefix(sc2, prefixBytes)) break;
+        const keyNode = makeNode(sc2.right);
+        const valNode = makeNode(sc2.left);
+        yield [keyNode, valNode];
+      }
+      return;
+    }
+
+    for (const [k, v] of entriesOf(node)) {
+      const kc = makeCursor(buffer);
+      kc.data = buffer; kc.right = k.right; read(kc);
+      if (strHasPrefix(kc, prefixBytes)) {
+        yield [k, v];
+      }
+    }
+  }
+
+  function indexOf(node: ASTNode, key: number | string): ASTNode | undefined {
+    const c = makeCursor(buffer);
+    c.data = buffer; c.right = node.right; read(c);
+
+    if (node.tag === ";" && typeof key === "number") {
+      if (c.ixWidth > 0 && c.ixCount > 0) {
+        if (key < 0 || key >= c.ixCount) return undefined;
+        const container = { ...c, data: buffer } as unknown as Cursor;
+        seekChild(c, container, key);
+        return makeNode(c.right);
+      }
+      const contentEnd = node.left - node.size;
+      let pos = c.val;
+      let i = 0;
+      while (pos > contentEnd) {
+        const child = makeNode(pos);
+        if (i === key) return child;
+        const cs = stateMap.get(child as unknown as object)!;
+        pos = cs.left - cs.size;
+        i++;
+      }
+      return undefined;
+    }
+
+    if (node.tag === ":" && typeof key === "string") {
+      const container = { ...c, data: buffer } as unknown as Cursor;
+      const result = makeCursor(buffer);
+      if (findKey(result, container, key)) {
+        return makeNode(result.right);
+      }
+      return undefined;
+    }
+
+    return undefined;
+  }
+
+  return makeNode(buffer.length);
+}
+
+// ── High-level decode ──
 
 export interface DecodeOptions {
   /** External dictionary of known values. Values are returned as-is when a ref is encountered. */
@@ -1059,7 +1537,7 @@ export function encode(rootValue: unknown, options?: EncodeOptions): Uint8Array 
 
   function scanPrefixes(value: unknown) {
     if (!chainSplit) return;
-    if (typeof value === "string" && value.indexOf(chainSplit) >= 0) {
+    if (typeof value === "string" && value[0] === chainSplit && value.indexOf(chainSplit, 1) > 0) {
       if (!seenPrefixes.has(value)) {
         let offset = 0;
         while (offset < value.length) {

@@ -60,6 +60,13 @@ rx data.rx --to json -o out.json   # write to file
 
 See [CLI Reference](#cli-reference) below for full options.
 
+**Tip:** Add a shell function for quick paged, colorized viewing that works on both `.json` and `.rx` files.  To install paste this into your shell profile. 
+
+```sh
+p() { rx "$1" -t -c | less -RFX; }
+# p data.rx          — pretty-print with color, auto-pages large output
+```
+
 There is also a web-based viewer in development for inspecting REXC documents with expandable tree navigation, syntax-highlighted node types, and tabs for raw REXC, JSON, and ref dictionaries:
 
 ![REXC Viewer — interactive tree inspector showing a website deployment manifest with chain-compressed paths, pointer deduplication, and nested object metadata](rexc-viewer-screenshot.png)
@@ -144,6 +151,85 @@ import { handle } from "@creationix/rx";
 const h = handle(obj.nested);
 // h.data: Uint8Array — the underlying buffer
 // h.right: number — byte offset of this node
+```
+
+## Inspect API
+
+The `inspect()` function returns a lazy AST that maps 1:1 to the REXC byte encoding. Each node corresponds to exactly one tag+b64 pair in the byte stream — pointers stay as pointers, chains stay as chains, `null` is a ref named `"n"`, etc.
+
+```ts
+import { encode, inspect } from "@creationix/rx";
+
+const buf = encode({ name: "alice", scores: [10, 20, 30] });
+const root = inspect(buf);
+```
+
+### Node properties
+
+Each node exposes the raw encoding structure:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `tag` | `string` | Single-character tag: `+` `*` `,` `'` `:` `;` `^` `.` `#` |
+| `b64` | `number \| string \| {count, width}` | Decoded b64 payload (signed/unsigned/string/compound) |
+| `left` | `number` | Byte offset of the tag byte |
+| `right` | `number` | Byte offset after the node |
+| `size` | `number` | Byte length of content preceding the tag |
+| `data` | `Uint8Array` | Backing buffer (non-enumerable) |
+| `value` | `unknown` | Resolved JS value via `open()` — lazy |
+
+### Array-like children
+
+Each node acts like an array of its structural children:
+
+```ts
+root.tag       // ":"
+root[0].tag    // "," (first child — a string key)
+root[0].value  // "name"
+root.length    // 4 (key, value, key, value)
+
+for (const child of root) {
+  console.log(child.tag, child.b64);
+}
+
+JSON.stringify(root)  // recursive tree of {tag, b64, left, right, size, children}
+```
+
+Children are parsed lazily and cached incrementally — accessing `node[5]` only parses children 0–5. Subsequent access to `node[2]` is instant from cache.
+
+Tags with parseable children: `:` (object), `;` (array), `.` (chain), `*` (decimal), `#` (index).
+All other tags (`,` `+` `'` `^`) have zero children regardless of `size`.
+
+### Structural vs semantic
+
+The children array is purely structural — it yields whatever is in the bytes, in read order (right-to-left). For objects, this includes interleaved key/value nodes, `#` index nodes, and schema ref/pointer nodes as peers.
+
+For semantic access, use the utility methods:
+
+```ts
+// Object utilities — return ASTNodes, not resolved values
+for (const key of root.keys()) { ... }
+for (const val of root.values()) { ... }
+for (const [key, val] of root.entries()) {
+  console.log(key.value, val.value);
+}
+
+// Prefix search — O(log n + m) on indexed objects
+for (const [key, val] of root.filteredKeys("/api/")) { ... }
+
+// Indexed access — O(1) on indexed containers
+const node = root.index("name");   // object key lookup
+const elem = root.index(2);        // array index
+```
+
+These methods understand schemas, use binary search on indexed containers, and skip metadata nodes.
+
+### CLI
+
+```sh
+rx data.rexc --ast            # output the encoding structure as JSON
+rx data.json --ast            # encode to rexc first, then inspect
+echo '{"x":1}' | rx --ast    # from stdin
 ```
 
 ## Base64 Utilities
@@ -302,10 +388,11 @@ rawBytes(c)  // zero-copy Uint8Array view: data.subarray(c.left, c.right)
 | Flag | Description |
 |------|-------------|
 | `--from json\|rexc` | Force input format (default: auto-detect) |
-| `--to json\|rexc\|tree` | Output format |
+| `--to json\|rexc\|tree\|ast` | Output format |
 | `-j`, `--json` | Shortcut for `--to json` |
 | `-r`, `--rexc` | Shortcut for `--to rexc` |
 | `-t`, `--tree` | Shortcut for `--to tree` |
+| `-a`, `--ast` | Shortcut for `--to ast` (encoding structure) |
 
 Format is auto-detected from file extension (`.json`, `.rx`, `.rexc`) or by content sniffing on stdin. Both `.rx` and `.rexc` are recognized as REXC. Output defaults to tree view on a TTY, JSON when piped.
 
