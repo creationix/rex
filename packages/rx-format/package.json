@@ -1,6 +1,6 @@
 {
 	"name": "@creationix/rx",
-	"version": "0.6.4",
+	"version": "0.6.5",
 	"description": "REXC encoder, decoder, and CLI data tool",
 	"keywords": [
 		"rexc",
@@ -16,7 +16,14 @@
 	},
 	"main": "rx.ts",
 	"exports": {
-		".": "./rx.ts"
+		".": {
+			"types": "./rx.ts",
+			"default": "./rx.ts"
+		},
+		"./b64": {
+			"types": "./b64.ts",
+			"default": "./b64.ts"
+		}
 	},
 	"files": [
 		"README.md",

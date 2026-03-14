@@ -146,6 +146,23 @@ const h = handle(obj.nested);
 // h.right: number — byte offset of this node
 ```
 
+## Base64 Utilities
+
+A compact base64 number encoding used internally by the REXC format, also available as a standalone import:
+
+```ts
+import { stringify, parse, sizeof, toZigZag, fromZigZag } from "@creationix/rx/b64";
+
+stringify(255)       // "3V"
+parse("3V")         // 255
+sizeof(255)          // 2 (digits needed)
+
+toZigZag(-1)         // 1 (signed → unsigned)
+fromZigZag(1)        // -1 (unsigned → signed)
+```
+
+The alphabet is `0-9a-zA-Z-_` (URL-safe, no padding). Numbers are big-endian with zero represented as an empty string. Zigzag encoding maps signed integers to unsigned values so negative numbers stay compact.
+
 ## Low-Level Cursor API
 
 For zero-allocation traversal, streaming output, or byte-slicing passthrough, use the cursor API directly. The cursor is a mutable struct that the parser fills in — no objects are created per node visited.
