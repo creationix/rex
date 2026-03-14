@@ -16,8 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
-      - run: bun install
-      - run: bun test
+      - run: bunx vitest run
         working-directory: packages/rx-format
 
   node:
@@ -27,6 +26,5 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-      - run: npm install
       - run: npx vitest run
         working-directory: packages/rx-format
