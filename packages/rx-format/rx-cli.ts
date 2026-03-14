@@ -1,21 +1,53 @@
-import { open, inspect, stringify, encode, makeCursor, read } from "./rx";
+import { open, inspect, stringify, encode, makeCursor, read, tune, INDEX_THRESHOLD, STRING_CHAIN_THRESHOLD, STRING_CHAIN_DELIMITER, KEY_COMPLEXITY_THRESHOLD } from "./rx";
 import { readdirSync } from "node:fs";
 import { readFile, writeFile, mkdir, unlink, lstat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, dirname, basename } from "node:path";
+import { join, dirname, basename, extname } from "node:path";
 
-// ── ANSI colors ──────────────────────────────────────────────
+// ── Theme ────────────────────────────────────────────────────
+// Semantic color tags — interpolate directly in template strings.
+// Monochrome (default), 16-color, or 256-color picked by applyTheme().
 
-function createColors(on: boolean) {
-	const o = on ? (s: string) => s : () => "";
-	return {
-		reset: o("\x1b[0m"), dim: o("\x1b[2m"),
-		green: o("\x1b[38;5;114m"), yellow: o("\x1b[38;5;179m"),
-		cyan: o("\x1b[38;5;81m"), magenta: o("\x1b[38;5;141m"),
-	};
+let tStr = "", tNum = "", tBool = "", tNull = "", tKey = "";
+let tCmd = "", tArg = "", tH1 = "", tH2 = "", tDim = "", tR = "";
+
+function applyTheme(color: boolean) {
+	if (!color) {
+		tStr = tNum = tBool = tNull = tKey = "";
+		tCmd = tArg = tH1 = tH2 = tDim = tR = "";
+		return;
+	}
+	const term = process.env.TERM ?? "";
+	const ct = process.env.COLORTERM ?? "";
+	const rich = term.includes("256color") || ct === "truecolor" || ct === "24bit";
+
+	if (rich) {
+		// 256-color — One Dark inspired
+		tStr = "\x1b[38;5;114m";  // green
+		tNum = "\x1b[38;5;179m";  // warm gold
+		tBool = "\x1b[38;5;209m";  // soft coral
+		tNull = "\x1b[38;5;246m";  // mid gray
+		tKey = "\x1b[38;5;39m";   // bright azure
+		tCmd = "\x1b[38;5;111m";  // soft blue
+		tArg = "\x1b[38;5;180m";  // muted orange
+		tH1 = "\x1b[1;38;5;255m"; // bold white
+		tH2 = "\x1b[4m";         // underline
+		tDim = "\x1b[38;5;242m";
+	} else {
+		// 16-color fallback
+		tStr = "\x1b[32m";   // green
+		tNum = "\x1b[33m";   // yellow
+		tBool = "\x1b[33m";   // yellow
+		tNull = "\x1b[90m";   // bright black
+		tKey = "\x1b[35m";   // magenta
+		tCmd = "\x1b[34;1m"; // bright blue
+		tArg = "\x1b[33m";   // yellow
+		tH1 = "\x1b[1;37m";  // bold white
+		tH2 = "\x1b[4m";    // underline
+		tDim = "\x1b[2m";
+	}
+	tR = "\x1b[0m";
 }
-
-let C = createColors(false);
 
 // ── Types & arg parsing ──────────────────────────────────────
 
@@ -27,13 +59,19 @@ type RxOptions = {
 	toFormat?: OutputFormat;
 	select?: string[];
 	out?: string;
+	write: boolean;
 	color: boolean;
 	help: boolean;
+	indexThreshold?: number;
+	stringChainThreshold?: number;
+	stringChainDelimiter?: string;
+	keyComplexityThreshold?: number;
 };
 
 function parseArgs(argv: string[]): RxOptions {
 	const opts: RxOptions = {
 		files: [],
+		write: false,
 		color: process.stdout.isTTY ?? false,
 		help: false,
 	};
@@ -42,6 +80,7 @@ function parseArgs(argv: string[]): RxOptions {
 		if (arg === "-h" || arg === "--help") { opts.help = true; continue; }
 		if (arg === "-c" || arg === "--color") { opts.color = true; continue; }
 		if (arg === "--no-color") { opts.color = false; continue; }
+		if (arg === "-w" || arg === "--write") { opts.write = true; continue; }
 		if (arg === "-j" || arg === "--json") { opts.toFormat = "json"; continue; }
 		if (arg === "-r" || arg === "--rexc") { opts.toFormat = "rexc"; continue; }
 		if (arg === "-t" || arg === "--tree") { opts.toFormat = "tree"; continue; }
@@ -67,6 +106,36 @@ function parseArgs(argv: string[]): RxOptions {
 			opts.out = v;
 			continue;
 		}
+		if (arg === "--index-threshold") {
+			const v = argv[++i];
+			if (!v) throw new Error("Missing value for --index-threshold");
+			const n = Number(v);
+			if (!Number.isInteger(n) || n < 0) throw new Error("--index-threshold must be a non-negative integer");
+			opts.indexThreshold = n;
+			continue;
+		}
+		if (arg === "--string-chain-threshold") {
+			const v = argv[++i];
+			if (!v) throw new Error("Missing value for --string-chain-threshold");
+			const n = Number(v);
+			if (!Number.isInteger(n) || n < 0) throw new Error("--string-chain-threshold must be a non-negative integer");
+			opts.stringChainThreshold = n;
+			continue;
+		}
+		if (arg === "--string-chain-delimiter") {
+			const v = argv[++i];
+			if (v === undefined) throw new Error("Missing value for --string-chain-delimiter");
+			opts.stringChainDelimiter = v;
+			continue;
+		}
+		if (arg === "--key-complexity-threshold") {
+			const v = argv[++i];
+			if (!v) throw new Error("Missing value for --key-complexity-threshold");
+			const n = Number(v);
+			if (!Number.isInteger(n) || n < 0) throw new Error("--key-complexity-threshold must be a non-negative integer");
+			opts.keyComplexityThreshold = n;
+			continue;
+		}
 		if (!arg.startsWith("-") || arg === "-") {
 			opts.files.push(arg);
 			continue;
@@ -79,37 +148,46 @@ function parseArgs(argv: string[]): RxOptions {
 function usage(): string {
 	return [
 		"",
-		"rx — inspect, convert, and filter REXC & JSON data.",
+		`${tH1}rx${tR} — inspect, convert, and filter REXC & JSON data.`,
 		"",
-		"Usage:",
-		"  rx data.rx                 Pretty-print as a tree",
-		"  rx data.rx -j              Convert to JSON",
-		"  rx data.json -r            Convert to REXC",
-		"  cat data.rx | rx           Read from stdin (auto-detect)",
-		"  rx data.rx -s key 0 sub    Select a sub-value",
+		`${tH2}Usage:${tR}`,
+		`  ${tCmd}rx${tR} ${tArg}data.rx${tR}                         ${tStr}Pretty-print as a tree${tR}`,
+		`  ${tCmd}rx${tR} ${tArg}data.rx${tR} ${tCmd}-j${tR}                      ${tStr}Convert to JSON${tR}`,
+		`  ${tCmd}rx${tR} ${tArg}data.json${tR} ${tCmd}-r${tR}                    ${tStr}Convert to REXC${tR}`,
+		`  ${tCmd}cat${tR} ${tArg}data.rx${tR} | ${tCmd}rx${tR}                   ${tStr}Read from stdin (auto-detect)${tR}`,
+		`  ${tCmd}rx${tR} ${tArg}data.rx${tR} ${tCmd}-s${tR} ${tArg}key 0 sub${tR}            ${tStr}Select a sub-value${tR}`,
 		"",
-		"Input:",
-		"  <file>                     File (format auto-detected by contents)",
-		"  -                          Read from stdin explicitly",
-		"  (no args, piped)           Read from stdin automatically",
+		`${tH2}Input:${tR}`,
+		`  ${tArg}<file>${tR}                             ${tStr}File (format auto-detected by contents)${tR}`,
+		`  ${tCmd}-${tR}                                  ${tStr}Read from stdin explicitly${tR}`,
+		`  ${tDim}(no args, piped)${tR}                   ${tStr}Read from stdin automatically${tR}`,
 		"",
-		"Format:",
-		"  -j, --json                 Output as JSON",
-		"  -r, --rexc                 Output as REXC",
-		"  -t, --tree                 Output as tree (default on TTY)",
-		"  -a, --ast                  Output encoding structure as JSON",
+		`${tH2}Format:${tR}`,
+		`  ${tCmd}-j${tR}, ${tCmd}--json${tR}                         ${tStr}Output as JSON${tR}`,
+		`  ${tCmd}-r${tR}, ${tCmd}--rexc${tR}                         ${tStr}Output as REXC${tR}`,
+		`  ${tCmd}-t${tR}, ${tCmd}--tree${tR}                         ${tStr}Output as tree (default on TTY)${tR}`,
+		`  ${tCmd}-a${tR}, ${tCmd}--ast${tR}                          ${tStr}Output encoding structure as JSON${tR}`,
 		"",
-		"Filtering:",
-		"  -s, --select <seg>...      Select a sub-value (e.g. -s foo bar 0 baz)",
+		`${tH2}Filtering:${tR}`,
+		`  ${tCmd}-s${tR}, ${tCmd}--select${tR} ${tArg}<seg>...${tR}              ${tStr}Select a sub-value (e.g. ${tCmd}-s${tR} ${tArg}foo bar 0 baz${tR}${tStr})${tR}`,
 		"",
-		"Output:",
-		"  -o, --out <path>           Write to file instead of stdout",
-		"  -c, --color / --no-color   Force or disable ANSI color",
-		"  -h, --help                 Show this message",
+		`${tH2}Convert:${tR}`,
+		`  ${tCmd}-w${tR}, ${tCmd}--write${tR}                        ${tStr}Write converted file (.json↔.rx)${tR}`,
 		"",
-		"Shell completions:",
-		"  rx --completions setup [zsh|bash]   Install tab completions",
-		"  rx --completions zsh|bash           Print completion script to stdout",
+		`${tH2}Output:${tR}`,
+		`  ${tCmd}-o${tR}, ${tCmd}--out${tR} ${tArg}<path>${tR}                   ${tStr}Write to file instead of stdout${tR}`,
+		`  ${tCmd}-c${tR}, ${tCmd}--color${tR} / ${tCmd}--no-color${tR}           ${tStr}Force or disable ANSI color${tR}`,
+		`  ${tCmd}-h${tR}, ${tCmd}--help${tR}                         ${tStr}Show this message${tR}`,
+		"",
+		`${tH2}Tuning:${tR}`,
+		`  ${tCmd}--index-threshold${tR} ${tArg}<n>${tR}              ${tStr}Index objects/arrays above n values${tR} ${tDim}(default: ${INDEX_THRESHOLD})${tR}`,
+		`  ${tCmd}--string-chain-threshold${tR} ${tArg}<n>${tR}       ${tStr}Split strings longer than n into chains${tR} ${tDim}(default: ${STRING_CHAIN_THRESHOLD})${tR}`,
+		`  ${tCmd}--string-chain-delimiter${tR} ${tArg}<s>${tR}       ${tStr}Delimiter for string chains${tR} ${tDim}(default: ${STRING_CHAIN_DELIMITER})${tR}`,
+		`  ${tCmd}--key-complexity-threshold${tR} ${tArg}<n>${tR}     ${tStr}Max object complexity for dedupe keys${tR} ${tDim}(default: ${KEY_COMPLEXITY_THRESHOLD})${tR}`,
+		"",
+		`${tH2}Shell completions:${tR}`,
+		`  ${tCmd}rx --completions setup${tR} ${tArg}[zsh|bash]${tR}  ${tStr}Install tab completions${tR}`,
+		`  ${tCmd}rx --completions${tR} ${tArg}zsh|bash${tR}          ${tStr}Print completion script to stdout${tR}`,
 		""
 	].join("\n");
 }
@@ -118,7 +196,7 @@ function usage(): string {
 
 function formatFromExt(path: string): Format | undefined {
 	if (path.endsWith(".json")) return "json";
-	if (path.endsWith(".rexc")) return "rexc";
+	if (path.endsWith(".rexc") || path.endsWith(".rx")) return "rexc";
 	return undefined;
 }
 
@@ -179,22 +257,17 @@ async function readOne(file: string): Promise<ParsedInput> {
 async function readInput(opts: RxOptions): Promise<ParsedInput> {
 	if (opts.files.length === 0) {
 		if (process.stdin.isTTY) {
-			const c = opts.color;
-			const bold = c ? "\x1b[1m" : "";
-			const dim = c ? "\x1b[2m" : "";
-			const cyan = c ? "\x1b[36m" : "";
-			const reset = c ? "\x1b[0m" : "";
 			process.stderr.write([
-				`${bold}rx${reset} — inspect, convert, and filter REXC & JSON data.`,
+				`${tH1}rx${tR} — inspect, convert, and filter REXC & JSON data.`,
 				"",
-				`${dim}Usage: (file can be .json or .rx)${reset}`,
-				`  ${cyan}rx${reset} ${dim}<file>${reset}                Pretty-print as a tree`,
-				`  ${cyan}rx${reset} ${dim}<file>${reset} ${cyan}-j${reset}|${cyan}-r${reset}          Convert to JSON/REXC`,
-				`  cat data.rx | ${cyan}rx${reset}         Read from stdin`,
-				`  ${cyan}rx${reset} ${dim}<file>${reset} ${cyan}-s${reset} ${dim}key 0 sub${reset}   Select a sub-value`,
-				`  ${cyan}rx${reset} ${dim}<file>${reset} ${cyan}-o${reset} ${dim}out.json${reset}    Write to file`,
+				`${tH2}Usage:${tR} (file can be .json or .rx)`,
+				`  ${tCmd}rx${tR} ${tArg}<file>${tR}                Pretty-print as a tree`,
+				`  ${tCmd}rx${tR} ${tArg}<file>${tR} ${tCmd}-j${tR}|${tCmd}-r${tR}          Convert to JSON/REXC`,
+				`  cat data.rx | ${tCmd}rx${tR}         Read from stdin`,
+				`  ${tCmd}rx${tR} ${tArg}<file>${tR} ${tCmd}-s${tR} ${tArg}key 0 sub${tR}   Select a sub-value`,
+				`  ${tCmd}rx${tR} ${tArg}<file>${tR} ${tCmd}-o${tR} ${tArg}out.json${tR}    Write to file`,
 				"",
-				`Run ${cyan}rx --help${reset} for full options.`,
+				`Run ${tCmd}rx --help${tR} for full options.`,
 				"",
 			].join("\n"));
 			process.exit(1);
@@ -350,18 +423,20 @@ function highlightTree(line: string): string {
 		if (line[i] === " " || line[i] === "\t") { result += line[i]; i++; continue; }
 		// key followed by ':'
 		const km = line.slice(i).match(/^([A-Za-z_][A-Za-z0-9_-]*|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|"(?:[^"\\]|\\.)*")(\s*:)/);
-		if (km) { result += C.magenta + km[1] + C.reset + km[2]; i += km[0].length; continue; }
+		if (km) { result += tKey + km[1] + tR + km[2]; i += km[0].length; continue; }
 		// string
 		if (line[i] === '"') {
 			const m = line.slice(i).match(/^"(?:[^"\\]|\\.)*"/);
-			if (m) { result += C.green + m[0] + C.reset; i += m[0].length; continue; }
+			if (m) { result += tStr + m[0] + tR; i += m[0].length; continue; }
 		}
 		// keywords
-		const kw = line.slice(i).match(/^(?:true|false|null|undefined|nan|-?inf)\b/);
-		if (kw) { result += C.yellow + kw[0] + C.reset; i += kw[0].length; continue; }
+		const bl = line.slice(i).match(/^(?:true|false)\b/);
+		if (bl) { result += tBool + bl[0] + tR; i += bl[0].length; continue; }
+		const nl = line.slice(i).match(/^(?:null|undefined|nan|-?inf)\b/);
+		if (nl) { result += tNull + nl[0] + tR; i += nl[0].length; continue; }
 		// numbers
 		const nm = line.slice(i).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?(?=[\s\]\}]|$)/);
-		if (nm) { result += C.cyan + nm[0] + C.reset; i += nm[0].length; continue; }
+		if (nm) { result += tNum + nm[0] + tR; i += nm[0].length; continue; }
 		result += line[i]; i++;
 	}
 	return result;
@@ -375,10 +450,11 @@ function highlightJSON(json: string): string {
 	for (const m of json.matchAll(JSON_RE)) {
 		result += json.slice(last, m.index);
 		const g = m.groups!;
-		if (g.key) result += C.cyan + g.key + C.reset + ":";
-		else if (g.string) result += C.green + m[0] + C.reset;
-		else if (g.number || g.bool) result += C.yellow + m[0] + C.reset;
-		else if (g.null) result += C.dim + m[0] + C.reset;
+		if (g.key) result += tKey + g.key + tR + ":";
+		else if (g.string) result += tStr + m[0] + tR;
+		else if (g.number) result += tNum + m[0] + tR;
+		else if (g.bool) result += tBool + m[0] + tR;
+		else if (g.null) result += tNull + m[0] + tR;
 		else result += m[0];
 		last = m.index! + m[0].length;
 	}
@@ -424,9 +500,10 @@ function formatOutput(value: unknown, format: OutputFormat, color: boolean, rexc
 
 // ── Shell completions ────────────────────────────────────────
 
-const FLAGS_WITH_VALUE = new Set(["-o", "--out", "--to"]);
-const ALL_FLAGS = ["-h", "--help", "-j", "--json", "-r", "--rexc", "-t", "--tree", "-a", "--ast",
-	"--to", "-s", "--select", "-o", "--out", "-c", "--color", "--no-color"];
+const FLAGS_WITH_VALUE = new Set(["-o", "--out", "--to", "--index-threshold", "--string-chain-threshold", "--string-chain-delimiter", "--key-complexity-threshold"]);
+const ALL_FLAGS = ["-h", "--help", "-w", "--write", "-j", "--json", "-r", "--rexc", "-t", "--tree", "-a", "--ast",
+	"--to", "-s", "--select", "-o", "--out", "-c", "--color", "--no-color",
+	"--index-threshold", "--string-chain-threshold", "--string-chain-delimiter", "--key-complexity-threshold"];
 const DATA_EXTENSIONS = [".json", ".rexc", ".rx"];
 
 function findSelectIndex(words: string[]): number {
@@ -693,11 +770,39 @@ async function main() {
 	}
 
 	const opts = parseArgs(argv);
+	applyTheme(opts.color);
 	if (opts.help) { console.log(usage()); return; }
 
-	C = createColors(opts.color);
+	tune({
+		indexThreshold: opts.indexThreshold,
+		stringChainThreshold: opts.stringChainThreshold,
+		stringChainDelimiter: opts.stringChainDelimiter,
+		keyComplexityThreshold: opts.keyComplexityThreshold,
+	});
 
 	const { value: parsed, rexcBytes } = await readInput(opts);
+
+	if (opts.write) {
+		if (opts.files.length !== 1) throw new Error("--write requires exactly one input file");
+		const file = opts.files[0]!;
+		const ext = extname(file);
+		let outPath: string;
+		let outFormat: "json" | "rexc";
+		if (ext === ".json") {
+			outPath = file.slice(0, -ext.length) + ".rx";
+			outFormat = "rexc";
+		} else if (ext === ".rx" || ext === ".rexc") {
+			outPath = file.slice(0, -ext.length) + ".json";
+			outFormat = "json";
+		} else {
+			throw new Error(`--write: unsupported extension '${ext}' (expected .json, .rx, or .rexc)`);
+		}
+		const value = opts.select ? applySelector(parsed, opts.select) : parsed;
+		const out = formatOutput(value, outFormat, false, rexcBytes);
+		await writeFile(outPath, out + "\n", "utf8");
+		return;
+	}
+
 	const toFormat: OutputFormat = opts.toFormat === "other"
 		? (rexcBytes ? "json" : "rexc")
 		: opts.toFormat ?? (process.stdout.isTTY ? "tree" : (rexcBytes ? "json" : "rexc"));
