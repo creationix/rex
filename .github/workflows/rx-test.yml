@@ -16,8 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       - run: bunx vitest run
         working-directory: packages/rx-format
 
