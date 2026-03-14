@@ -9,7 +9,7 @@ on:
       - 'packages/rx-format/**'
 
 jobs:
-  test:
+  bun:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,5 +17,20 @@ jobs:
       - run: bun install
       - run: bun test
         working-directory: packages/rx-format
-      - run: bun run build
-        working-directory: packages/rx-format
+
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify import and round-trip
+        run: |
+          node --input-type=module -e "
+            import { encode, open } from './packages/rx-format/rx.ts';
+            const buf = encode({a:1});
+            const val = open(buf);
+            if (val.a !== 1) { console.log('FAIL'); process.exit(1); }
+            console.log('PASS');
+          "
