@@ -10,7 +10,7 @@ import {
   fromZigZag,
   toZigZag,
   stringify as b64Stringify
-} from "./b64";
+} from "./b64.ts";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
