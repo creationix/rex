@@ -1,4 +1,4 @@
-import { parse, stringify } from "../../rex-lang/rexc.ts"
+import { parse, stringify } from "@creationix/rx"
 
 export type WorkerRequestBody =
   | { type: 'rexc-to-json'; rexc: string; refs: Record<string, unknown> }

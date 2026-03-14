@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte'
 	import { EditorView, basicSetup } from 'codemirror'
 	import { json as jsonLang } from '@codemirror/lang-json'
 	import { oneDark } from '@codemirror/theme-one-dark'
@@ -15,23 +16,32 @@
 	let editor: EditorView | null = null
 	let internalUpdate = false
 
+	// Track the last doc string we know came from user input, so we
+	// don't round-trip it back into the editor (which steals focus).
+	let lastUserDoc: string | null = null
+
 	$effect(() => {
 		if (!container) return
 
+		// Use untrack so this effect only depends on `container`, not on
+		// value/onchange/readonly — those are handled by the sync effect below.
+		const initialDoc = untrack(() => value)
+		const isReadonly = untrack(() => readonly)
+
 		editor = new EditorView({
 			parent: container,
-			doc: value,
+			doc: initialDoc,
 			extensions: [
 				basicSetup,
 				jsonLang(),
 				oneDark,
 				EditorView.lineWrapping,
-				...(readonly ? [EditorView.editable.of(false)] : []),
+				...(isReadonly ? [EditorView.editable.of(false)] : []),
 				EditorView.updateListener.of(update => {
-					if (update.docChanged && !internalUpdate && onchange) {
-						// Mark that this change originated from the user typing
+					if (update.docChanged && !internalUpdate) {
 						lastUserDoc = update.state.doc.toString()
-						onchange(lastUserDoc)
+						// Read onchange at call time so we always get the current prop
+						onchange?.(lastUserDoc)
 					}
 				}),
 			],
@@ -42,10 +52,6 @@
 			editor = null
 		}
 	})
-
-	// Track the last doc string we know came from user input, so we
-	// don't round-trip it back into the editor (which steals focus).
-	let lastUserDoc: string | null = null
 
 	// Sync external value changes into the editor
 	$effect(() => {
