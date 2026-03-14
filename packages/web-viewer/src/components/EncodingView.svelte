@@ -13,7 +13,7 @@
 	type EncRow = {
 		node: ASTNode
 		depth: number
-		collapsed: boolean
+		opened: boolean
 	}
 
 	let viewport = $state<HTMLDivElement | null>(null)
@@ -23,7 +23,7 @@
 	let errorMsg = $state<string | null>(null)
 	let flashIdx = $state<number | null>(null)
 	let lastBuiltText = ''
-	let collapsed = new Set<number>()  // node.left values of collapsed containers
+	let opened = new Set<number>()  // node.left values of explicitly opened containers
 	let filterText = $state('')
 	let rootNode = $state<ASTNode | null>(null)
 
@@ -43,9 +43,9 @@
 
 	function walk(node: ASTNode, depth: number, target: EncRow[]) {
 		const isContainer = isContainerTag(node.tag)
-		const isCollapsed = isContainer && collapsed.has(node.left)
-		target.push({ node, depth, collapsed: isCollapsed })
-		if (isContainer && !isCollapsed) {
+		const isOpened = !isContainer || opened.has(node.left)
+		target.push({ node, depth, opened: isOpened })
+		if (isContainer && isOpened) {
 			for (const child of node) {
 				walk(child, depth + 1, target)
 			}
@@ -57,7 +57,7 @@
 		lastBuiltText = text
 		errorMsg = null
 		filterText = ''
-		collapsed = new Set()
+		opened = new Set()
 		if (!text.trim()) {
 			rows = []
 			rootNode = null
@@ -67,6 +67,7 @@
 			const buf = new TextEncoder().encode(text.trim())
 			const root = inspect(buf, appState.refsEnabled ? appState.refs : undefined)
 			rootNode = root
+			opened.add(root.left)  // root node is always open by default
 			buildRows(root)
 		} catch (e: any) {
 			errorMsg = e.message
@@ -79,10 +80,10 @@
 		const row = rows[idx]
 		if (!row || !isContainerTag(row.node.tag)) return
 		const offset = row.node.left
-		if (collapsed.has(offset)) {
-			collapsed.delete(offset)
+		if (opened.has(offset)) {
+			opened.delete(offset)
 		} else {
-			collapsed.add(offset)
+			opened.add(offset)
 		}
 		// Rebuild rows from root
 		if (rootNode) buildRows(rootNode)
@@ -129,8 +130,8 @@
 		}
 		const newRows: EncRow[] = []
 		for (const [keyNode, valNode] of rootNode.filteredKeys(prefix)) {
-			newRows.push({ node: keyNode, depth: 0, collapsed: false })
-			newRows.push({ node: valNode, depth: 0, collapsed: false })
+			newRows.push({ node: keyNode, depth: 0, opened: true })
+			newRows.push({ node: valNode, depth: 0, opened: true })
 		}
 		rows = newRows
 	}
@@ -206,7 +207,7 @@
 										data-action="fold"
 										data-row={idx}
 										class="inline-block w-4 text-center text-[10px] text-[#555] cursor-pointer hover:text-white"
-									>{row.collapsed ? '\u25B6' : '\u25BC'}</span>
+									>{row.opened ? '\u25BC' : '\u25B6'}</span>
 								{:else}
 									<span class="inline-block w-4"></span>
 								{/if}
@@ -236,7 +237,7 @@
 								{/if}
 
 								<!-- Collapsed summary -->
-								{#if isC && row.collapsed}
+								{#if isC && !row.opened}
 									<span class="ml-1 text-[11px]" style="color: {DIM_COLOR}">…</span>
 								{/if}
 							</div>

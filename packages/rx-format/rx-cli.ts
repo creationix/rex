@@ -9,12 +9,12 @@ import { join, dirname, basename, extname } from "node:path";
 // Monochrome (default), 16-color, or 256-color picked by applyTheme().
 
 let tStr = "", tNum = "", tBool = "", tNull = "", tKey = "";
-let tCmd = "", tArg = "", tH1 = "", tH2 = "", tDim = "", tR = "";
+let tCmd = "", tArg = "", tDesc = "", tH1 = "", tH2 = "", tDim = "", tR = "";
 
 function applyTheme(color: boolean) {
 	if (!color) {
 		tStr = tNum = tBool = tNull = tKey = "";
-		tCmd = tArg = tH1 = tH2 = tDim = tR = "";
+		tCmd = tArg = tDesc = tH1 = tH2 = tDim = tR = "";
 		return;
 	}
 	const term = process.env.TERM ?? "";
@@ -22,17 +22,18 @@ function applyTheme(color: boolean) {
 	const rich = term.includes("256color") || ct === "truecolor" || ct === "24bit";
 
 	if (rich) {
-		// 256-color — One Dark inspired
-		tStr = "\x1b[38;5;114m";  // green
-		tNum = "\x1b[38;5;179m";  // warm gold
-		tBool = "\x1b[38;5;209m";  // soft coral
-		tNull = "\x1b[38;5;246m";  // mid gray
-		tKey = "\x1b[38;5;39m";   // bright azure
-		tCmd = "\x1b[38;5;111m";  // soft blue
-		tArg = "\x1b[38;5;180m";  // muted orange
-		tH1 = "\x1b[1;38;5;255m"; // bold white
+		// 256-color — Tokyo Night inspired
+		tStr = "\x1b[38;5;150m";  // #9ece6a soft green
+		tNum = "\x1b[38;5;209m";  // #ff9e64 orange
+		tBool = "\x1b[38;5;141m";  // #bb9af7 purple
+		tNull = "\x1b[38;5;60m";   // #565f89 blue-gray
+		tKey = "\x1b[38;5;39m";   // #08f bright azure
+		tCmd = "\x1b[38;5;117m";  // #75bffa light blue
+		tArg = "\x1b[38;5;179m";  // #eeb260 warm gold
+		tDesc = "\x1b[38;5;146m"; // #a9b1d6 muted lavender-gray
+		tH1 = "\x1b[1;38;5;189m"; // #c0caf5 bold periwinkle
 		tH2 = "\x1b[4m";         // underline
-		tDim = "\x1b[38;5;242m";
+		tDim = "\x1b[38;5;60m";   // #565f89 blue-gray
 	} else {
 		// 16-color fallback
 		tStr = "\x1b[32m";   // green
@@ -42,6 +43,7 @@ function applyTheme(color: boolean) {
 		tKey = "\x1b[35m";   // magenta
 		tCmd = "\x1b[34;1m"; // bright blue
 		tArg = "\x1b[33m";   // yellow
+		tDesc = "\x1b[37m";  // white
 		tH1 = "\x1b[1;37m";  // bold white
 		tH2 = "\x1b[4m";    // underline
 		tDim = "\x1b[2m";
@@ -151,43 +153,43 @@ function usage(): string {
 		`${tH1}rx${tR} — inspect, convert, and filter REXC & JSON data.`,
 		"",
 		`${tH2}Usage:${tR}`,
-		`  ${tCmd}rx${tR} ${tArg}data.rx${tR}                         ${tStr}Pretty-print as a tree${tR}`,
-		`  ${tCmd}rx${tR} ${tArg}data.rx${tR} ${tCmd}-j${tR}                      ${tStr}Convert to JSON${tR}`,
-		`  ${tCmd}rx${tR} ${tArg}data.json${tR} ${tCmd}-r${tR}                    ${tStr}Convert to REXC${tR}`,
-		`  ${tCmd}cat${tR} ${tArg}data.rx${tR} | ${tCmd}rx${tR}                   ${tStr}Read from stdin (auto-detect)${tR}`,
-		`  ${tCmd}rx${tR} ${tArg}data.rx${tR} ${tCmd}-s${tR} ${tArg}key 0 sub${tR}            ${tStr}Select a sub-value${tR}`,
+		`  ${tCmd}rx${tR} ${tArg}data.rx${tR}                         ${tDesc}Pretty-print as a tree${tR}`,
+		`  ${tCmd}rx${tR} ${tArg}data.rx${tR} ${tCmd}-j${tR}                      ${tDesc}Convert to JSON${tR}`,
+		`  ${tCmd}rx${tR} ${tArg}data.json${tR} ${tCmd}-r${tR}                    ${tDesc}Convert to REXC${tR}`,
+		`  ${tCmd}cat${tR} ${tArg}data.rx${tR} | ${tCmd}rx${tR}                   ${tDesc}Read from stdin (auto-detect)${tR}`,
+		`  ${tCmd}rx${tR} ${tArg}data.rx${tR} ${tCmd}-s${tR} ${tArg}key 0 sub${tR}            ${tDesc}Select a sub-value${tR}`,
 		"",
 		`${tH2}Input:${tR}`,
-		`  ${tArg}<file>${tR}                             ${tStr}File (format auto-detected by contents)${tR}`,
-		`  ${tCmd}-${tR}                                  ${tStr}Read from stdin explicitly${tR}`,
-		`  ${tDim}(no args, piped)${tR}                   ${tStr}Read from stdin automatically${tR}`,
+		`  ${tArg}<file>${tR}                             ${tDesc}File (format auto-detected by contents)${tR}`,
+		`  ${tCmd}-${tR}                                  ${tDesc}Read from stdin explicitly${tR}`,
+		`  ${tDim}(no args, piped)${tR}                   ${tDesc}Read from stdin automatically${tR}`,
 		"",
 		`${tH2}Format:${tR}`,
-		`  ${tCmd}-j${tR}, ${tCmd}--json${tR}                         ${tStr}Output as JSON${tR}`,
-		`  ${tCmd}-r${tR}, ${tCmd}--rexc${tR}                         ${tStr}Output as REXC${tR}`,
-		`  ${tCmd}-t${tR}, ${tCmd}--tree${tR}                         ${tStr}Output as tree (default on TTY)${tR}`,
-		`  ${tCmd}-a${tR}, ${tCmd}--ast${tR}                          ${tStr}Output encoding structure as JSON${tR}`,
+		`  ${tCmd}-j${tR}, ${tCmd}--json${tR}                         ${tDesc}Output as JSON${tR}`,
+		`  ${tCmd}-r${tR}, ${tCmd}--rexc${tR}                         ${tDesc}Output as REXC${tR}`,
+		`  ${tCmd}-t${tR}, ${tCmd}--tree${tR}                         ${tDesc}Output as tree (default on TTY)${tR}`,
+		`  ${tCmd}-a${tR}, ${tCmd}--ast${tR}                          ${tDesc}Output encoding structure as JSON${tR}`,
 		"",
 		`${tH2}Filtering:${tR}`,
-		`  ${tCmd}-s${tR}, ${tCmd}--select${tR} ${tArg}<seg>...${tR}              ${tStr}Select a sub-value (e.g. ${tCmd}-s${tR} ${tArg}foo bar 0 baz${tR}${tStr})${tR}`,
+		`  ${tCmd}-s${tR}, ${tCmd}--select${tR} ${tArg}<seg>...${tR}              ${tDesc}Select a sub-value (e.g. ${tCmd}-s${tR} ${tArg}foo bar 0 baz${tR}${tDesc})${tR}`,
 		"",
 		`${tH2}Convert:${tR}`,
-		`  ${tCmd}-w${tR}, ${tCmd}--write${tR}                        ${tStr}Write converted file (.json↔.rx)${tR}`,
+		`  ${tCmd}-w${tR}, ${tCmd}--write${tR}                        ${tDesc}Write converted file (.json↔.rx)${tR}`,
 		"",
 		`${tH2}Output:${tR}`,
-		`  ${tCmd}-o${tR}, ${tCmd}--out${tR} ${tArg}<path>${tR}                   ${tStr}Write to file instead of stdout${tR}`,
-		`  ${tCmd}-c${tR}, ${tCmd}--color${tR} / ${tCmd}--no-color${tR}           ${tStr}Force or disable ANSI color${tR}`,
-		`  ${tCmd}-h${tR}, ${tCmd}--help${tR}                         ${tStr}Show this message${tR}`,
+		`  ${tCmd}-o${tR}, ${tCmd}--out${tR} ${tArg}<path>${tR}                   ${tDesc}Write to file instead of stdout${tR}`,
+		`  ${tCmd}-c${tR}, ${tCmd}--color${tR} / ${tCmd}--no-color${tR}           ${tDesc}Force or disable ANSI color${tR}`,
+		`  ${tCmd}-h${tR}, ${tCmd}--help${tR}                         ${tDesc}Show this message${tR}`,
 		"",
 		`${tH2}Tuning:${tR}`,
-		`  ${tCmd}--index-threshold${tR} ${tArg}<n>${tR}              ${tStr}Index objects/arrays above n values${tR} ${tDim}(default: ${INDEX_THRESHOLD})${tR}`,
-		`  ${tCmd}--string-chain-threshold${tR} ${tArg}<n>${tR}       ${tStr}Split strings longer than n into chains${tR} ${tDim}(default: ${STRING_CHAIN_THRESHOLD})${tR}`,
-		`  ${tCmd}--string-chain-delimiter${tR} ${tArg}<s>${tR}       ${tStr}Delimiter for string chains${tR} ${tDim}(default: ${STRING_CHAIN_DELIMITER})${tR}`,
-		`  ${tCmd}--key-complexity-threshold${tR} ${tArg}<n>${tR}     ${tStr}Max object complexity for dedupe keys${tR} ${tDim}(default: ${KEY_COMPLEXITY_THRESHOLD})${tR}`,
+		`  ${tCmd}--index-threshold${tR} ${tArg}<n>${tR}              ${tDesc}Index objects/arrays above n values${tR} ${tDim}(default: ${INDEX_THRESHOLD})${tR}`,
+		`  ${tCmd}--string-chain-threshold${tR} ${tArg}<n>${tR}       ${tDesc}Split strings longer than n into chains${tR} ${tDim}(default: ${STRING_CHAIN_THRESHOLD})${tR}`,
+		`  ${tCmd}--string-chain-delimiter${tR} ${tArg}<s>${tR}       ${tDesc}Delimiter for string chains${tR} ${tDim}(default: ${STRING_CHAIN_DELIMITER})${tR}`,
+		`  ${tCmd}--key-complexity-threshold${tR} ${tArg}<n>${tR}     ${tDesc}Max object complexity for dedupe keys${tR} ${tDim}(default: ${KEY_COMPLEXITY_THRESHOLD})${tR}`,
 		"",
 		`${tH2}Shell completions:${tR}`,
-		`  ${tCmd}rx --completions setup${tR} ${tArg}[zsh|bash]${tR}  ${tStr}Install tab completions${tR}`,
-		`  ${tCmd}rx --completions${tR} ${tArg}zsh|bash${tR}          ${tStr}Print completion script to stdout${tR}`,
+		`  ${tCmd}rx --completions setup${tR} ${tArg}[zsh|bash]${tR}  ${tDesc}Install tab completions${tR}`,
+		`  ${tCmd}rx --completions${tR} ${tArg}zsh|bash${tR}          ${tDesc}Print completion script to stdout${tR}`,
 		""
 	].join("\n");
 }
@@ -262,8 +264,9 @@ async function readInput(opts: RxOptions): Promise<ParsedInput> {
 				"",
 				`${tH2}Usage:${tR} (file can be .json or .rx)`,
 				`  ${tCmd}rx${tR} ${tArg}<file>${tR}                Pretty-print as a tree`,
-				`  ${tCmd}rx${tR} ${tArg}<file>${tR} ${tCmd}-j${tR}|${tCmd}-r${tR}          Convert to JSON/REXC`,
-				`  cat data.rx | ${tCmd}rx${tR}         Read from stdin`,
+				`  ${tCmd}rx${tR} ${tArg}<file>${tR} ${tCmd}-j${tR}             Convert to JSON`,
+				`  ${tCmd}rx${tR} ${tArg}<file>${tR} ${tCmd}-r${tR}             Convert to REXC`,
+				`  ${tCmd}cat${tR} ${tArg}data.rx${tR} | ${tCmd}rx${tR}         Read from stdin`,
 				`  ${tCmd}rx${tR} ${tArg}<file>${tR} ${tCmd}-s${tR} ${tArg}key 0 sub${tR}   Select a sub-value`,
 				`  ${tCmd}rx${tR} ${tArg}<file>${tR} ${tCmd}-o${tR} ${tArg}out.json${tR}    Write to file`,
 				"",
