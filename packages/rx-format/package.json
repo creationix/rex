@@ -1,6 +1,6 @@
 {
 	"name": "@creationix/rx",
-	"version": "0.6.1",
+	"version": "0.6.2",
 	"description": "REXC encoder, decoder, and CLI data tool",
 	"keywords": [
 		"rexc",
@@ -19,16 +19,12 @@
 	"exports": {
 		".": {
 			"types": "./dist/rx.d.ts",
-			"bun": "./rx.ts",
 			"default": "./dist/rx.js"
 		}
 	},
 	"files": [
 		"README.md",
 		"LICENSE",
-		"b64.ts",
-		"rx.ts",
-		"rx-cli.ts",
 		"dist"
 	],
 	"scripts": {
@@ -44,6 +40,7 @@
 		"url": "git+https://github.com/creationix/rex.git",
 		"directory": "packages/rx-format"
 	},
+	"homepage": "https://github.com/creationix/rex/tree/main/packages/rx-format#readme",
 	"license": "MIT",
 	"devDependencies": {
 		"@types/bun": "latest"
