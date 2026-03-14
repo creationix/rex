@@ -3,10 +3,9 @@
 	import { docStore } from '../lib/docs.svelte'
 
 	const modes: { id: Mode; label: string }[] = [
-		{ id: 'rexc', label: 'REXC' },
-		{ id: 'inspect', label: 'INSPECT' },
-		{ id: 'json', label: 'JSON' },
-		{ id: 'refs', label: 'REFS' },
+		{ id: 'source', label: 'SOURCE' },
+		{ id: 'encoding', label: 'ENCODING' },
+		{ id: 'data', label: 'DATA' },
 	]
 
 	async function switchTo(id: Mode) {

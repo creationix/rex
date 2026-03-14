@@ -4,6 +4,21 @@
 	import { docStore } from '../lib/docs.svelte'
 
 	let copied = $state(false)
+	let fileInput: HTMLInputElement
+
+	function openFile() { fileInput.click() }
+
+	function handleFileSelected(e: Event) {
+		const file = (e.target as HTMLInputElement).files?.[0]
+		if (!file) return
+		const reader = new FileReader()
+		reader.onload = () => {
+			appState.loadFile(file.name, reader.result as string)
+			docStore.renameCurrentTab(file.name.replace(/\.[^.]+$/, ''))
+		}
+		reader.readAsText(file)
+		fileInput.value = ''
+	}
 
 	async function copyToClipboard() {
 		const text = appState.copyCurrentView()
@@ -21,9 +36,8 @@
 	}
 
 	const sizeLabel = $derived(() => {
-		if (appState.mode === 'json') return humanSize(appState.jsonSize)
-		if (appState.mode === 'rexc' || appState.mode === 'inspect') return humanSize(appState.rexcSize)
-		return ''
+		if (appState.mode === 'source' && appState.sourceFormat === 'json') return humanSize(appState.jsonSize)
+		return humanSize(appState.rexcSize)
 	})
 </script>
 
@@ -39,6 +53,22 @@
 		{#if sizeLabel()}
 			<span class="text-xs text-[#666]">{sizeLabel()}</span>
 		{/if}
+		<input bind:this={fileInput} type="file" accept=".json,.rexc,.rx" class="hidden" onchange={handleFileSelected} />
+		<button
+			onclick={openFile}
+			class="text-xs px-2.5 py-1 rounded-md border border-[#333] bg-[#111] text-[#888] hover:text-white hover:border-[#555] transition-colors cursor-pointer"
+		>
+			Open
+		</button>
+		<button
+			onclick={() => { appState.refsOpen = !appState.refsOpen }}
+			class="text-xs px-2.5 py-1 rounded-md border transition-colors cursor-pointer
+				{appState.refsOpen
+					? 'border-[#555] bg-[#1a1a1a] text-white'
+					: 'border-[#333] bg-[#111] text-[#888] hover:text-white hover:border-[#555]'}"
+		>
+			Refs
+		</button>
 		<button
 			onclick={copyToClipboard}
 			class="text-xs px-2.5 py-1 rounded-md border border-[#333] bg-[#111] text-[#888] hover:text-white hover:border-[#555] transition-colors cursor-pointer"

@@ -1,54 +1,18 @@
-/** Color palette for REXC node kinds, matching the dark theme. */
-export const KIND_COLORS: Record<string, string> = {
-	string: '#ce9178',
-	bareString: '#ce9178',
-	number: '#b5cea8',
-	integer: '#b5cea8',
-	decimal: '#b5cea8',
-	boolean: '#569cd6',
-	null: '#569cd6',
-	undefined: '#569cd6',
-	object: '#dcdcaa',
-	array: '#dcdcaa',
-	call: '#dcdcaa',
-	reference: '#c586c0',
-	pointer: '#c586c0',
-	pathChain: '#c586c0',
-	variable: '#9cdcfe',
-	self: '#9cdcfe',
-	opcode: '#4ec9b0',
-	when: '#c586c0',
-	unless: '#c586c0',
-	alt: '#c586c0',
-	all: '#c586c0',
-	forIn: '#c586c0',
-	forOf: '#c586c0',
-	while: '#c586c0',
-	set: '#f48771',
-	swap: '#f48771',
-	delete: '#f48771',
-	arrayComp: '#dcdcaa',
-	objectComp: '#dcdcaa',
-	loopControl: '#c586c0',
+/** Color palette for REXC tag characters. */
+export const TAG_COLORS: Record<string, string> = {
+	':': '#dcdcaa',   // object — gold
+	';': '#dcdcaa',   // array — gold
+	'+': '#b5cea8',   // integer — green
+	'*': '#b5cea8',   // float — green
+	',': '#ce9178',   // string — orange
+	"'": '#569cd6',   // ref — blue
+	'^': '#c586c0',   // pointer — purple
+	'.': '#c586c0',   // chain — purple
+	'#': '#666666',   // index — dim gray
 }
 
-/** Short tag labels for type pills. */
-export const KIND_TAGS: Record<string, string> = {
-	object: 'OBJ',
-	array: 'ARR',
-	pointer: 'PTR',
-	pathChain: 'CHAIN',
-	call: 'CALL',
-	when: 'WHEN',
-	unless: 'UNLESS',
-	alt: 'ALT',
-	all: 'ALL',
-	forIn: 'FORIN',
-	forOf: 'FOROF',
-	while: 'WHILE',
-	set: 'SET',
-	swap: 'SWAP',
-	delete: 'DEL',
-	arrayComp: 'ARRC',
-	objectComp: 'OBJC',
-}
+/** Color for b64 digits. */
+export const B64_COLOR = '#888'
+
+/** Color for annotations/comments. */
+export const DIM_COLOR = '#555'

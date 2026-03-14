@@ -1,69 +1,127 @@
-import { KIND_COLORS } from './colors.ts'
+import { TAG_COLORS, B64_COLOR, DIM_COLOR } from './colors.ts'
+import type { ASTNode } from '@creationix/rx'
 
 const textDecoder = new TextDecoder()
 
-// b64 digit characters
-const B64_CHARS = new Set('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_')
+const STR_COLOR = TAG_COLORS[',']!   // orange for string values
+const NUM_COLOR = TAG_COLORS['+']!   // green for numbers
+const PTR_COLOR = '#c586c0'          // purple for pointers
+const CHAIN_COLOR = '#4ec9b0'        // teal for chains
+const IDX_COLOR = TAG_COLORS['#']!   // gray for index
+const OBJ_COLOR = TAG_COLORS[':']!   // gold for objects/arrays
+const REF_COLOR = TAG_COLORS["'"]!   // blue for refs
 
-// Tag characters and their kind mappings
-const TAG_KINDS: Record<string, string> = {
-	'+': 'number',
-	'*': 'number',
-	':': 'string',
-	',': 'string',
-	'%': 'opcode',
-	'@': 'self',
-	"'": 'reference',
-	'$': 'variable',
-	'^': 'pointer',
-	';': 'loopControl',
-	'.': 'pathChain',
-	'=': 'set',
-	'/': 'swap',
-	'~': 'delete',
+/** Render an ASTNode as an HTML string for a single encoding row. */
+export function renderNode(node: ASTNode): string {
+	const tag = node.tag
+	const color = TAG_COLORS[tag] || '#d4d4d4'
+
+	// Raw bytes of the tag+b64 suffix: data[left..right)
+	const raw = textDecoder.decode(node.data.subarray(node.left, node.right))
+
+	switch (tag) {
+		case ',':
+			return `<span style="color:${color}">${escHtml(raw.charAt(0))}</span><span style="color:${B64_COLOR}">${escHtml(raw.slice(1))}</span>`
+		case "'":
+			return `<span style="color:${color}">${escHtml(raw)}</span>`
+		case '+':
+		case '*':
+		case ':':
+		case ';':
+		case '^':
+		case '.':
+			return `<span style="color:${color}">${escHtml(raw.charAt(0))}</span><span style="color:${B64_COLOR}">${escHtml(raw.slice(1))}</span>`
+		case '#':
+			return `<span style="color:${color}">${escHtml(raw.charAt(0))}</span><span style="color:${B64_COLOR}">${escHtml(raw.slice(1))}</span>`
+		default:
+			return `<span style="color:${color}">${escHtml(raw)}</span>`
+	}
 }
 
-const CONTAINER_CHARS = new Set('[]{}()')
-const MAX_CHARS = 500
+function pill(label: string, color: string, title?: string): string {
+	const tt = title ? ` title="${escHtml(title)}"` : ''
+	return `<span${tt} style="background:${color}22;color:${color};border:1px solid ${color}44;border-radius:3px;padding:0 3px;font-size:10px;margin-right:3px;">${label}</span>`
+}
 
-/**
- * Returns an HTML string with color-coded REXC bytes.
- * Truncation from the left is handled by CSS (direction: rtl + text-overflow: ellipsis)
- * on the container element. We just cap the source string to MAX_CHARS from the right.
- */
-export function colorizeBytes(input: Uint8Array, start: number, end: number, nodeKind: string): string {
-	const len = end - start
-	if (len <= 0) return ''
+function fmtStr(s: string): string {
+	const truncated = s.length > 200 ? s.slice(0, 197) + '...' : s
+	return `<span style="color:${STR_COLOR}">"${escHtml(truncated)}"</span>`
+}
 
-	const sliceStart = len > MAX_CHARS ? end - MAX_CHARS : start
-	const raw = textDecoder.decode(input.subarray(sliceStart, end))
+const TAG_PILL: Record<string, [string, string]> = {
+	',': ['str', STR_COLOR],
+	'.': ['chain', CHAIN_COLOR],
+	'^': ['ptr', PTR_COLOR],
+	':': ['obj', OBJ_COLOR],
+	';': ['arr', OBJ_COLOR],
+	'#': ['idx', IDX_COLOR],
+	'+': ['int', NUM_COLOR],
+	'*': ['dec', NUM_COLOR],
+	"'": ['ref', REF_COLOR],
+}
 
-	let html = ''
-	let i = 0
-
-	while (i < raw.length) {
-		const ch = raw[i]!
-		let color: string
-		let segEnd = i + 1
-
-		if (CONTAINER_CHARS.has(ch)) {
-			color = KIND_COLORS['object'] || '#dcdcaa'
-		} else if (TAG_KINDS[ch]) {
-			color = KIND_COLORS[TAG_KINDS[ch]!] || KIND_COLORS[nodeKind] || '#d4d4d4'
-		} else if (B64_CHARS.has(ch)) {
-			// Group consecutive b64 digits
-			while (segEnd < raw.length && B64_CHARS.has(raw[segEnd]!) && !TAG_KINDS[raw[segEnd]!]) segEnd++
-			color = '#999'
-		} else {
-			// String content or other bytes — use node kind color
-			while (segEnd < raw.length && !B64_CHARS.has(raw[segEnd]!) && !CONTAINER_CHARS.has(raw[segEnd]!) && !TAG_KINDS[raw[segEnd]!]) segEnd++
-			color = KIND_COLORS[nodeKind] || KIND_COLORS['string'] || '#ce9178'
+function resolveValueAnnotation(node: ASTNode): string {
+	try {
+		const r = node.resolve
+		// Show a pill for the resolved node's type if it differs from the source
+		let mid = ''
+		if (r !== node && r.tag !== node.tag) {
+			const p = TAG_PILL[r.tag]
+			if (p) mid = pill(p[0], p[1])
 		}
+		const v = r.value
+		if (typeof v === 'string') return `${mid}${fmtStr(v)}`
+		if (typeof v === 'number' || typeof v === 'boolean') return `${mid}<span style="color:${DIM_COLOR}">${v}</span>`
+		if (v === null) return `${mid}<span style="color:${DIM_COLOR}">null</span>`
+		if (v === undefined) return `${mid}<span style="color:${DIM_COLOR}">undefined</span>`
+		// For containers, add obj/arr pill only if not already shown via mid
+		const isArr = Array.isArray(v)
+		const cPill = (r.tag !== ':' && r.tag !== ';' && r.tag !== '#')
+			? pill(isArr ? 'arr' : 'obj', OBJ_COLOR) : ''
+		return `${mid}${cPill}<span style="color:${DIM_COLOR}">${r.length}</span>`
+	} catch { /* resolve can fail on malformed data */ }
+	return ''
+}
 
-		const text = raw.slice(i, segEnd).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-		html += `<span style="color:${color}">${text}</span>`
-		i = segEnd
+/** Annotation HTML for a node (shown after the main content). */
+export function annotateNode(node: ASTNode): string {
+	switch (node.tag) {
+		case '+': return `${pill('int', NUM_COLOR)}<span style="color:${NUM_COLOR}">${node.b64}</span>`
+		case '*': return `${pill('dec', NUM_COLOR)}<span style="color:${NUM_COLOR}">${node.value}</span>`
+		case ',': {
+			const content = textDecoder.decode(node.data.subarray(node.left - node.size, node.left))
+			return `${pill('str', STR_COLOR)}${fmtStr(content)}`
+		}
+		case "'": {
+			const v = node.value
+			if (v === null) return `${pill('ref', REF_COLOR)}<span style="color:${REF_COLOR}">null</span>`
+			if (v === true) return `${pill('ref', REF_COLOR)}<span style="color:${REF_COLOR}">true</span>`
+			if (v === false) return `${pill('ref', REF_COLOR)}<span style="color:${REF_COLOR}">false</span>`
+			if (v === undefined) return `${pill('ref', REF_COLOR)}<span style="color:${REF_COLOR}">undefined</span>`
+			if (typeof v === 'number') return `${pill('ref', REF_COLOR)}<span style="color:${REF_COLOR}">${v}</span>`
+			return pill('ref', REF_COLOR)
+		}
+		case ':': return `${pill('obj', OBJ_COLOR)}<span style="color:${DIM_COLOR}">${node.length}</span>`
+		case ';': return `${pill('arr', OBJ_COLOR)}<span style="color:${DIM_COLOR}">${node.length}</span>`
+		case '^': {
+			const target = String(node.left - (node.b64 as number))
+			const val = resolveValueAnnotation(node)
+			if (!val) return pill('ptr', PTR_COLOR, `→ @${target}`)
+			return `${pill('ptr', PTR_COLOR, `→ @${target}`)}${val}`
+		}
+		case '.': {
+			const val = resolveValueAnnotation(node)
+			if (!val) return ''
+			return `${pill('chain', CHAIN_COLOR)}${val}`
+		}
+		case '#': {
+			const b64 = node.b64 as { count: number; width: number }
+			return `${pill('idx', IDX_COLOR)}<span style="color:${DIM_COLOR}">${b64.count}×${b64.width}</span>`
+		}
+		default: return ''
 	}
+}
 
-	return html
+function escHtml(s: string): string {
+	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
