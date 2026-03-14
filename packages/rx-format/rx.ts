@@ -81,6 +81,7 @@ const _empty = new Uint8Array(0);
 const _k: Cursor = makeCursor(_empty); // key/temp cursor
 const _s: Cursor = makeCursor(_empty); // schema cursor
 const _cc: Cursor = makeCursor(_empty); // collectChildren cursor (separate from _k to avoid conflict with read())
+const _cmp: Cursor = makeCursor(_empty); // comparison scratch cursor (strCompare/strEquals/strHasPrefix)
 
 // ── Core parsing ──
 
@@ -242,12 +243,19 @@ export function readStr(c: Cursor): string {
 }
 
 /** Resolve a node to a string, following pointers and concatenating chains.
- *  For plain "str" nodes this is just readStr. */
+ *  For plain "str" nodes this is just readStr.
+ *  Non-destructive: restores cursor state before returning. */
 export function resolveStr(c: Cursor): string {
+  const savedLeft = c.left, savedRight = c.right, savedTag = c.tag, savedVal = c.val;
+  const result = _resolveStr(c);
+  c.left = savedLeft; c.right = savedRight; c.tag = savedTag; c.val = savedVal;
+  return result;
+}
+
+function _resolveStr(c: Cursor): string {
   while (c.tag === "ptr") { c.right = c.val; read(c); }
   if (c.tag === "str") return readStr(c);
   if (c.tag === "chain") {
-    // Save chain boundaries before iterating (read() overwrites c.left)
     const parts: string[] = [];
     let right = c.val;
     const left = c.left;
@@ -255,7 +263,7 @@ export function resolveStr(c: Cursor): string {
       c.right = right;
       read(c);
       right = c.left;
-      parts.push(resolveStr(c));
+      parts.push(_resolveStr(c));
     }
     return parts.join("");
   }
@@ -306,22 +314,27 @@ function nodeCompare(c: Cursor, key: Uint8Array, offset: number): { cmp: number;
   return { cmp: NaN, offset };
 }
 
-/** Compare cursor's string against target. Returns <0, 0, >0, or NaN if not a string node. */
+/** Compare cursor's string against target. Returns <0, 0, >0, or NaN if not a string node.
+ *  Non-destructive: uses an internal scratch cursor, leaving c unchanged. */
 export function strCompare(c: Cursor, target: Uint8Array): number {
-  const { cmp, offset } = nodeCompare(c, target, 0);
+  _cmp.data = c.data; _cmp.left = c.left; _cmp.right = c.right; _cmp.tag = c.tag; _cmp.val = c.val;
+  const { cmp, offset } = nodeCompare(_cmp, target, 0);
   if (cmp !== 0) return cmp;
   return offset < target.length ? -1 : 0;
 }
 
-/** Zero-alloc equality check: does cursor's string match target? */
+/** Zero-alloc equality check: does cursor's string match target?
+ *  Non-destructive: uses an internal scratch cursor, leaving c unchanged. */
 export function strEquals(c: Cursor, target: Uint8Array): boolean {
   return strCompare(c, target) === 0;
 }
 
-/** Zero-alloc prefix check: does cursor's string start with prefix? */
+/** Zero-alloc prefix check: does cursor's string start with prefix?
+ *  Non-destructive: uses an internal scratch cursor, leaving c unchanged. */
 export function strHasPrefix(c: Cursor, prefix: Uint8Array): boolean {
   if (prefix.length === 0) return true;
-  const { offset } = nodeCompare(c, prefix, 0);
+  _cmp.data = c.data; _cmp.left = c.left; _cmp.right = c.right; _cmp.tag = c.tag; _cmp.val = c.val;
+  const { offset } = nodeCompare(_cmp, prefix, 0);
   return offset === prefix.length;
 }
 
@@ -392,10 +405,9 @@ export function findKey(c: Cursor, container: Cursor, target: string | Uint8Arra
     }
     if (lo < container.ixCount) {
       seekChild(c, container, lo);
-      const keyLeft = c.left; // save before strEquals may follow pointers/chains
       if (strEquals(c, target)) {
         c.data = data;
-        c.right = keyLeft;
+        c.right = c.left;
         read(c);
         return true;
       }
@@ -427,11 +439,10 @@ export function findKey(c: Cursor, container: Cursor, target: string | Uint8Arra
       while (keyRight > keyEnd && valRight > end) {
         _k.right = keyRight;
         read(_k);
-        const keyLeft = _k.left; // save before keyEquals may follow pointers/chains
         const matched = keyEquals(target);
         // Skip schema value using _s
         _s.data = data;
-        _s.right = keyLeft;
+        _s.right = _k.left;
         read(_s);
         keyRight = _s.left;
 
@@ -476,16 +487,15 @@ export function findKey(c: Cursor, container: Cursor, target: string | Uint8Arra
   while (right > end) {
     _k.right = right;
     read(_k);
-    const keyLeft = _k.left; // save before keyEquals may follow pointers/chains
     if (keyEquals(target)) {
       c.data = data;
-      c.right = keyLeft;
+      c.right = _k.left;
       read(c);
       return true;
     }
     // Skip value
     c.data = data;
-    c.right = keyLeft;
+    c.right = _k.left;
     read(c);
     right = c.left;
   }
@@ -611,14 +621,20 @@ function _openContext(buffer: Uint8Array, refs?: Refs): OpenContext {
     return name in refs ? refs[name] : undefined;
   }
 
-  /** Resolve a cursor to a string, following ptrs, chains, and refs (for key positions). */
+  /** Resolve a cursor to a string, following ptrs, chains, and refs (for key positions).
+   *  Non-destructive: restores cursor state before returning. */
   function resolveKeyStr(c: Cursor): string {
+    const savedLeft = c.left, savedRight = c.right, savedTag = c.tag, savedVal = c.val;
     while (c.tag === "ptr") { c.right = c.val; read(c); }
+    let result: string;
     if (c.tag === "ref" && refs) {
       const val = resolveRef(c);
-      if (typeof val === "string") return val;
+      result = typeof val === "string" ? val : resolveStr(c);
+    } else {
+      result = resolveStr(c);
     }
-    return resolveStr(c);
+    c.left = savedLeft; c.right = savedRight; c.tag = savedTag; c.val = savedVal;
+    return result;
   }
 
   function wrap(c: Cursor): unknown {

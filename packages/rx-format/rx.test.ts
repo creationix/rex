@@ -2643,3 +2643,112 @@ describe("inspect() JSON.stringify", () => {
 		expect(ptr.children).toBeUndefined();
 	});
 });
+
+// ── Regression: cursor corruption after strEquals/strHasPrefix/resolveKeyStr ──
+
+describe("cursor corruption regressions", () => {
+	// To trigger these bugs, keys must be encoded as pointers (^) — which
+	// happens when the same string was already written as a value earlier.
+	// We include key strings as values in an "_index" entry so the encoder
+	// deduplicates the keys as pointers. 20+ keys ensures indexing is used.
+
+	/** Build an indexed object whose keys are pointer-deduplicated.
+	 *  The "_index" array contains the key strings as values so they're
+	 *  written first; when the encoder later writes them as keys, it emits
+	 *  pointer (^) nodes instead of inline strings. */
+	function buildPointerKeyObject(keys: string[], valueFn: (k: string, i: number) => unknown) {
+		const obj: Record<string, unknown> = {};
+		for (let i = 0; i < keys.length; i++) obj[keys[i]!] = valueFn(keys[i]!, i);
+		obj["_index"] = keys; // forces key strings to be written as values first
+		return obj;
+	}
+
+	test("findKey on indexed object with pointer keys returns correct value", () => {
+		const keys = Array.from({ length: 20 }, (_, i) => `/blog/post-${i}`);
+		keys.push("/blog/[slug]");
+		const obj = buildPointerKeyObject(keys, (k, i) =>
+			k === "/blog/[slug]" ? { id: 99, content: "hello" } : { id: i });
+
+		const data = encode(obj);
+		const c = makeCursor(data);
+		read(c);
+		expect(c.ixWidth).toBeGreaterThan(0); // confirm indexed
+
+		const v = makeCursor(data);
+		expect(findKey(v, c, "/blog/[slug]")).toBe(true);
+		expect(v.tag).toBe("object"); // value is an object, not a stray string
+		const inner = makeCursor(data);
+		expect(findKey(inner, v, "id")).toBe(true);
+		expect(inner.val).toBe(99);
+	});
+
+	test("Proxy open() on indexed object with pointer keys", () => {
+		const keys = Array.from({ length: 20 }, (_, i) => `/blog/post-${i}`);
+		keys.push("/blog/[slug]");
+		const obj = buildPointerKeyObject(keys, (k, i) =>
+			k === "/blog/[slug]" ? { id: 42, content: "hello" } : { id: i });
+
+		const data = encode(obj);
+		const root = open(data) as Record<string, any>;
+
+		expect(root["/blog/[slug]"]).toBeDefined();
+		expect(root["/blog/[slug]"].id).toBe(42);
+		expect(root["/blog/[slug]"].content).toBe("hello");
+		expect(root["/blog/post-3"].id).toBe(3);
+	});
+
+	test("findByPrefix on indexed object with pointer keys returns correct values", () => {
+		const keys = Array.from({ length: 20 }, (_, i) => `/api/route-${i}`);
+		const obj = buildPointerKeyObject(keys, (_, i) => i);
+
+		const data = encode(obj);
+		const c = makeCursor(data);
+		read(c);
+		expect(c.ixWidth).toBeGreaterThan(0);
+
+		const results: [string, number][] = [];
+		const v = makeCursor(data);
+		findByPrefix(v, c, "/api/route-", (key, value) => {
+			results.push([resolveStr(key), value.val]);
+		});
+		expect(results).toHaveLength(20);
+		for (let i = 0; i < 20; i++) {
+			expect(results.find(([k]) => k === `/api/route-${i}`)?.[1]).toBe(i);
+		}
+	});
+
+	test("filteredKeys on indexed inspect node with pointer keys", () => {
+		const keys = Array.from({ length: 20 }, (_, i) => `/page/item-${i}`);
+		const obj = buildPointerKeyObject(keys, (_, i) => i * 10);
+
+		const data = encode(obj);
+		const node = inspect(data);
+
+		const matches = [...node.filteredKeys("/page/item-")];
+		expect(matches).toHaveLength(20);
+		for (const [keyNode, valNode] of matches) {
+			const key = keyNode.value as string;
+			expect(key).toMatch(/^\/page\/item-\d+$/);
+			const idx = parseInt(key.replace("/page/item-", ""));
+			expect(valNode.value).toBe(idx * 10);
+		}
+	});
+
+	test("ensureKeyMap with array schema and pointer keys resolves correctly", () => {
+		// Multiple objects sharing a schema with path-like keys.
+		// The encoder deduplicates repeated key sets as schemas.
+		const items = [];
+		for (let i = 0; i < 4; i++) {
+			items.push({ "/data/alpha": i, "/data/beta": i * 10, "/data/gamma": i * 100 });
+		}
+
+		const data = encode(items);
+		const root = open(data) as any[];
+
+		for (let i = 0; i < 4; i++) {
+			expect(root[i]["/data/alpha"]).toBe(i);
+			expect(root[i]["/data/beta"]).toBe(i * 10);
+			expect(root[i]["/data/gamma"]).toBe(i * 100);
+		}
+	});
+});
