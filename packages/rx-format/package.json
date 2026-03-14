@@ -1,6 +1,6 @@
 {
 	"name": "@creationix/rx",
-	"version": "0.6.2",
+	"version": "0.6.3",
 	"description": "REXC encoder, decoder, and CLI data tool",
 	"keywords": [
 		"rexc",
@@ -12,24 +12,24 @@
 	],
 	"type": "module",
 	"bin": {
-		"rx": "dist/rx-cli.js"
+		"rx": "rx-cli.ts"
 	},
-	"main": "dist/rx.js",
-	"types": "dist/rx.d.ts",
+	"main": "rx.ts",
 	"exports": {
-		".": {
-			"types": "./dist/rx.d.ts",
-			"default": "./dist/rx.js"
-		}
+		".": "./rx.ts"
 	},
 	"files": [
 		"README.md",
 		"LICENSE",
-		"dist"
+		"b64.ts",
+		"rx.ts",
+		"rx-cli.ts"
 	],
+	"engines": {
+		"node": ">=24"
+	},
 	"scripts": {
-		"build": "bun build rx.ts --outfile dist/rx.js --target node && bun build rx-cli.ts --outfile dist/rx-cli.js --target node --banner \"#!/usr/bin/env node\" && tsc",
-		"prepublishOnly": "bun test && bun run build",
+		"prepublishOnly": "bun test",
 		"test": "bun test"
 	},
 	"publishConfig": {
