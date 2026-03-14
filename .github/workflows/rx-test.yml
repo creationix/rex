@@ -4,9 +4,11 @@ on:
   push:
     paths:
       - 'packages/rx-format/**'
+      - '.github/workflows/rx-test.yml'
   pull_request:
     paths:
       - 'packages/rx-format/**'
+      - '.github/workflows/rx-test.yml'
 
 jobs:
   bun:
