@@ -1,4 +1,4 @@
-import { open } from "./rx";
+import { open, inspect, stringify, encode, makeCursor, read } from "./rx";
 import { readdirSync } from "node:fs";
 import { readFile, writeFile, mkdir, unlink, lstat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -20,11 +20,10 @@ let C = createColors(false);
 // ── Types & arg parsing ──────────────────────────────────────
 
 type Format = "json" | "rexc";
-type OutputFormat = "json" | "rexc" | "tree";
+type OutputFormat = "json" | "rexc" | "tree" | "ast" | "other";
 
 type RxOptions = {
 	files: string[];
-	fromFormat?: Format;
 	toFormat?: OutputFormat;
 	select?: string[];
 	out?: string;
@@ -41,20 +40,15 @@ function parseArgs(argv: string[]): RxOptions {
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i]!;
 		if (arg === "-h" || arg === "--help") { opts.help = true; continue; }
-		if (arg === "--color") { opts.color = true; continue; }
+		if (arg === "-c" || arg === "--color") { opts.color = true; continue; }
 		if (arg === "--no-color") { opts.color = false; continue; }
 		if (arg === "-j" || arg === "--json") { opts.toFormat = "json"; continue; }
 		if (arg === "-r" || arg === "--rexc") { opts.toFormat = "rexc"; continue; }
 		if (arg === "-t" || arg === "--tree") { opts.toFormat = "tree"; continue; }
-		if (arg === "--from") {
-			const v = argv[++i];
-			if (v !== "json" && v !== "rexc") throw new Error("--from must be 'json' or 'rexc'");
-			opts.fromFormat = v;
-			continue;
-		}
+		if (arg === "-a" || arg === "--ast") { opts.toFormat = "ast"; continue; }
 		if (arg === "--to") {
 			const v = argv[++i];
-			if (v !== "json" && v !== "rexc" && v !== "tree") throw new Error("--to must be 'json', 'rexc', or 'tree'");
+			if (v !== "json" && v !== "rexc" && v !== "tree" && v !== "ast") throw new Error("--to must be 'json', 'rexc', 'tree', or 'ast'");
 			opts.toFormat = v;
 			continue;
 		}
@@ -84,39 +78,39 @@ function parseArgs(argv: string[]): RxOptions {
 
 function usage(): string {
 	return [
+		"",
 		"rx — inspect, convert, and filter REXC & JSON data.",
 		"",
 		"Usage:",
-		"  rx data.rexc                   Pretty-print rexc as a tree",
-		"  rx data.rexc --to json         Convert rexc to JSON",
-		"  cat data.rexc | rx             Read from stdin (auto-detect)",
-		"  rx data.rexc -s routes 0 op    Select a sub-value",
+		"  rx data.rx                 Pretty-print as a tree",
+		"  rx data.rx -j              Convert to JSON",
+		"  rx data.json -r            Convert to REXC",
+		"  cat data.rx | rx           Read from stdin (auto-detect)",
+		"  rx data.rx -s key 0 sub    Select a sub-value",
 		"",
 		"Input:",
-		"  <file>              Read from file (format auto-detected by extension)",
-		"  -                   Read from stdin explicitly",
-		"  (no args, piped)    Read from stdin automatically",
+		"  <file>                     File (format auto-detected by contents)",
+		"  -                          Read from stdin explicitly",
+		"  (no args, piped)           Read from stdin automatically",
 		"",
-		"Format control:",
-		"  --from json|rexc    Force input format (default: auto-detect)",
-		"  --to json|tree      Output format",
-		"  -j, --json          Shortcut for --to json",
-		"  -t, --tree          Shortcut for --to tree",
-		"",
-		"  Default output: tree on TTY, json when piped.",
+		"Format:",
+		"  -j, --json                 Output as JSON",
+		"  -r, --rexc                 Output as REXC",
+		"  -t, --tree                 Output as tree (default on TTY)",
+		"  -a, --ast                  Output encoding structure as JSON",
 		"",
 		"Filtering:",
-		"  -s, --select <seg>  Space-delimited selector segments (e.g. -s foo bar 0 baz)",
+		"  -s, --select <seg>...      Select a sub-value (e.g. -s foo bar 0 baz)",
 		"",
 		"Output:",
-		"  -o, --out <path>    Write to file instead of stdout",
-		"  --color             Force ANSI color",
-		"  --no-color          Disable ANSI color",
-		"  -h, --help          Show this message",
+		"  -o, --out <path>           Write to file instead of stdout",
+		"  -c, --color / --no-color   Force or disable ANSI color",
+		"  -h, --help                 Show this message",
 		"",
 		"Shell completions:",
-		"  rx --completions setup [zsh|bash]  Install tab completions",
-		"  rx --completions zsh|bash          Print completion script to stdout",
+		"  rx --completions setup [zsh|bash]   Install tab completions",
+		"  rx --completions zsh|bash           Print completion script to stdout",
+		""
 	].join("\n");
 }
 
@@ -129,11 +123,14 @@ function formatFromExt(path: string): Format | undefined {
 }
 
 function detectFormat(content: string): Format {
-	const t = content.trimStart();
-	if (/^[\[{"0-9tfn\-]/.test(t)) {
-		try { JSON.parse(content); return "json"; } catch { /* not json */ }
-	}
-	return "rexc";
+	const bytes = new TextEncoder().encode(content.trim());
+	if (bytes.length === 0) return "rexc";
+	try {
+		const c = makeCursor(bytes);
+		read(c);
+		if (c.left === 0) return "rexc";
+	} catch { /* not valid rexc */ }
+	return "json";
 }
 
 async function readStdin(): Promise<string> {
@@ -144,18 +141,42 @@ async function readStdin(): Promise<string> {
 	return Buffer.concat(chunks).toString("utf8");
 }
 
-function parseRaw(raw: string, format: Format): unknown {
-	if (format === "json") return JSON.parse(raw);
-	return open(new TextEncoder().encode(raw.trim()));
+type ParsedInput = { value: unknown; rexcBytes?: Uint8Array };
+
+function stripJsonComments(s: string): string {
+	let out = "", i = 0;
+	while (i < s.length) {
+		if (s[i] === '"') {
+			const start = i++;
+			while (i < s.length && s[i] !== '"') { if (s[i] === '\\') i++; i++; }
+			out += s.slice(start, ++i);
+		} else if (s[i] === '/' && s[i + 1] === '/') {
+			i += 2;
+			while (i < s.length && s[i] !== '\n') i++;
+		} else if (s[i] === '/' && s[i + 1] === '*') {
+			i += 2;
+			while (i < s.length && !(s[i] === '*' && s[i + 1] === '/')) i++;
+			i += 2;
+		} else {
+			out += s[i++];
+		}
+	}
+	return out;
 }
 
-async function readOne(file: string, fromFormat?: Format): Promise<unknown> {
+function parseRaw(raw: string, format: Format): ParsedInput {
+	if (format === "json") return { value: JSON.parse(stripJsonComments(raw)) };
+	const bytes = new TextEncoder().encode(raw.trim());
+	return { value: open(bytes), rexcBytes: bytes };
+}
+
+async function readOne(file: string): Promise<ParsedInput> {
 	const raw = file === "-" ? await readStdin() : await readFile(file, "utf8");
-	const format = fromFormat ?? (file === "-" ? detectFormat(raw) : formatFromExt(file) ?? detectFormat(raw));
+	const format = file === "-" ? detectFormat(raw) : formatFromExt(file) ?? detectFormat(raw);
 	return parseRaw(raw, format);
 }
 
-async function readInput(opts: RxOptions): Promise<unknown> {
+async function readInput(opts: RxOptions): Promise<ParsedInput> {
 	if (opts.files.length === 0) {
 		if (process.stdin.isTTY) {
 			const c = opts.color;
@@ -166,27 +187,28 @@ async function readInput(opts: RxOptions): Promise<unknown> {
 			process.stderr.write([
 				`${bold}rx${reset} — inspect, convert, and filter REXC & JSON data.`,
 				"",
-				`${dim}Usage:${reset}`,
-				`  ${cyan}rx${reset} ${dim}<file>${reset}               Pretty-print as a tree`,
-				`  ${cyan}rx${reset} ${dim}<file>${reset} ${cyan}--to json${reset}     Convert to JSON`,
-				`  cat data.rexc | ${cyan}rx${reset}      Read from stdin`,
+				`${dim}Usage: (file can be .json or .rx)${reset}`,
+				`  ${cyan}rx${reset} ${dim}<file>${reset}                Pretty-print as a tree`,
+				`  ${cyan}rx${reset} ${dim}<file>${reset} ${cyan}-j${reset}|${cyan}-r${reset}          Convert to JSON/REXC`,
+				`  cat data.rx | ${cyan}rx${reset}         Read from stdin`,
 				`  ${cyan}rx${reset} ${dim}<file>${reset} ${cyan}-s${reset} ${dim}key 0 sub${reset}   Select a sub-value`,
+				`  ${cyan}rx${reset} ${dim}<file>${reset} ${cyan}-o${reset} ${dim}out.json${reset}    Write to file`,
 				"",
-				`Run ${cyan}rx --help${reset} for full usage.`,
+				`Run ${cyan}rx --help${reset} for full options.`,
 				"",
 			].join("\n"));
 			process.exit(1);
 		}
 		const raw = await readStdin();
 		if (!raw.trim()) throw new Error("Empty stdin.");
-		return parseRaw(raw, opts.fromFormat ?? detectFormat(raw));
+		return parseRaw(raw, detectFormat(raw));
 	}
 
-	if (opts.files.length === 1) return readOne(opts.files[0]!, opts.fromFormat);
+	if (opts.files.length === 1) return readOne(opts.files[0]!);
 
 	const values: unknown[] = [];
-	for (const file of opts.files) values.push(await readOne(file, opts.fromFormat));
-	return values;
+	for (const file of opts.files) values.push((await readOne(file)).value);
+	return { value: values };
 }
 
 // ── Selector ─────────────────────────────────────────────────
@@ -378,7 +400,7 @@ function normalizeForJson(value: unknown, inArray: boolean): unknown {
 	return out;
 }
 
-function formatOutput(value: unknown, format: OutputFormat, color: boolean): string {
+function formatOutput(value: unknown, format: OutputFormat, color: boolean, rexcBytes?: Uint8Array): string {
 	if (format === "tree") {
 		const text = treeStringify(value);
 		if (!color) return text;
@@ -388,15 +410,24 @@ function formatOutput(value: unknown, format: OutputFormat, color: boolean): str
 		const text = JSON.stringify(normalizeForJson(value, false), null, 2) ?? "null";
 		return color ? highlightJSON(text) : text;
 	}
-	throw new Error("TODO: rexc encoding is not yet supported. Use --to json or --to tree.");
+	if (format === "ast") {
+		const bytes = rexcBytes ?? encode(value);
+		const ast = inspect(bytes);
+		const text = JSON.stringify(ast, null, 2);
+		return color ? highlightJSON(text) : text;
+	}
+	if (format === "rexc") {
+		return stringify(value) ?? "";
+	}
+	throw new Error(`Unsupported output format: ${format}`);
 }
 
 // ── Shell completions ────────────────────────────────────────
 
-const FLAGS_WITH_VALUE = new Set(["-o", "--out", "--from", "--to"]);
-const ALL_FLAGS = ["-h", "--help", "-j", "--json", "-r", "--rexc", "-t", "--tree",
-	"--from", "--to", "-s", "--select", "-o", "--out", "--color", "--no-color"];
-const DATA_EXTENSIONS = [".json", ".rexc", ".rex"];
+const FLAGS_WITH_VALUE = new Set(["-o", "--out", "--to"]);
+const ALL_FLAGS = ["-h", "--help", "-j", "--json", "-r", "--rexc", "-t", "--tree", "-a", "--ast",
+	"--to", "-s", "--select", "-o", "--out", "-c", "--color", "--no-color"];
+const DATA_EXTENSIONS = [".json", ".rexc", ".rx"];
 
 function findSelectIndex(words: string[]): number {
 	for (let i = 0; i < words.length - 1; i++) {
@@ -419,20 +450,51 @@ function extractFiles(words: string[]): string[] {
 	return files;
 }
 
+function shellUnescape(s: string): string { return s.replace(/\\(.)/g, "$1"); }
+function shellEscape(s: string): string { return s.replace(/([ ()\[\]{}'"\\!#$&*?;<>|`^~])/g, "\\$1"); }
+
 function listFiles(prefix: string, dataOnly: boolean): string[] {
-	const dir = prefix.includes("/") ? dirname(prefix) : ".";
-	const partial = prefix.includes("/") ? basename(prefix) : prefix;
+	prefix = shellUnescape(prefix);
+	const home = homedir();
+	// Normalize expanded home dir back to ~ (bun may expand ~ in argv)
+	if (prefix === home) return ["~/"];
+	if (prefix.startsWith(home + "/")) prefix = "~/" + prefix.slice(home.length + 1);
+	if (prefix === "~") return ["~/"];
+	const tildePrefix = prefix.startsWith("~/");
+	if (tildePrefix) {
+		const rest = prefix.slice(2);
+		prefix = rest ? join(home, rest) : home + "/";
+	}
+	let dir: string, partial: string;
+	if (prefix.endsWith("/")) {
+		dir = prefix.slice(0, -1);
+		partial = "";
+	} else if (prefix.includes("/")) {
+		dir = dirname(prefix);
+		partial = basename(prefix);
+	} else {
+		dir = ".";
+		partial = prefix;
+	}
 	try {
 		const entries = readdirSync(dir, { withFileTypes: true });
 		const results: string[] = [];
+		// readdirSync omits . and .., so offer them as navigation targets
+		if (!prefix.includes("/")) {
+			if (".".startsWith(partial)) results.push("./");
+			if ("..".startsWith(partial)) results.push("../");
+		}
 		for (const entry of entries) {
 			if (!entry.name.startsWith(partial)) continue;
 			if (entry.name.startsWith(".") && !partial.startsWith(".")) continue;
-			const rel = dir === "." ? entry.name : join(dir, entry.name);
+			let rel = dir === "." ? entry.name : join(dir, entry.name);
+			const escaped = tildePrefix
+				? "~/" + shellEscape(rel.slice(home.length + 1))
+				: shellEscape(rel);
 			if (entry.isDirectory()) {
-				results.push(rel + "/");
+				results.push(escaped + "/");
 			} else if (!dataOnly || DATA_EXTENSIONS.some(ext => entry.name.endsWith(ext))) {
-				results.push(rel);
+				results.push(escaped);
 			}
 		}
 		return results.sort();
@@ -518,8 +580,7 @@ async function handleCompletions(argv: string[]) {
 	const current = words[words.length - 1]!;
 	const prev = words.length >= 2 ? words[words.length - 2] : undefined;
 
-	if (prev === "--from") return printCompletions(["json", "rexc"]);
-	if (prev === "--to") return printCompletions(["json", "rexc", "tree"]);
+	if (prev === "--to") return printCompletions(["json", "rexc", "tree", "ast"]);
 	if (prev === "-o" || prev === "--out") return printCompletions(listFiles(current, false));
 
 	const selectIdx = findSelectIndex(words);
@@ -530,7 +591,7 @@ async function handleCompletions(argv: string[]) {
 			try {
 				const raw = await readFile(files[0]!, "utf8");
 				const format = formatFromExt(files[0]!) ?? detectFormat(raw);
-				const value = parseRaw(raw, format);
+				const { value } = parseRaw(raw, format);
 				return printCompletions(generateCompletions(value, segments, current));
 			} catch { /* can't parse, no completions */ }
 		}
@@ -556,6 +617,8 @@ _rx() {
 	local last="\${words[$CURRENT]}"
 	if [[ "$last" == -* ]] || (( in_select )); then
 		compadd -Q -S '' -- "\${results[@]}"
+	elif [[ "$last" == '~'* ]]; then
+		compadd -U -Q -S '' -- "\${results[@]}"
 	else
 		compadd -Q -f -S '' -- "\${results[@]}"
 	fi
@@ -634,8 +697,10 @@ async function main() {
 
 	C = createColors(opts.color);
 
-	const toFormat: OutputFormat = opts.toFormat ?? (process.stdout.isTTY ? "tree" : "json");
-	const parsed = await readInput(opts);
+	const { value: parsed, rexcBytes } = await readInput(opts);
+	const toFormat: OutputFormat = opts.toFormat === "other"
+		? (rexcBytes ? "json" : "rexc")
+		: opts.toFormat ?? (process.stdout.isTTY ? "tree" : (rexcBytes ? "json" : "rexc"));
 	const value = opts.select ? applySelector(parsed, opts.select) : parsed;
 
 	// Stream tree to stdout line-by-line
@@ -647,7 +712,7 @@ async function main() {
 		return;
 	}
 
-	const out = formatOutput(value, toFormat, opts.color);
+	const out = formatOutput(value, toFormat, opts.color, rexcBytes);
 
 	if (opts.out) {
 		await writeFile(opts.out, out + "\n", "utf8");

@@ -18,6 +18,8 @@ import {
 	prepareKey,
 	strHasPrefix,
 	findByPrefix,
+	inspect,
+	type ASTNode,
 } from "./rx";
 
 function cur(value: unknown, opts?: Parameters<typeof encode>[1]) {
@@ -2173,5 +2175,471 @@ describe("round-trip", () => {
 		expect(result["0"]).toBe("zero");
 		expect(result["1"]).toBe("one");
 		expect(result["10"]).toBe("ten");
+	});
+});
+
+// ── inspect() tests ──
+
+function inspected(value: unknown, opts?: Parameters<typeof encode>[1]) {
+	return inspect(encode(value, opts), opts?.refs);
+}
+
+function childArray(node: ASTNode): ASTNode[] {
+	return [...node];
+}
+
+describe("inspect() node fields", () => {
+	test("integer", () => {
+		const node = inspected(42);
+		expect(node.tag).toBe("+");
+		expect(node.b64).toBe(42);
+		expect(node.size).toBe(0);
+		expect(node.left).toBe(node.right - 1 - 2); // tag + b64 digits
+		expect(node.value).toBe(42);
+		expect(childArray(node)).toHaveLength(0);
+	});
+
+	test("negative integer", () => {
+		const node = inspected(-7);
+		expect(node.tag).toBe("+");
+		expect(node.b64).toBe(-7);
+		expect(node.size).toBe(0);
+		expect(node.value).toBe(-7);
+	});
+
+	test("zero", () => {
+		const node = inspected(0);
+		expect(node.tag).toBe("+");
+		expect(node.b64).toBe(0);
+		expect(node.value).toBe(0);
+	});
+
+	test("float (decimal)", () => {
+		const node = inspected(3.14);
+		expect(node.tag).toBe("*");
+		expect(typeof node.b64).toBe("number"); // exponent
+		expect(node.size).toBeGreaterThan(0); // has integer child
+		expect(node.value).toBeCloseTo(3.14);
+		const children = childArray(node);
+		expect(children).toHaveLength(1);
+		expect(children[0].tag).toBe("+"); // integer base
+	});
+
+	test("string", () => {
+		const node = inspected("hello");
+		expect(node.tag).toBe(",");
+		expect(node.b64).toBe(5); // byte length of "hello"
+		expect(node.size).toBe(5);
+		expect(node.value).toBe("hello");
+	});
+
+	test("ref builtins", () => {
+		const n = inspected(null);
+		expect(n.tag).toBe("'");
+		expect(n.b64).toBe("n");
+		expect(n.size).toBe(0);
+		expect(n.value).toBe(null);
+
+		const t = inspected(true);
+		expect(t.tag).toBe("'");
+		expect(t.b64).toBe("t");
+		expect(t.value).toBe(true);
+
+		const f = inspected(false);
+		expect(f.tag).toBe("'");
+		expect(f.b64).toBe("f");
+		expect(f.value).toBe(false);
+
+		const u = inspected(undefined);
+		expect(u.tag).toBe("'");
+		expect(u.b64).toBe("u");
+		expect(u.value).toBe(undefined);
+	});
+
+	test("special floats", () => {
+		const inf = inspected(Infinity);
+		expect(inf.tag).toBe("'");
+		expect(inf.b64).toBe("inf");
+		expect(inf.value).toBe(Infinity);
+
+		const ninf = inspected(-Infinity);
+		expect(ninf.tag).toBe("'");
+		expect(ninf.b64).toBe("nif");
+		expect(ninf.value).toBe(-Infinity);
+
+		const nan = inspected(NaN);
+		expect(nan.tag).toBe("'");
+		expect(nan.b64).toBe("nan");
+		expect(nan.value).toBeNaN();
+	});
+
+	test("empty string", () => {
+		const node = inspected("");
+		expect(node.tag).toBe(",");
+		expect(node.b64).toBe(0);
+		expect(node.size).toBe(0);
+		expect(node.value).toBe("");
+	});
+});
+
+describe("inspect() containers", () => {
+	test("empty array", () => {
+		const node = inspected([]);
+		expect(node.tag).toBe(";");
+		expect(node.b64).toBe(0);
+		expect(node.size).toBe(0);
+		expect(childArray(node)).toHaveLength(0);
+		expect((node.value as any).length).toBe(0);
+	});
+
+	test("simple array", () => {
+		const node = inspected([1, 2, 3]);
+		expect(node.tag).toBe(";");
+		expect(node.size).toBeGreaterThan(0);
+		const children = childArray(node);
+		expect(children).toHaveLength(3);
+		expect(children[0].tag).toBe("+");
+		expect(children[0].b64).toBe(1);
+		expect(children[1].b64).toBe(2);
+		expect(children[2].b64).toBe(3);
+	});
+
+	test("empty object", () => {
+		const node = inspected({});
+		expect(node.tag).toBe(":");
+		expect(node.b64).toBe(0);
+		expect(node.size).toBe(0);
+		expect(childArray(node)).toHaveLength(0);
+	});
+
+	test("simple object — interleaved key/value children", () => {
+		const node = inspected({ a: 1 });
+		expect(node.tag).toBe(":");
+		const children = childArray(node);
+		// Should have key and value as children
+		expect(children.length).toBe(2);
+		// First child (rightmost in buffer = key "a")
+		expect(children[0].tag).toBe(","); // string key
+		expect(children[0].value).toBe("a");
+		// Second child = value 1
+		expect(children[1].tag).toBe("+");
+		expect(children[1].b64).toBe(1);
+	});
+
+	test("chain", () => {
+		const node = inspected("/foo/bar/baz", { chainSplit: "/" });
+		// Depending on dedup, might be a plain string or a chain
+		if (node.tag === ".") {
+			expect(node.size).toBeGreaterThan(0);
+			const children = childArray(node);
+			expect(children.length).toBeGreaterThan(0);
+		}
+	});
+});
+
+describe("inspect() indexed containers", () => {
+	test("large array has # index child", () => {
+		const arr = Array.from({ length: 50 }, (_, i) => i);
+		const node = inspected(arr, { indexes: 32 });
+		expect(node.tag).toBe(";");
+		const children = childArray(node);
+		// First child should be the # index node
+		const indexNode = children.find(c => c.tag === "#");
+		expect(indexNode).toBeDefined();
+		expect(typeof indexNode!.b64).toBe("object");
+		const { count, width } = indexNode!.b64 as { count: number; width: number };
+		expect(count).toBe(50);
+		expect(width).toBeGreaterThanOrEqual(1);
+		// Rest are element nodes
+		const elements = children.filter(c => c.tag !== "#");
+		expect(elements).toHaveLength(50);
+	});
+
+	test("large object has # index child", () => {
+		const obj: Record<string, number> = {};
+		for (let i = 0; i < 50; i++) obj[`key${String(i).padStart(3, "0")}`] = i;
+		const node = inspected(obj, { indexes: 32 });
+		expect(node.tag).toBe(":");
+		const children = childArray(node);
+		const indexNode = children.find(c => c.tag === "#");
+		expect(indexNode).toBeDefined();
+	});
+});
+
+describe("inspect() pointers", () => {
+	test("pointer node", () => {
+		// Encode something that creates pointers (repeated values)
+		const data = encode(["hello", "hello"]);
+		const root = inspect(data);
+		expect(root.tag).toBe(";");
+		const children = childArray(root);
+		// One should be a string, the other a pointer
+		const ptr = children.find(c => c.tag === "^");
+		const str = children.find(c => c.tag === ",");
+		expect(ptr).toBeDefined();
+		expect(str).toBeDefined();
+		expect(ptr!.size).toBe(0);
+		expect(typeof ptr!.b64).toBe("number"); // delta
+		expect(ptr!.value).toBe("hello");
+	});
+});
+
+describe("inspect() value resolution", () => {
+	test("value matches open() for primitives", () => {
+		expect(inspected(42).value).toBe(42);
+		expect(inspected("hi").value).toBe("hi");
+		expect(inspected(true).value).toBe(true);
+		expect(inspected(null).value).toBe(null);
+		expect(inspected(undefined).value).toBe(undefined);
+	});
+
+	test("value returns open() proxy for containers", () => {
+		const node = inspected({ x: 1, y: 2 });
+		const val = node.value as any;
+		expect(val.x).toBe(1);
+		expect(val.y).toBe(2);
+	});
+
+	test("value on array proxy", () => {
+		const node = inspected([10, 20, 30]);
+		const val = node.value as any;
+		expect(val[0]).toBe(10);
+		expect(val[1]).toBe(20);
+		expect(val[2]).toBe(30);
+		expect(val.length).toBe(3);
+	});
+
+	test("value with refs", () => {
+		const myRef = { a: 1, b: 2 };
+		const data = encode(myRef, { refs: { MYREF: myRef } });
+		// The ref itself resolves to the original object
+		const root = inspect(data, { MYREF: myRef });
+		expect(root.value).toBe(myRef);
+	});
+});
+
+describe("inspect() semantic utilities", () => {
+	test("entries() on simple object", () => {
+		const node = inspected({ x: 1, y: 2 });
+		const entries = [...node.entries()];
+		expect(entries).toHaveLength(2);
+		// Keys should be string nodes
+		expect(entries[0][0].value).toBe("x");
+		expect(entries[0][1].value).toBe(1);
+		expect(entries[1][0].value).toBe("y");
+		expect(entries[1][1].value).toBe(2);
+	});
+
+	test("keys() on object", () => {
+		const node = inspected({ a: 1, b: 2, c: 3 });
+		const keys = [...node.keys()].map(k => k.value);
+		expect(keys).toEqual(["a", "b", "c"]);
+	});
+
+	test("values() on object", () => {
+		const node = inspected({ a: 10, b: 20 });
+		const vals = [...node.values()].map(v => v.value);
+		expect(vals).toEqual([10, 20]);
+	});
+
+	test("values() on array", () => {
+		const node = inspected([10, 20, 30]);
+		const vals = [...node.values()].map(v => v.value);
+		expect(vals).toEqual([10, 20, 30]);
+	});
+
+	test("index() on array", () => {
+		const node = inspected([10, 20, 30]);
+		expect(node.index(0)?.value).toBe(10);
+		expect(node.index(1)?.value).toBe(20);
+		expect(node.index(2)?.value).toBe(30);
+		expect(node.index(3)).toBeUndefined();
+		expect(node.index(-1)).toBeUndefined();
+	});
+
+	test("index() on object", () => {
+		const node = inspected({ foo: 1, bar: 2 });
+		expect(node.index("foo")?.value).toBe(1);
+		expect(node.index("bar")?.value).toBe(2);
+		expect(node.index("baz")).toBeUndefined();
+	});
+
+	test("index() on large indexed array", () => {
+		const arr = Array.from({ length: 50 }, (_, i) => i * 10);
+		const node = inspected(arr, { indexes: 32 });
+		expect(node.index(0)?.value).toBe(0);
+		expect(node.index(25)?.value).toBe(250);
+		expect(node.index(49)?.value).toBe(490);
+		expect(node.index(50)).toBeUndefined();
+	});
+
+	test("index() on large indexed object", () => {
+		const obj: Record<string, number> = {};
+		for (let i = 0; i < 50; i++) obj[`k${String(i).padStart(3, "0")}`] = i;
+		const node = inspected(obj, { indexes: 32 });
+		expect(node.index("k000")?.value).toBe(0);
+		expect(node.index("k025")?.value).toBe(25);
+		expect(node.index("k049")?.value).toBe(49);
+		expect(node.index("missing")).toBeUndefined();
+	});
+
+	test("filteredKeys() on indexed object", () => {
+		const obj: Record<string, number> = {};
+		for (let i = 0; i < 50; i++) obj[`k${String(i).padStart(3, "0")}`] = i;
+		const node = inspected(obj, { indexes: 32 });
+		const matches = [...node.filteredKeys("k00")];
+		// k000..k009 = 10 matches
+		expect(matches).toHaveLength(10);
+		expect(matches[0][0].value).toBe("k000");
+		expect(matches[0][1].value).toBe(0);
+	});
+
+	test("filteredKeys() on non-indexed object", () => {
+		const node = inspected({ apple: 1, apricot: 2, banana: 3 });
+		const matches = [...node.filteredKeys("ap")];
+		expect(matches).toHaveLength(2);
+		const keys = matches.map(([k]) => k.value);
+		expect(keys).toContain("apple");
+		expect(keys).toContain("apricot");
+	});
+});
+
+describe("inspect() lazy iteration", () => {
+	test("partial children iteration", () => {
+		const arr = Array.from({ length: 100 }, (_, i) => i);
+		const node = inspected(arr, { indexes: 32 });
+		let count = 0;
+		for (const _child of node) {
+			count++;
+			if (count >= 3) break;
+		}
+		expect(count).toBe(3);
+	});
+
+	test("data property is not in ownKeys", () => {
+		const node = inspected(42);
+		expect(Object.keys(node)).not.toContain("data");
+		// But it's still accessible
+		expect(node.data).toBeInstanceOf(Uint8Array);
+	});
+});
+
+describe("inspect() schema objects", () => {
+	test("entries() on schema object", () => {
+		// Encode multiple objects with the same shape to trigger schema dedup
+		const data = encode([
+			{ name: "alice", age: 30 },
+			{ name: "bob", age: 25 },
+		]);
+		const root = inspect(data);
+		const children = [...root.values()];
+		// Both should be object nodes
+		expect(children[0].tag).toBe(":");
+		expect(children[1].tag).toBe(":");
+		// The second object should use a schema (pointer to first)
+		// entries() should still work on both
+		const e0 = [...children[0].entries()];
+		const e1 = [...children[1].entries()];
+		expect(e0).toHaveLength(2);
+		expect(e1).toHaveLength(2);
+		expect(e0[0][0].value).toBe("name");
+		expect(e0[0][1].value).toBe("alice");
+		expect(e1[0][0].value).toBe("name");
+		expect(e1[0][1].value).toBe("bob");
+	});
+});
+
+describe("inspect() array-like behavior", () => {
+	test("numeric index access", () => {
+		const node = inspected([10, 20, 30]);
+		expect(node[0].tag).toBe("+");
+		expect(node[0].b64).toBe(10);
+		expect(node[1].b64).toBe(20);
+		expect(node[2].b64).toBe(30);
+		expect(node[3]).toBeUndefined();
+	});
+
+	test(".length returns child count", () => {
+		const node = inspected([10, 20, 30]);
+		expect(node.length).toBe(3);
+	});
+
+	test(".length on leaf node is 0", () => {
+		const node = inspected(42);
+		expect(node.length).toBe(0);
+	});
+
+	test("for...of iteration", () => {
+		const node = inspected([1, 2, 3]);
+		const values: number[] = [];
+		for (const child of node) {
+			values.push(child.b64 as number);
+		}
+		expect(values).toEqual([1, 2, 3]);
+	});
+
+	test("spread into array", () => {
+		const node = inspected([1, 2, 3]);
+		const arr = [...node];
+		expect(arr).toHaveLength(3);
+		expect(arr[0].b64).toBe(1);
+	});
+
+	test("incremental parsing — accessing [5] parses 0..5, not all", () => {
+		const arr = Array.from({ length: 20 }, (_, i) => i);
+		const node = inspected(arr);
+		// Access index 5 — should parse children 0-5
+		const child5 = node[5];
+		expect(child5.b64).toBe(5);
+		// Now access index 2 — should be cached, no re-parsing
+		const child2 = node[2];
+		expect(child2.b64).toBe(2);
+		// Access beyond — parses more
+		const child15 = node[15];
+		expect(child15.b64).toBe(15);
+	});
+});
+
+describe("inspect() JSON.stringify", () => {
+	test("leaf node serializes with tag and b64", () => {
+		const node = inspected(42);
+		const json = JSON.parse(JSON.stringify(node));
+		expect(json.tag).toBe("+");
+		expect(json.b64).toBe(42);
+		expect(json.left).toBeDefined();
+		expect(json.right).toBeDefined();
+	});
+
+	test("container serializes with children array", () => {
+		const node = inspected([1, 2, 3]);
+		const json = JSON.parse(JSON.stringify(node));
+		expect(json.tag).toBe(";");
+		expect(json.children).toHaveLength(3);
+		expect(json.children[0].tag).toBe("+");
+		expect(json.children[0].b64).toBe(1);
+		expect(json.children[1].b64).toBe(2);
+		expect(json.children[2].b64).toBe(3);
+	});
+
+	test("nested structure serializes recursively", () => {
+		const node = inspected({ items: [1, 2] });
+		const json = JSON.parse(JSON.stringify(node));
+		expect(json.tag).toBe(":");
+		expect(json.children.length).toBeGreaterThan(0);
+		// Should have nested children
+		const arrChild = json.children.find((c: any) => c.tag === ";");
+		expect(arrChild).toBeDefined();
+		expect(arrChild.children).toHaveLength(2);
+	});
+
+	test("pointer serializes as leaf", () => {
+		const data = encode(["hello", "hello"]);
+		const root = inspect(data);
+		const json = JSON.parse(JSON.stringify(root));
+		const ptr = json.children.find((c: any) => c.tag === "^");
+		expect(ptr).toBeDefined();
+		expect(typeof ptr.b64).toBe("number");
+		// Pointer has no children
+		expect(ptr.children).toBeUndefined();
 	});
 });
