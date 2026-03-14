@@ -17,9 +17,9 @@ Benchmarked on a real production dataset: a 35,000-key website deployment manife
 ## Install
 
 ```sh
-npm install @creationix/rx        # library
-npm install -g @creationix/rx     # CLI (global)
-npx @creationix/rx data.rx      # CLI (one-off)
+npm install @creationix/rx     # library
+npm install -g @creationix/rx  # CLI (global)
+npx @creationix/rx data.rx     # CLI (one-off)
 ```
 
 ## Quick Start
@@ -39,9 +39,9 @@ const payload = stringify({ users: ["alice", "bob"], version: 3 });
 import { parse } from "@creationix/rx";
 
 const data = parse(payload) as any;
-data.users[0]       // "alice"
-data.version         // 3
-Object.keys(data)    // ["users", "version"]
+data.users[0]         // "alice"
+data.version          // 3
+Object.keys(data)     // ["users", "version"]
 JSON.stringify(data)  // works — full JS interop
 ```
 
@@ -153,12 +153,12 @@ A compact base64 number encoding used internally by the REXC format, also availa
 ```ts
 import { stringify, parse, sizeof, toZigZag, fromZigZag } from "@creationix/rx/b64";
 
-stringify(255)       // "3V"
-parse("3V")         // 255
-sizeof(255)          // 2 (digits needed)
+stringify(255)  // "3V"
+parse("3V")     // 255
+sizeof(255)     // 2 (digits needed)
 
-toZigZag(-1)         // 1 (signed → unsigned)
-fromZigZag(1)        // -1 (unsigned → signed)
+toZigZag(-1)    // 1 (signed → unsigned)
+fromZigZag(1)   // -1 (unsigned → signed)
 ```
 
 The alphabet is `0-9a-zA-Z-_` (URL-safe, no padding). Numbers are big-endian with zero represented as an empty string. Zigzag encoding maps signed integers to unsigned values so negative numbers stay compact.
@@ -180,7 +180,7 @@ import {
 
 ```ts
 const c = makeCursor(data);  // one allocation, c.right = data.length
-read(c);                      // parse root node
+read(c);                     // parse root node
 // c.tag, c.left, c.right, c.val, c.ixWidth, c.ixCount, c.schema
 ```
 
