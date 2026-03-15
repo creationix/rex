@@ -51,11 +51,11 @@ The returned value supports property access, `Object.keys()`, `Object.entries()`
 
 ```sh
 rx data.rx                         # pretty-print as tree
-rx data.rx --to json               # convert rexc → JSON
-rx data.json --to rexc             # convert JSON → rexc
+rx data.rx -j                      # convert to JSON
+rx data.json -r                    # convert to REXC
 cat data.rx | rx                   # read from stdin (auto-detect)
-rx data.rx -s routes 0 op          # select a sub-value
-rx data.rx --to json -o out.json   # write to file
+rx data.rx -s key 0 sub            # select a sub-value
+rx data.rx -o out.json             # write to file
 ```
 
 See [CLI Reference](#cli-reference) below for full options.
@@ -379,44 +379,50 @@ rawBytes(c)  // zero-copy Uint8Array view: data.subarray(c.left, c.right)
 
 | Form | Description |
 |------|-------------|
-| `<file>` | Read from file (format auto-detected by extension) |
+| `<file>` | File (format auto-detected by contents) |
 | `-` | Read from stdin explicitly |
 | (no args, piped) | Read from stdin automatically |
 
-### Format control
+### Format
 
 | Flag | Description |
 |------|-------------|
-| `--from json\|rexc` | Force input format (default: auto-detect) |
-| `--to json\|rexc\|tree\|ast` | Output format |
-| `-j`, `--json` | Shortcut for `--to json` |
-| `-r`, `--rexc` | Shortcut for `--to rexc` |
-| `-t`, `--tree` | Shortcut for `--to tree` |
-| `-a`, `--ast` | Shortcut for `--to ast` (encoding structure) |
+| `-j`, `--json` | Output as JSON |
+| `-r`, `--rexc` | Output as REXC |
+| `-t`, `--tree` | Output as tree (default on TTY) |
+| `-a`, `--ast` | Output encoding structure as JSON |
+| `--to json\|rexc\|tree\|ast` | Output format (long form) |
 
 Format is auto-detected from file extension (`.json`, `.rx`, `.rexc`) or by content sniffing on stdin. Both `.rx` and `.rexc` are recognized as REXC. Output defaults to tree view on a TTY, JSON when piped.
-
-### Encoding
-
-| Flag | Description |
-|------|-------------|
-| `--indexes <n>` | Add indexes to containers with >= n entries |
-| | Use `false` to disable indexes entirely |
 
 ### Filtering
 
 | Flag | Description |
 |------|-------------|
-| `-s`, `--select <seg>...` | Space-delimited selector segments (e.g. `-s foo bar 0 baz`) |
+| `-s`, `--select <seg>...` | Select a sub-value (e.g. `-s foo bar 0 baz`) |
+
+### Convert
+
+| Flag | Description |
+|------|-------------|
+| `-w`, `--write` | Write converted file (`.json`↔`.rx`) |
 
 ### Output
 
 | Flag | Description |
 |------|-------------|
 | `-o`, `--out <path>` | Write to file instead of stdout |
-| `--color` | Force ANSI color |
-| `--no-color` | Disable ANSI color |
+| `-c`, `--color` / `--no-color` | Force or disable ANSI color |
 | `-h`, `--help` | Show help message |
+
+### Tuning
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--index-threshold <n>` | 16 | Index objects/arrays above n values |
+| `--string-chain-threshold <n>` | 64 | Split strings longer than n into chains |
+| `--string-chain-delimiter <s>` | `/` | Delimiter for string chains |
+| `--key-complexity-threshold <n>` | 100 | Max object complexity for dedupe keys |
 
 ### Shell completions
 
