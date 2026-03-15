@@ -347,19 +347,19 @@ function fmtInline(v: unknown): string {
 	if (typeof v === "string") return JSON.stringify(v);
 	if (Array.isArray(v)) {
 		if (v.length === 0) return "[]";
-		let s = "[";
+		let s = "[ ";
 		for (let i = 0; i < v.length; i++) s += (i ? " " : "") + fmtInline(v[i]);
-		return s + "]";
+		return s + " ]";
 	}
 	if (isObj(v)) {
 		const ks = Object.keys(v);
 		if (ks.length === 0) return "{}";
-		let s = "{";
+		let s = "{ ";
 		for (let i = 0; i < ks.length; i++) {
 			if (i) s += " ";
 			s += fmtKey(ks[i]!) + ": " + fmtInline(v[ks[i]!]);
 		}
-		return s + "}";
+		return s + " }";
 	}
 	return String(v);
 }
@@ -371,13 +371,13 @@ function fmtPretty(v: unknown, depth: number, ind: number, maxW: number): string
 	if (Array.isArray(v)) {
 		if (v.length === 0) return "[]";
 		// try inline (bail on nested objects/arrays)
-		let s = "[", ok = true;
+		let s = "[ ", ok = true;
 		for (let i = 0; i < v.length; i++) {
 			if (typeof v[i] === "object" && v[i] !== null) { ok = false; break; }
 			s += (i ? " " : "") + fmtInline(v[i]);
 			if (s.length > budget) { ok = false; break; }
 		}
-		if (ok) { s += "]"; if (s.length <= budget) return s; }
+		if (ok) { s += " ]"; if (s.length <= budget) return s; }
 		const pad = " ".repeat(depth * ind), cp = " ".repeat((depth + 1) * ind);
 		let r = "[\n";
 		for (let i = 0; i < v.length; i++) {
@@ -390,14 +390,14 @@ function fmtPretty(v: unknown, depth: number, ind: number, maxW: number): string
 	if (isObj(v)) {
 		const ks = Object.keys(v);
 		if (ks.length === 0) return "{}";
-		let s = "{", ok = true;
+		let s = "{ ", ok = true;
 		for (const k of ks) {
 			if (typeof v[k] === "object" && v[k] !== null) { ok = false; break; }
-			if (s.length > 1) s += " ";
+			if (s.length > 2) s += " ";
 			s += fmtKey(k) + ": " + fmtInline(v[k]);
 			if (s.length > budget) { ok = false; break; }
 		}
-		if (ok) { if (s.length === 1) return "{}"; s += "}"; if (s.length <= budget) return s; }
+		if (ok) { s += " }"; if (s.length <= budget) return s; }
 		const pad = " ".repeat(depth * ind), cp = " ".repeat((depth + 1) * ind);
 		let r = "{\n", first = true;
 		for (const k of ks) {
