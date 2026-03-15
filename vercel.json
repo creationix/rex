@@ -1,5 +1,5 @@
 {
-  "installCommand": "bun install",
+  "installCommand": "cd packages/web-viewer && bun install",
   "buildCommand": "cd packages/web-viewer && bun run build",
   "outputDirectory": "packages/web-viewer/dist"
 }
