@@ -948,6 +948,8 @@ export interface ASTNode {
   [Symbol.iterator](): Iterator<ASTNode>;
 
   // Semantic utilities (meaningful on containers)
+  /** Semantic entry count: number of key-value pairs (objects) or items (arrays). O(1) for indexed containers. */
+  readonly entryCount: number;
   keys(): Iterable<ASTNode>;
   values(): Iterable<ASTNode>;
   entries(): Iterable<[ASTNode, ASTNode]>;
@@ -1129,6 +1131,26 @@ export function inspect(buffer: Uint8Array, refs?: Refs): ASTNode {
           case "length":
             ensureAll(state);
             return state.cache.length;
+          case "entryCount": {
+            // Semantic entry count: O(1) for indexed containers, fallback for small ones
+            if (state.tag === ":" || state.tag === ";") {
+              for (let ci = 0; ci < 2; ci++) {
+                const child = ensureChild(state, ci);
+                if (!child) break;
+                const cs = stateMap.get(child as unknown as object)!;
+                if (cs.tag === "#") return (cs.b64 as { count: number; width: number }).count;
+              }
+              // Small unindexed: count via entries for objects, ensureAll for arrays
+              if (state.tag === ":") {
+                let n = 0;
+                for (const _ of entriesOf(proxy as ASTNode)) n++;
+                return n;
+              }
+              ensureAll(state);
+              return state.cache.length;
+            }
+            return 0;
+          }
           case "keys": return () => keysOf(proxy as ASTNode);
           case "values": return () => valuesOf(proxy as ASTNode);
           case "entries": return () => entriesOf(proxy as ASTNode);
