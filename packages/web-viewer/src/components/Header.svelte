@@ -35,6 +35,11 @@
 		return (bytes / (1024 * 1024)).toFixed(2) + ' MiB'
 	}
 
+	const compactJsonSize = $derived(() => {
+		if (!appState.jsonFresh || !appState.jsonText) return 0
+		try { return JSON.stringify(JSON.parse(appState.jsonText)).length } catch { return 0 }
+	})
+
 	const sizeLabel = $derived(() => {
 		if (appState.mode === 'source' && appState.sourceFormat === 'json') return humanSize(appState.jsonSize)
 		return humanSize(appState.rexcSize)
@@ -50,7 +55,14 @@
 		<ModeToggle />
 	</div>
 	<div class="flex items-center gap-3">
-		{#if sizeLabel()}
+		{#if appState.mode === 'data' || appState.mode === 'encoding'}
+			<span class="text-xs text-[#444]">REXC</span>
+			<span class="text-xs text-[#666]">{humanSize(appState.rexcSize)}</span>
+			{#if compactJsonSize() > 0}
+				<span class="text-xs text-[#444]">JSON</span>
+				<span class="text-xs text-[#666]">{humanSize(compactJsonSize())}</span>
+			{/if}
+		{:else if sizeLabel()}
 			<span class="text-xs text-[#666]">{sizeLabel()}</span>
 		{/if}
 		<input bind:this={fileInput} type="file" accept=".json,.rexc,.rx" class="hidden" onchange={handleFileSelected} />
