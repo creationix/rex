@@ -1406,6 +1406,14 @@ export interface EncodeOptions {
   onChunk?: (chunk: Uint8Array, offset: number) => void;
   /** External dictionary of known values (UPPERCASE KEYS) */
   refs?: Refs;
+  /** Override INDEX_THRESHOLD for this encode call. 0 = always index, Infinity = never index. */
+  indexThreshold?: number;
+  /** Override STRING_CHAIN_THRESHOLD. 0 = always split on delimiter, Infinity = never split. */
+  stringChainThreshold?: number;
+  /** Override STRING_CHAIN_DELIMITER. Empty string disables chain splitting. */
+  stringChainDelimiter?: string;
+  /** Override KEY_COMPLEXITY_THRESHOLD for structural dedup. */
+  keyComplexityThreshold?: number;
 }
 
 export type StringifyOptions = Omit<EncodeOptions, "onChunk"> & {
@@ -1541,6 +1549,9 @@ export function encode(rootValue: unknown, options?: EncodeOptions): Uint8Array 
   const parts: Uint8Array[] = [];
   let byteLength = 0;
   const onChunk = opts.onChunk ?? ((chunk: Uint8Array) => parts.push(chunk));
+  const indexThreshold = opts.indexThreshold ?? INDEX_THRESHOLD;
+  const chainThreshold = opts.stringChainThreshold ?? STRING_CHAIN_THRESHOLD;
+  const chainDelimiter = opts.stringChainDelimiter ?? STRING_CHAIN_DELIMITER;
   const refs = new Map<unknown, string>();
   for (const [key, val] of Object.entries({ ...opts.refs })) {
     refs.set(makeKey(val), key);
@@ -1562,11 +1573,11 @@ export function encode(rootValue: unknown, options?: EncodeOptions): Uint8Array 
   scanPrefixes(rootValue);
 
   function scanPrefixes(value: unknown) {
-    if (typeof value === "string" && value.length > STRING_CHAIN_THRESHOLD && value.indexOf(STRING_CHAIN_DELIMITER, 1) > 0) {
+    if (typeof value === "string" && value.length > chainThreshold && chainDelimiter && value.indexOf(chainDelimiter, 1) > 0) {
       if (!seenPrefixes.has(value)) {
         let offset = 0;
         while (offset < value.length) {
-          const next = value.indexOf(STRING_CHAIN_DELIMITER, offset + 1);
+          const next = value.indexOf(chainDelimiter, offset + 1);
           if (next === -1) break;
           const prefix = value.slice(0, next);
           if (seenPrefixes.has(prefix)) duplicatePrefixes.add(prefix);
@@ -1640,12 +1651,12 @@ export function encode(rootValue: unknown, options?: EncodeOptions): Uint8Array 
   }
 
   function writeString(value: string) {
-    if (STRING_CHAIN_DELIMITER && value.indexOf(STRING_CHAIN_DELIMITER) >= 0) {
+    if (chainDelimiter && value.indexOf(chainDelimiter) >= 0) {
       let offset = value.length;
       let head: string | undefined;
       let tail: string | undefined;
       while (offset > 0) {
-        offset = value.lastIndexOf(STRING_CHAIN_DELIMITER, offset - 1);
+        offset = value.lastIndexOf(chainDelimiter, offset - 1);
         if (offset <= 0) break;
         const prefix = value.slice(0, offset);
         if (duplicatePrefixes.has(prefix)) {
@@ -1686,7 +1697,7 @@ export function encode(rootValue: unknown, options?: EncodeOptions): Uint8Array 
 
   function writeValues(values: unknown[]) {
     const length = values.length;
-    const offsets = length > INDEX_THRESHOLD ? new Array(length) : undefined;
+    const offsets = length > indexThreshold ? new Array(length) : undefined;
     for (let i = length - 1; i >= 0; i--) {
       writeAny(values[i]);
       if (offsets) offsets[i] = byteLength;
@@ -1713,7 +1724,7 @@ export function encode(rootValue: unknown, options?: EncodeOptions): Uint8Array 
     if (schemaTarget !== undefined) return writeSchemaObject(value, schemaTarget);
 
     const before = byteLength;
-    const offsets = length > INDEX_THRESHOLD ? ({} as Record<string, number>) : undefined;
+    const offsets = length > indexThreshold ? ({} as Record<string, number>) : undefined;
     let lastOffset: number | undefined;
     const entries = Object.entries(value);
     for (let i = entries.length - 1; i >= 0; i--) {
