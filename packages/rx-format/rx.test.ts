@@ -151,14 +151,14 @@ describe("read() containers", () => {
 
 describe("read() indexed containers", () => {
 	test("indexed array has ixWidth and ixCount", () => {
-		const c = cur([1, 2, 3], { indexes: 0 });
+		const c = cur([1, 2, 3], { indexThreshold: 0 });
 		expect(c.tag).toBe("array");
 		expect(c.ixWidth).toBeGreaterThan(0);
 		expect(c.ixCount).toBe(3);
 	});
 
 	test("indexed object has ixWidth and ixCount", () => {
-		const c = cur({ a: 1, b: 2, c: 3 }, { indexes: 0 });
+		const c = cur({ a: 1, b: 2, c: 3 }, { indexThreshold: 0 });
 		expect(c.tag).toBe("object");
 		expect(c.ixWidth).toBeGreaterThan(0);
 		expect(c.ixCount).toBe(3);
@@ -249,7 +249,7 @@ describe("strCompare", () => {
 describe("seekChild", () => {
 	test("random access indexed array", () => {
 		const arr = [10, 20, 30, 40, 50];
-		const c = cur(arr, { indexes: 0 });
+		const c = cur(arr, { indexThreshold: 0 });
 		expect(c.ixCount).toBe(5);
 		const child = makeCursor(c.data);
 		for (let i = 0; i < arr.length; i++) {
@@ -492,7 +492,7 @@ describe("nested containers", () => {
 describe("seekChild on indexed objects", () => {
 	test("random access indexed object entries", () => {
 		const obj = { a: 10, b: 20, c: 30 };
-		const c = cur(obj, { indexes: 0 });
+		const c = cur(obj, { indexThreshold: 0 });
 		expect(c.tag).toBe("object");
 		expect(c.ixCount).toBe(3);
 		// Each entry is a key/value pair — seekChild gives the key node
@@ -647,7 +647,7 @@ describe("error paths", () => {
 	});
 
 	test("seekChild throws on out-of-range index", () => {
-		const c = cur([1, 2, 3], { indexes: 0 });
+		const c = cur([1, 2, 3], { indexThreshold: 0 });
 		const child = makeCursor(c.data);
 		expect(() => seekChild(child, c, -1)).toThrow();
 		expect(() => seekChild(child, c, 3)).toThrow();
@@ -746,7 +746,7 @@ describe("open() arrays", () => {
 	});
 
 	test("indexed array", () => {
-		const arr = opened([10, 20, 30, 40, 50], { indexes: 0 }) as unknown[];
+		const arr = opened([10, 20, 30, 40, 50], { indexThreshold: 0 }) as unknown[];
 		expect(arr.length).toBe(5);
 		expect(arr[0]).toBe(10);
 		expect(arr[4]).toBe(50);
@@ -988,7 +988,7 @@ describe("findByPrefix", () => {
 	});
 
 	test("finds matching keys (indexed)", () => {
-		const obj = cur({ apple: 1, apricot: 2, banana: 3, avocado: 4 }, { indexes: 0 });
+		const obj = cur({ apple: 1, apricot: 2, banana: 3, avocado: 4 }, { indexThreshold: 0 });
 		const c = makeCursor(obj.data);
 		const results: [string, number][] = [];
 		findByPrefix(c, obj, "ap", (key, value) => {
@@ -1196,7 +1196,7 @@ describe("stringify", () => {
 				[3, 4],
 			];
 			expect(stringify(data)).toBe("+8+6;4+4+2;4;c");
-			expect(stringify(data, { indexes: 0 })).toBe(
+			expect(stringify(data, { indexThreshold: 0 })).toBe(
 				"+8+602#g;8+4+202#g;80a#g;o",
 			);
 		});
@@ -1221,14 +1221,14 @@ describe("stringify", () => {
 		test("encodes objects with different formats", () => {
 			const data = { a: { b: 1, c: 1 }, d: { e: 3, f: 4 } };
 			expect(stringify(data)).toBe("+8f,1+6e,1:ad,1+2c,1+2b,1:aa,1:u");
-			expect(stringify(data, { indexes: 0 })).toBe(
+			expect(stringify(data, { indexThreshold: 0 })).toBe(
 				"+8f,1+6e,105#g:ed,1+2c,1+2b,105#g:ea,10j#g:G",
 			);
 		});
 
 		test("object keys are sorted when indexes enabled", () => {
 			const obj = { c: 3, a: 1, b: 2 };
-			const encoded = stringify(obj, { indexes: 2 });
+			const encoded = stringify(obj, { indexThreshold: 2 });
 			expect(encoded).toBe("+4b,1+2a,1+6c,15a0#o:k");
 		});
 	});
@@ -1236,42 +1236,42 @@ describe("stringify", () => {
 	describe("indexes", () => {
 		test("embed index into small array", () => {
 			const arr = [1, 2, 3];
-			const encoded = stringify(arr, { indexes: 2 });
+			const encoded = stringify(arr, { indexThreshold: 2 });
 			expect(encoded).toBe("+6+4+2024#o;b");
 		});
 		test("embeds index for medium arrays", () => {
 			const arr = Array.from({ length: 12 }, (_, i) => i);
-			const encoded = stringify(arr, { indexes: 10 });
+			const encoded = stringify(arr, { indexThreshold: 10 });
 			expect(encoded).toBe("+m+k+i+g+e+c+a+8+6+4+2+013579bdfhjl#1w;C");
 		});
 		test("embeds index for large arrays", () => {
 			const arr = Array.from({ length: 40 }, (_, i) => i);
-			const encoded = stringify(arr, { indexes: 30 });
+			const encoded = stringify(arr, { indexThreshold: 30 });
 			expect(encoded).toBe(
 				"+1e+1c+1a+18+16+14+12+10+-+Y+W+U+S+Q+O+M+K+I+G+E+C+A+y+w+u+s+q+o+m+k+i+g+e+c+a+8+6+4+2+0001030507090b0d0f0h0j0l0n0p0r0t0v0x0z0B0D0F0H0J0L0N0P0R0T0V0X0Z0_1215181b1e1h1k#51;2G",
 			);
 		});
 
 		test("skips index for small arrays", () => {
-			const encoded = stringify([1, 2, 3], { indexes: 10 });
+			const encoded = stringify([1, 2, 3], { indexThreshold: 10 });
 			expect(encoded).not.toContain("#");
 		});
 
 		test("disables index when indexes is false", () => {
 			const arr = Array.from({ length: 20 }, (_, i) => i);
-			const encoded = stringify(arr, { indexes: false });
+			const encoded = stringify(arr, { indexThreshold: Infinity });
 			expect(encoded).not.toContain("#");
 		});
 
 		test("indices for maps", () => {
 			const obj = { a: 1, b: 2, c: 3 };
-			const encoded = stringify(obj, { indexes: 2 });
+			const encoded = stringify(obj, { indexThreshold: 2 });
 			expect(encoded).toBe("+6c,1+4b,1+2a,105a#o:k");
 		});
 
 		test("map indexes sort keys", () => {
 			const obj = { c: 3, a: 1, b: 2 };
-			const encoded = stringify(obj, { indexes: 2 });
+			const encoded = stringify(obj, { indexThreshold: 2 });
 			expect(encoded).toBe("+4b,1+2a,1+6c,15a0#o:k");
 		});
 
@@ -1280,10 +1280,10 @@ describe("stringify", () => {
 				{ name: "alice", age: 1 },
 				{ name: "bob", age: 2 },
 			];
-			expect(stringify(data, { indexes: 1 })).toBe(
+			expect(stringify(data, { indexThreshold: 1 })).toBe(
 				"+4age,3bob,3name,4b0#g:m+2alice,507#g^d:f0h#g;J",
 			);
-			expect(stringify(data, { indexes: 1 })).toBe(
+			expect(stringify(data, { indexThreshold: 1 })).toBe(
 				"+4age,3bob,3name,4b0#g:m+2alice,507#g^d:f0h#g;J",
 			);
 		});
@@ -1379,14 +1379,15 @@ describe("stringify", () => {
 
 		describe("path chains", () => {
 			test("encodes path chains with shared prefixes", () => {
+				const chain = { stringChainThreshold: 0 };
 				expect(stringify("/")).toBe("/,1");
 				expect(stringify("/about")).toBe("/about,6");
 				const paths = ["/foo/bar/baz", "/foo/bar/qux", "/foo/quux"];
-				expect(stringify(paths)).toBe(
+				expect(stringify(paths, chain)).toBe(
 					"/quux,5/foo,4.d/qux,4/bar,4^e.8.g/baz,4^8.8;H",
 				);
 				const prefixedPaths = ["/foo/bar/baz", "/foo/bar/qux"];
-				expect(stringify(prefixedPaths)).toBe("/qux,4/bar,4/foo,4.c.k/baz,4^8.8;w");
+				expect(stringify(prefixedPaths, chain)).toBe("/qux,4/bar,4/foo,4.c.k/baz,4^8.8;w");
 			});
 		});
 
@@ -1412,15 +1413,14 @@ describe("stringify", () => {
 				"/admin/logs/export/csv": { name: "Export Logs as CSV", method: "GET" },
 			};
 			test("byte counts are accurate with different options", () => {
-				expect(stringify(doc)).toBe(
-					"GET,3method,6Export Logs as CSV,iname,4:D/csv,4/export,7/logs,5/admin,6.f.q.y^18Export Logs as JSON,j^Y:q/json,5^B.9^1LExport Logs,b^1r:j^-POST,4Clear Logs,a^1Q:l/clear,6^1x.b^2GAdmin Logs,a^2l:i^1W^RRemove User,b^2I:i/remove,7/users,6^2A.b.m^1xAdd User,8^3m:g/add,4^q.8^49Admin Users,b^3R:j^P^2kAdmin Settings,e^4f:m/settings,9^41.e^58Admin,5^4K:d^4l^3eAPI Update,a^55:i/update,7/api,4.f^5_API Data,8^5E:g/data,5^r.9^4gComment,7^64:f/post/comment,d/blog,5.m^75Blog Post,9^6L:h/post,5^s.9^7zBlog,4^78:c^K^5DContact,7^7r:f/contact,8^8eAbout,5^7Q:d/about,6^8BHome,4^8a:c/,1:8X",
-				);
-				expect(stringify(doc)).toBe(
-					"GET,3method,6Export Logs as CSV,iname,4:D/csv,4/export,7/logs,5/admin,6.f.q.y^18Export Logs as JSON,j^Y:q/json,5^B.9^1LExport Logs,b^1r:j^-POST,4Clear Logs,a^1Q:l/clear,6^1x.b^2GAdmin Logs,a^2l:i^1W^RRemove User,b^2I:i/remove,7/users,6^2A.b.m^1xAdd User,8^3m:g/add,4^q.8^49Admin Users,b^3R:j^P^2kAdmin Settings,e^4f:m/settings,9^41.e^58Admin,5^4K:d^4l^3eAPI Update,a^55:i/update,7/api,4.f^5_API Data,8^5E:g/data,5^r.9^4gComment,7^64:f/post/comment,d/blog,5.m^75Blog Post,9^6L:h/post,5^s.9^7zBlog,4^78:c^K^5DContact,7^7r:f/contact,8^8eAbout,5^7Q:d/about,6^8BHome,4^8a:c/,1:8X",
+				const chain = { stringChainThreshold: 0 };
+				expect(stringify(doc, chain)).toBe(
+					"GET,3method,6Export Logs as CSV,iname,4:D/csv,4/export,7/logs,5/admin,6.f.q.y^18Export Logs as JSON,j^Y:q/json,5^B.9^1LExport Logs,b^1r:j^-POST,4Clear Logs,a^1Q:l/clear,6^1x.b^2GAdmin Logs,a^2l:i^1W^RRemove User,b^2I:i/remove,7/users,6^2A.b.m^1xAdd User,8^3m:g/add,4^q.8^49Admin Users,b^3R:j^P^2kAdmin Settings,e^4f:m/settings,9^41.e^58Admin,5^4K:d^4l^3eAPI Update,a^55:i/update,7/api,4.f^5_API Data,8^5E:g/data,5^r.9^4gComment,7^64:f/post/comment,d/blog,5.m^75Blog Post,9^6L:h/post,5^s.9^7zBlog,4^78:c^K^5DContact,7^7r:f/contact,8^8eAbout,5^7Q:d/about,6^8BHome,4^8a:c/,1000h3s5R6c6M7K773K4m4J592q2T131j1N0E#2h:9y",
 				);
 				expect(
 					stringify(doc, {
-						indexes: false,
+						...chain,
+						indexThreshold: Infinity,
 					}),
 				).toBe(
 					"GET,3method,6Export Logs as CSV,iname,4:D/csv,4/export,7/logs,5/admin,6.f.q.y^18Export Logs as JSON,j^Y:q/json,5^B.9^1LExport Logs,b^1r:j^-POST,4Clear Logs,a^1Q:l/clear,6^1x.b^2GAdmin Logs,a^2l:i^1W^RRemove User,b^2I:i/remove,7/users,6^2A.b.m^1xAdd User,8^3m:g/add,4^q.8^49Admin Users,b^3R:j^P^2kAdmin Settings,e^4f:m/settings,9^41.e^58Admin,5^4K:d^4l^3eAPI Update,a^55:i/update,7/api,4.f^5_API Data,8^5E:g/data,5^r.9^4gComment,7^64:f/post/comment,d/blog,5.m^75Blog Post,9^6L:h/post,5^s.9^7zBlog,4^78:c^K^5DContact,7^7r:f/contact,8^8eAbout,5^7Q:d/about,6^8BHome,4^8a:c/,1:8X",
@@ -1440,10 +1440,10 @@ describe("stringify", () => {
 				"/emoji/🏴‍☠️": { name: "pirate flag", group: "flags" },
 			};
 			test("byte counts are accurate with different options", () => {
-				expect(stringify(doc)).toBe(
+				expect(stringify(doc, { stringChainThreshold: 0 })).toBe(
 					"flags,5group,5pirate flag,bname,4:x/🏴‍☠️,e/emoji,6.osmileys-emotion,fred heart,9^S:u/❤️,7^H.bactivities,asoccer ball,b^1w:s/⚽,4^1j.9objects,7guitar,6^21:k/🎸,5^1R.aanimals-nature,esnake,5^2F:q/🐍,5^2t.a^oseedling,8^36:f/🌱,5^2W.atravel-places,dwater,5^3J:p/💧,5^3x.a^ofire,4^46:b/🔥,5^3W.a:4W",
 				);
-				expect(stringify(doc, { chainSplit: false })).toBe(
+				expect(stringify(doc, { stringChainDelimiter: "" })).toBe(
 					"flags,5group,5pirate flag,bname,4:x/emoji/🏴‍☠️,ksmileys-emotion,fred heart,9^O:u/emoji/❤️,dactivities,asoccer ball,b^1u:s/emoji/⚽,aobjects,7guitar,6^20:k/emoji/🎸,banimals-nature,esnake,5^2F:q/emoji/🐍,b^pseedling,8^37:f/emoji/🌱,btravel-places,dwater,5^3L:p/emoji/💧,b^pfire,4^49:b/emoji/🔥,b:4-",
 				);
 			});
@@ -1583,11 +1583,7 @@ describe("stringify streaming", () => {
 describe("round-trip", () => {
 	const roundTrip = (
 		value: unknown,
-		opts?: {
-			refs?: Record<string, unknown>;
-			indexes?: number | false;
-			chainSplit?: string | false;
-		},
+		opts?: Parameters<typeof encode>[1],
 	) => {
 		const buf = encode(value, opts);
 		return open(buf, opts?.refs);
@@ -1667,14 +1663,14 @@ describe("round-trip", () => {
 
 	test("round-trips large indexed arrays", () => {
 		const arr = Array.from({ length: 100 }, (_, i) => i);
-		const result = roundTrip(arr, { indexes: 10 }) as any[];
+		const result = roundTrip(arr, { indexThreshold: 10 }) as any[];
 		expect([...result]).toEqual(arr);
 	});
 
 	test("round-trips large indexed objects", () => {
 		const obj: Record<string, number> = {};
 		for (let i = 0; i < 50; i++) obj[`key${i}`] = i;
-		const result = roundTrip(obj, { indexes: 10 }) as any;
+		const result = roundTrip(obj, { indexThreshold: 10 }) as any;
 		for (const [k, v] of Object.entries(obj)) {
 			expect(result[k]).toBe(v);
 		}
@@ -2002,12 +1998,12 @@ describe("round-trip", () => {
 	test("container at exact index threshold", () => {
 		// Exactly at threshold: should get indexed
 		const atThreshold = Array.from({ length: 32 }, (_, i) => i);
-		const result1 = roundTrip(atThreshold, { indexes: 32 }) as any[];
+		const result1 = roundTrip(atThreshold, { indexThreshold: 32 }) as any[];
 		expect([...result1]).toEqual(atThreshold);
 
 		// One below threshold: should NOT get indexed
 		const belowThreshold = Array.from({ length: 31 }, (_, i) => i);
-		const result2 = roundTrip(belowThreshold, { indexes: 32 }) as any[];
+		const result2 = roundTrip(belowThreshold, { indexThreshold: 32 }) as any[];
 		expect([...result2]).toEqual(belowThreshold);
 	});
 
@@ -2081,7 +2077,7 @@ describe("round-trip", () => {
 
 	test("chain splitting disabled preserves paths", () => {
 		const paths = ["/foo/bar/baz", "/foo/bar/qux"];
-		const result = roundTrip(paths, { chainSplit: false }) as any[];
+		const result = roundTrip(paths, { stringChainDelimiter: "" }) as any[];
 		expect(result[0]).toBe("/foo/bar/baz");
 		expect(result[1]).toBe("/foo/bar/qux");
 	});
@@ -2149,7 +2145,7 @@ describe("round-trip", () => {
 	test("indexed objects with chain keys", () => {
 		const obj: Record<string, number> = {};
 		for (let i = 0; i < 50; i++) obj[`/api/v2/resource/${i}`] = i;
-		const result = roundTrip(obj, { indexes: 10 }) as any;
+		const result = roundTrip(obj, { indexThreshold: 10 }) as any;
 		for (let i = 0; i < 50; i++) {
 			expect(result[`/api/v2/resource/${i}`]).toBe(i);
 		}
@@ -2161,7 +2157,7 @@ describe("round-trip", () => {
 			value: i,
 			active: i % 2 === 0,
 		}));
-		const result = roundTrip(data, { indexes: 10 }) as any[];
+		const result = roundTrip(data, { indexThreshold: 10 }) as any[];
 		for (let i = 0; i < 40; i++) {
 			expect(result[i].path).toBe(`/section/${i % 5}/item/${i}`);
 			expect(result[i].value).toBe(i);
@@ -2327,7 +2323,7 @@ describe("inspect() containers", () => {
 	});
 
 	test("chain", () => {
-		const node = inspected("/foo/bar/baz", { chainSplit: "/" });
+		const node = inspected("/foo/bar/baz", { stringChainDelimiter: "/", stringChainThreshold: 0 });
 		// Depending on dedup, might be a plain string or a chain
 		if (node.tag === ".") {
 			expect(node.size).toBeGreaterThan(0);
@@ -2340,7 +2336,7 @@ describe("inspect() containers", () => {
 describe("inspect() indexed containers", () => {
 	test("large array has # index child", () => {
 		const arr = Array.from({ length: 50 }, (_, i) => i);
-		const node = inspected(arr, { indexes: 32 });
+		const node = inspected(arr, { indexThreshold: 32 });
 		expect(node.tag).toBe(";");
 		const children = childArray(node);
 		// First child should be the # index node
@@ -2358,7 +2354,7 @@ describe("inspect() indexed containers", () => {
 	test("large object has # index child", () => {
 		const obj: Record<string, number> = {};
 		for (let i = 0; i < 50; i++) obj[`key${String(i).padStart(3, "0")}`] = i;
-		const node = inspected(obj, { indexes: 32 });
+		const node = inspected(obj, { indexThreshold: 32 });
 		expect(node.tag).toBe(":");
 		const children = childArray(node);
 		const indexNode = children.find(c => c.tag === "#");
@@ -2466,7 +2462,7 @@ describe("inspect() semantic utilities", () => {
 
 	test("index() on large indexed array", () => {
 		const arr = Array.from({ length: 50 }, (_, i) => i * 10);
-		const node = inspected(arr, { indexes: 32 });
+		const node = inspected(arr, { indexThreshold: 32 });
 		expect(node.index(0)?.value).toBe(0);
 		expect(node.index(25)?.value).toBe(250);
 		expect(node.index(49)?.value).toBe(490);
@@ -2476,7 +2472,7 @@ describe("inspect() semantic utilities", () => {
 	test("index() on large indexed object", () => {
 		const obj: Record<string, number> = {};
 		for (let i = 0; i < 50; i++) obj[`k${String(i).padStart(3, "0")}`] = i;
-		const node = inspected(obj, { indexes: 32 });
+		const node = inspected(obj, { indexThreshold: 32 });
 		expect(node.index("k000")?.value).toBe(0);
 		expect(node.index("k025")?.value).toBe(25);
 		expect(node.index("k049")?.value).toBe(49);
@@ -2486,7 +2482,7 @@ describe("inspect() semantic utilities", () => {
 	test("filteredKeys() on indexed object", () => {
 		const obj: Record<string, number> = {};
 		for (let i = 0; i < 50; i++) obj[`k${String(i).padStart(3, "0")}`] = i;
-		const node = inspected(obj, { indexes: 32 });
+		const node = inspected(obj, { indexThreshold: 32 });
 		const matches = [...node.filteredKeys("k00")];
 		// k000..k009 = 10 matches
 		expect(matches).toHaveLength(10);
@@ -2507,7 +2503,7 @@ describe("inspect() semantic utilities", () => {
 describe("inspect() lazy iteration", () => {
 	test("partial children iteration", () => {
 		const arr = Array.from({ length: 100 }, (_, i) => i);
-		const node = inspected(arr, { indexes: 32 });
+		const node = inspected(arr, { indexThreshold: 32 });
 		let count = 0;
 		for (const _child of node) {
 			count++;
@@ -2586,17 +2582,18 @@ describe("inspect() array-like behavior", () => {
 	});
 
 	test("incremental parsing — accessing [5] parses 0..5, not all", () => {
-		const arr = Array.from({ length: 20 }, (_, i) => i);
+		// Use 10 elements (below INDEX_THRESHOLD) to avoid a # index child
+		const arr = Array.from({ length: 10 }, (_, i) => i);
 		const node = inspected(arr);
 		// Access index 5 — should parse children 0-5
 		const child5 = node[5];
-		expect(child5.b64).toBe(5);
+		expect(child5!.b64).toBe(5);
 		// Now access index 2 — should be cached, no re-parsing
 		const child2 = node[2];
-		expect(child2.b64).toBe(2);
+		expect(child2!.b64).toBe(2);
 		// Access beyond — parses more
-		const child15 = node[15];
-		expect(child15.b64).toBe(15);
+		const child8 = node[8];
+		expect(child8!.b64).toBe(8);
 	});
 });
 
