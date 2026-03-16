@@ -3,13 +3,13 @@ import type { ASTNode } from '@creationix/rx'
 
 const textDecoder = new TextDecoder()
 
-const STR_COLOR = TAG_COLORS[',']!   // orange for string values
-const NUM_COLOR = TAG_COLORS['+']!   // green for numbers
-const PTR_COLOR = '#c586c0'          // purple for pointers
-const CHAIN_COLOR = '#4ec9b0'        // teal for chains
-const IDX_COLOR = TAG_COLORS['#']!   // gray for index
-const OBJ_COLOR = TAG_COLORS[':']!   // gold for objects/arrays
-const REF_COLOR = TAG_COLORS["'"]!   // blue for refs
+const STR_COLOR = TAG_COLORS[',']!
+const NUM_COLOR = TAG_COLORS['+']!
+const PTR_COLOR = TAG_COLORS['^']!
+const CHAIN_COLOR = TAG_COLORS['.']!
+const IDX_COLOR = TAG_COLORS['#']!
+const OBJ_COLOR = TAG_COLORS[':']!
+const REF_COLOR = TAG_COLORS["'"]!
 
 /** Render an ASTNode as an HTML string for a single encoding row. */
 export function renderNode(node: ASTNode): string {

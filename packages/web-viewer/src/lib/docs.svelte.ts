@@ -21,10 +21,10 @@ function generateId(): string {
 
 /** Migrate old mode values to new ones. */
 function migrateMode(m: string): Mode {
-	if (m === 'rexc' || m === 'json' || m === 'refs') return 'source'
+	if (m === 'rexc' || m === 'json' || m === 'refs' || m === 'source') return 'data'
 	if (m === 'inspect') return 'encoding'
-	if (m === 'source' || m === 'encoding' || m === 'data') return m as Mode
-	return 'source'
+	if (m === 'encoding' || m === 'data' || m === 'split') return m as Mode
+	return 'data'
 }
 
 function createDocStore() {
@@ -51,7 +51,7 @@ function createDocStore() {
 		if (!activeId) return
 		snapshots.set(activeId, {
 			rexcText: appState.rexcText,
-			jsonText: appState.jsonText,
+			jsonText: '',  // regenerated on demand — don't hold in memory
 			refsText: appState.refsText,
 			refsEnabled: appState.refsEnabled,
 			mode: appState.mode,
@@ -88,7 +88,7 @@ function createDocStore() {
 		for (const d of saved) {
 			snapshots.set(d.id, {
 				rexcText: d.rexcText,
-				jsonText: d.jsonText,
+				jsonText: '',  // regenerated on demand
 				refsText: d.refsText,
 				refsEnabled: d.refsEnabled,
 				mode: migrateMode(d.mode),
@@ -130,9 +130,8 @@ function createDocStore() {
 		syncFilesToVs()
 		saveState(vs)
 
-		// Background sync so both formats are available for stats
-		if (appState.rexcText && !appState.jsonFresh) appState.syncJson()
-		else if (appState.jsonText && !appState.rexcFresh) appState.syncRexc()
+		// Background sync — only convert json→rexc if needed (rexc is the source of truth)
+		if (appState.jsonText && !appState.rexcFresh) appState.syncRexc()
 	}
 
 	function persistViewState() {

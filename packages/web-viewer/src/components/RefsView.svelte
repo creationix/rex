@@ -1,12 +1,12 @@
 <script lang="ts">
-	import CodeMirrorEditor from './CodeMirrorEditor.svelte'
 	import { appState } from '../lib/state.svelte'
 	import { parseRefs } from '../lib/refs.ts'
 
 	let validationError = $state<string | null>(null)
 	let localRefs = $state(appState.refsText)
 
-	function handleChange(value: string) {
+	function handleInput(e: Event) {
+		const value = (e.target as HTMLTextAreaElement).value
 		localRefs = value
 		appState.setRefs(value)
 		try {
@@ -41,6 +41,14 @@
 		{/if}
 	</div>
 	<div class="flex-1 min-h-0">
-		<CodeMirrorEditor value={localRefs} onchange={handleChange} />
+		<textarea
+			value={localRefs}
+			oninput={handleInput}
+			class="w-full h-full resize-none bg-transparent text-[#ccc] px-4 py-3 outline-none font-[var(--font-mono)] text-sm"
+			spellcheck="false"
+			autocomplete="off"
+			autocapitalize="off"
+			placeholder="Paste refs JSON here..."
+		></textarea>
 	</div>
 </div>
