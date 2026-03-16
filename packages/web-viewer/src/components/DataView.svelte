@@ -5,6 +5,7 @@
 	import { stringify } from '@creationix/rx'
 	import type { ASTNode } from '@creationix/rx'
 	import { TAG_COLORS } from '../lib/colors.ts'
+	import { stringify as b64, sizeof as b64sizeof } from '@creationix/rx/b64'
 	import WelcomePage from './WelcomePage.svelte'
 	import { docStore } from '../lib/docs.svelte'
 
@@ -38,6 +39,8 @@
 
 	const totalHeight = $derived(rows.length * ROW_HEIGHT)
 	const visibleRows = $derived(rows.slice(visibleStart, Math.min(visibleEnd, rows.length)))
+	const gutterDigits = $derived(rootInspect ? Math.max(1, b64sizeof(rootInspect.right)) : 1)
+	function fmtOffset(n: number): string { return b64(n).padStart(gutterDigits, '0') }
 
 	function isContainer(v: unknown): boolean {
 		return v !== null && typeof v === 'object'
@@ -501,9 +504,16 @@
 						<div
 							data-row={idx}
 							class="flex items-center cursor-default {focusIdx === idx ? (isActive ? 'bg-[#1e1e30]' : 'bg-[#181820]') : 'hover:bg-[#131313]'}"
-							style="height: {ROW_HEIGHT}px; line-height: {ROW_HEIGHT}px; padding-left: {4 + row.depth * INDENT_PX}px;"
+							style="height: {ROW_HEIGHT}px; line-height: {ROW_HEIGHT}px;"
 						>
-							<span class="font-[var(--font-mono)] text-[13px] whitespace-nowrap">
+							<!-- Gutter: byte offset -->
+							<div
+								class="shrink-0 text-right pr-2 pl-2 select-none text-[11px] font-mono {focusIdx === idx ? (isActive ? 'text-[#888]' : 'text-[#666]') : 'text-[#444]'}"
+								style="width: calc({gutterDigits}ch + 1rem);"
+							>
+								{fmtOffset((row.keyNode ?? row.inspectNode)?.right ?? 0)}
+							</div>
+							<span class="font-mono text-[13px] whitespace-nowrap" style="padding-left: {row.depth * INDENT_PX}px;">
 								{#if row.isContainer}
 									<span data-action="fold" class="inline-block w-4 text-center text-[10px] text-[#555] cursor-pointer">{row.expanded ? '\u25BC' : '\u25B6'}</span>
 								{:else}
@@ -539,7 +549,7 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="fixed inset-0 z-50" onclick={() => ctxMenu = null} oncontextmenu={(e) => { e.preventDefault(); ctxMenu = null }}>
 		<div
-			class="absolute bg-[#1e1e1e] border border-[#333] rounded shadow-lg py-1 text-[13px] font-[var(--font-mono)]"
+			class="absolute bg-[#1e1e1e] border border-[#333] rounded shadow-lg py-1 text-[13px] font-mono"
 			style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;"
 		>
 			<button class="block w-full text-left px-3 py-1 text-[#ccc] hover:bg-[#094771] hover:text-white whitespace-nowrap" onclick={copyAsJson}>Copy as JSON</button>

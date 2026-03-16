@@ -7,6 +7,7 @@
 	import { stringify } from '@creationix/rx'
 	import { renderNode, annotateNode } from '../lib/rexc-bytes.ts'
 	import { TAG_COLORS, DIM_COLOR } from '../lib/colors.ts'
+	import { stringify as b64, sizeof as b64sizeof } from '@creationix/rx/b64'
 	import WelcomePage from './WelcomePage.svelte'
 
 	const ROW_HEIGHT = 22
@@ -35,7 +36,8 @@
 
 	const totalHeight = $derived(rows.length * ROW_HEIGHT)
 	const visibleRows = $derived(rows.slice(visibleStart, Math.min(visibleEnd, rows.length)))
-	const gutterWidth = $derived(rows.length > 0 ? Math.max(4, String(rows[rows.length - 1]?.node.right ?? 0).length) : 4)
+	const gutterDigits = $derived(rootNode ? Math.max(1, b64sizeof(rootNode.right)) : 1)
+	function fmtOffset(n: number): string { return b64(n).padStart(gutterDigits, '0') }
 
 	function isContainerTag(tag: string): boolean {
 		return CONTAINER_TAGS.has(tag)
@@ -496,15 +498,15 @@
 						>
 							<!-- Gutter: byte offset -->
 							<div
-								class="shrink-0 text-right pr-2 pl-2 select-none text-[11px] font-[var(--font-mono)] {focusIdx === idx ? (isActive ? 'text-[#888]' : 'text-[#666]') : 'text-[#444]'}"
-								style="width: {gutterWidth * 8 + 24}px;"
+								class="shrink-0 text-right pr-2 pl-2 select-none text-[11px] font-mono {focusIdx === idx ? (isActive ? 'text-[#888]' : 'text-[#666]') : 'text-[#444]'}"
+								style="width: calc({gutterDigits}ch + 1rem);"
 							>
-								{node.left}
+								{fmtOffset(node.right)}
 							</div>
 
 							<!-- Content -->
 							<div
-								class="flex-1 min-w-0 whitespace-nowrap font-[var(--font-mono)] text-[13px]"
+								class="flex-1 min-w-0 whitespace-nowrap font-mono text-[13px]"
 								style="padding-left: {row.depth * INDENT_PX}px;"
 							>
 								<!-- Fold arrow -->
@@ -560,7 +562,7 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="fixed inset-0 z-50" onclick={() => ctxMenu = null} oncontextmenu={(e) => { e.preventDefault(); ctxMenu = null }}>
 		<div
-			class="absolute bg-[#1e1e1e] border border-[#333] rounded shadow-lg py-1 text-[13px] font-[var(--font-mono)]"
+			class="absolute bg-[#1e1e1e] border border-[#333] rounded shadow-lg py-1 text-[13px] font-mono"
 			style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;"
 		>
 			<button class="block w-full text-left px-3 py-1 text-[#ccc] hover:bg-[#094771] hover:text-white whitespace-nowrap" onclick={copyAsJson}>Copy as JSON</button>
