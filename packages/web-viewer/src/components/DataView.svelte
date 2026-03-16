@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { untrack } from 'svelte'
 	import { appState } from '../lib/state.svelte'
-	import { encode, open, inspect, type ASTNode } from '@creationix/rx'
+	import { workerCall } from '../lib/worker.ts'
+	import { stringify } from '@creationix/rx'
+	import type { ASTNode } from '@creationix/rx'
 	import { TAG_COLORS } from '../lib/colors.ts'
 	import { docStore } from '../lib/docs.svelte'
 
@@ -14,60 +16,82 @@
 		key: string | number | undefined
 		value: unknown
 		inspectNode: ASTNode | null
+		keyNode: ASTNode | null
 		isContainer: boolean
 		expanded: boolean
 		path: string
 	}
 
 	let viewport = $state<HTMLDivElement | null>(null)
-	let rows = $state<DataRow[]>([])
+	let rows = $state.raw<DataRow[]>([])
 	let visibleStart = $state(0)
 	let visibleEnd = $state(0)
 	let errorMsg = $state<string | null>(null)
-	let lastBuiltText = ''
+	let lastParsedVersion = -1
 	let filterText = $state('')
-	let rootInspect = $state<ASTNode | null>(null)
+	let rootInspect = $state.raw<ASTNode | null>(null)
 	let ctxMenu = $state<{ x: number; y: number; row: DataRow } | null>(null)
+	let focusIdx = $state<number | null>(null)
+	type HistoryEntry = { path: string; scrollTop: number }
+	let jumpHistory: HistoryEntry[] = []
 
 	const totalHeight = $derived(rows.length * ROW_HEIGHT)
-	const visibleRows = $derived(rows.slice(visibleStart, visibleEnd))
+	const visibleRows = $derived(rows.slice(visibleStart, Math.min(visibleEnd, rows.length)))
 
 	function isContainer(v: unknown): boolean {
 		return v !== null && typeof v === 'object'
 	}
 
-	function buildTree(text: string) {
-		if (text === lastBuiltText) return
-		lastBuiltText = text
-		errorMsg = null
+	function buildTree() {
+		const version = appState.parsedVersion
+		if (version === lastParsedVersion) return
+		lastParsedVersion = version
+		errorMsg = appState.parsedError
 		filterText = ''
-		if (!text.trim()) {
+		jumpHistory = []
+		focusIdx = null
+		rootValue = appState.parsedOpen
+		rootInspect = appState.parsedInspect
+		if (!rootValue || !rootInspect) {
 			rows = []
 			rootInspect = null
+			rootValue = null
 			return
 		}
-		try {
-			const buf = new TextEncoder().encode(text.trim())
-			const root = open(buf, appState.refsEnabled ? appState.refs : undefined)
-			rootInspect = inspect(buf, appState.refsEnabled ? appState.refs : undefined)
-
-			const newRows: DataRow[] = []
-			if (isContainer(root)) {
-				newRows.push({ depth: 0, key: undefined, value: root, inspectNode: rootInspect!, isContainer: true, expanded: true, path: '$' })
-				addContainerChildren(newRows, root, rootInspect!, 1, '$')
-			} else {
-				newRows.push({ depth: 0, key: undefined, value: root, inspectNode: rootInspect, isContainer: false, expanded: false, path: '$' })
+		appState.setOpened(rootInspect.right)  // root node is always open
+		buildRows(rootValue, rootInspect)
+		// Restore focus from previous view if possible
+		const lastRight = appState.lastFocusedNodeRight
+		if (lastRight != null && rows.length > 0) {
+			let idx = rows.findIndex(r => r.inspectNode?.right === lastRight)
+			if (idx < 0) {
+				let bestIdx = -1, bestDepth = -1
+				for (let i = 0; i < rows.length; i++) {
+					const n = rows[i].inspectNode
+					if (n && lastRight >= n.left - n.size && lastRight <= n.right && rows[i].depth > bestDepth) {
+						bestIdx = i; bestDepth = rows[i].depth
+					}
+				}
+				idx = bestIdx
 			}
-			rows = newRows
-		} catch (e: any) {
-			errorMsg = e.message
-			rows = []
-			rootInspect = null
+			focusIdx = idx >= 0 ? idx : 0
+		} else if (rows.length > 0) {
+			focusIdx = 0
 		}
 	}
 
-	function addContainerChildren(target: DataRow[], value: unknown, inode: ASTNode, depth: number, parentPath: string) {
-		// Resolve pointers/chains to the actual container node
+	let rootValue: unknown = null
+
+	function buildRows(root: unknown, rootNode: ASTNode) {
+		const newRows: DataRow[] = []
+		const container = isContainer(root)
+		const expanded = container && appState.isOpened(rootNode.right)
+		newRows.push({ depth: 0, key: undefined, value: root, inspectNode: rootNode, keyNode: null, isContainer: container, expanded, path: '$' })
+		if (expanded) walk(root, rootNode, 1, '$', newRows)
+		rows = newRows
+	}
+
+	function walk(value: unknown, inode: ASTNode, depth: number, parentPath: string, target: DataRow[]) {
 		const resolved = inode.resolve
 
 		if (Array.isArray(value)) {
@@ -77,7 +101,11 @@
 				const path = `${parentPath}[${i}]`
 				const container = isContainer(child)
 				const childInode = resolved.tag === ';' ? resolved.index(i) ?? null : null
-				target.push({ depth, key: i, value: child, inspectNode: childInode, isContainer: container, expanded: false, path })
+				const expanded = container && childInode != null && appState.isOpened(childInode.right)
+				target.push({ depth, key: i, value: child, inspectNode: childInode, keyNode: null, isContainer: container, expanded, path })
+				if (expanded && childInode) {
+					walk(child, childInode, depth + 1, path, target)
+				}
 			}
 		} else if (value && typeof value === 'object') {
 			if (resolved.tag === ':' || resolved.tag === ';') {
@@ -86,7 +114,11 @@
 					const child = (value as any)[key]
 					const path = `${parentPath}.${key}`
 					const container = isContainer(child)
-					target.push({ depth, key, value: child, inspectNode: valNode ?? null, isContainer: container, expanded: false, path })
+					const expanded = container && valNode != null && appState.isOpened(valNode.right)
+					target.push({ depth, key, value: child, inspectNode: valNode ?? null, keyNode: keyNode, isContainer: container, expanded, path })
+					if (expanded && valNode) {
+						walk(child, valNode, depth + 1, path, target)
+					}
 				}
 			}
 		}
@@ -94,39 +126,194 @@
 
 	function toggleExpand(idx: number) {
 		const row = rows[idx]
-		if (!row || !row.isContainer) return
-		const newRows = [...rows]
-		if (row.expanded) {
-			let end = idx + 1
-			while (end < newRows.length && newRows[end].depth > row.depth) end++
-			newRows.splice(idx + 1, end - idx - 1)
-			newRows[idx] = { ...row, expanded: false }
-		} else {
-			const children: DataRow[] = []
-			if (row.inspectNode) {
-				addContainerChildren(children, row.value, row.inspectNode, row.depth + 1, row.path)
+		if (!row || !row.isContainer || !row.inspectNode) return
+		appState.toggleOpened(row.inspectNode.right)
+		if (rootValue && rootInspect) buildRows(rootValue, rootInspect)
+	}
+
+	const isActive = $derived(appState.mode !== 'split' || appState.activePane === 'data')
+
+	function setFocus(idx: number, { sync = true, scroll = true } = {}) {
+		if (idx < 0 || idx >= rows.length) return
+		focusIdx = idx
+		if (scroll) scrollToIdx(idx)
+		if (sync) {
+			const row = rows[idx]
+			// Prefer the key node for sync — it comes first in rexc read order
+			const syncNode = row?.keyNode ?? row?.inspectNode
+			if (syncNode) {
+				appState.notifyFocusSync(syncNode.right, 'data')
 			}
-			newRows.splice(idx + 1, 0, ...children)
-			newRows[idx] = { ...row, expanded: true }
 		}
-		rows = newRows
+	}
+
+	function handleExternalFocus(nodeRight: number) {
+		// Exact match on inspectNode.right
+		let idx = rows.findIndex(r => r.inspectNode?.right === nodeRight)
+		if (idx < 0) {
+			// Find the deepest row whose inspectNode range contains the target
+			let bestIdx = -1
+			let bestDepth = -1
+			for (let i = 0; i < rows.length; i++) {
+				const n = rows[i].inspectNode
+				if (n && nodeRight >= n.left - n.size && nodeRight <= n.right && rows[i].depth > bestDepth) {
+					bestIdx = i
+					bestDepth = rows[i].depth
+				}
+			}
+			idx = bestIdx
+		}
+		if (idx >= 0 && idx !== focusIdx) {
+			focusIdx = idx
+			scrollToIdx(idx)
+		}
+	}
+
+	function scrollToIdx(idx: number) {
+		if (!viewport) return
+		const rowTop = idx * ROW_HEIGHT
+		const viewportH = viewport.clientHeight
+		const centered = Math.max(0, rowTop - viewportH / 2 + ROW_HEIGHT / 2)
+		viewport.scrollTo({ top: centered })
+		onScroll()
+	}
+
+	function findParentIdx(idx: number): number | null {
+		const row = rows[idx]
+		if (!row || row.depth === 0) return null
+		for (let i = idx - 1; i >= 0; i--) {
+			if (rows[i].depth < row.depth) return i
+		}
+		return null
+	}
+
+	function goBack() {
+		if (jumpHistory.length === 0) return
+		const entry = jumpHistory.pop()!
+		const idx = rows.findIndex(r => r.path === entry.path)
+		if (idx >= 0) {
+			focusIdx = idx
+			if (viewport) {
+				const maxScroll = Math.max(0, rows.length * ROW_HEIGHT - viewport.clientHeight)
+				const scrollTop = Math.min(entry.scrollTop, maxScroll)
+				viewport.scrollTo({ top: scrollTop })
+				onScroll()
+				const rowTop = idx * ROW_HEIGHT
+				const rowBottom = rowTop + ROW_HEIGHT
+				const currentTop = viewport.scrollTop
+				const currentBottom = currentTop + viewport.clientHeight
+				if (rowTop < currentTop || rowBottom > currentBottom) {
+					scrollToIdx(idx)
+				}
+			}
+			const row = rows[idx]
+			if (row?.inspectNode) {
+				appState.notifyFocusSync(row.inspectNode.right, 'data')
+			}
+		}
+	}
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === 'Tab' && appState.mode === 'split') {
+			e.preventDefault()
+			appState.activePane = appState.activePane === 'data' ? 'encoding' : 'data'
+			return
+		}
+		if (rows.length === 0) return
+		switch (e.key) {
+			case 'ArrowDown': {
+				e.preventDefault()
+				setFocus(focusIdx == null ? 0 : Math.min(focusIdx + 1, rows.length - 1))
+				break
+			}
+			case 'ArrowUp': {
+				e.preventDefault()
+				setFocus(focusIdx == null ? 0 : Math.max(focusIdx - 1, 0))
+				break
+			}
+			case 'ArrowRight': {
+				e.preventDefault()
+				if (focusIdx == null) { setFocus(0); break }
+				const row = rows[focusIdx]
+				if (!row) break
+				if (row.isContainer) {
+					if (!row.expanded) {
+						toggleExpand(focusIdx)
+					} else if (focusIdx + 1 < rows.length) {
+						setFocus(focusIdx + 1)
+					}
+				}
+				break
+			}
+			case 'ArrowLeft': {
+				e.preventDefault()
+				if (focusIdx == null) { setFocus(0); break }
+				const row = rows[focusIdx]
+				if (!row) break
+				if (row.isContainer && row.expanded) {
+					toggleExpand(focusIdx)
+				} else {
+					const parentIdx = findParentIdx(focusIdx)
+					if (parentIdx != null) setFocus(parentIdx)
+				}
+				break
+			}
+			case 'Enter': {
+				e.preventDefault()
+				if (focusIdx == null) break
+				const row = rows[focusIdx]
+				if (!row) break
+				if (row.isContainer) {
+					toggleExpand(focusIdx)
+				}
+				break
+			}
+			case 'Backspace': {
+				e.preventDefault()
+				goBack()
+				break
+			}
+			case 'PageDown': {
+				e.preventDefault()
+				const pageSize = viewport ? Math.floor(viewport.clientHeight / ROW_HEIGHT) : 20
+				setFocus(Math.min((focusIdx ?? 0) + pageSize, rows.length - 1))
+				break
+			}
+			case 'PageUp': {
+				e.preventDefault()
+				const pageSize = viewport ? Math.floor(viewport.clientHeight / ROW_HEIGHT) : 20
+				setFocus(Math.max((focusIdx ?? 0) - pageSize, 0))
+				break
+			}
+			case 'Home': {
+				e.preventDefault()
+				setFocus(0)
+				break
+			}
+			case 'End': {
+				e.preventDefault()
+				setFocus(rows.length - 1)
+				break
+			}
+		}
 	}
 
 	function applyFilter(prefix: string) {
 		filterText = prefix
 		if (!prefix || !rootInspect || rootInspect.tag !== ':') {
-			// Rebuild from scratch
-			buildTree(appState.rexcText)
+			// Rebuild from scratch — force version mismatch
+			lastParsedVersion = -1
+			buildTree()
 			return
 		}
-		const buf = new TextEncoder().encode(appState.rexcText.trim())
-		const root = open(buf, appState.refsEnabled ? appState.refs : undefined)
+		const root = appState.parsedOpen
+		if (!root) return
 		const newRows: DataRow[] = []
 		for (const [keyNode, valNode] of rootInspect.filteredKeys(prefix)) {
 			const key = String(keyNode.value)
 			const child = (root as any)[key]
 			const container = isContainer(child)
-			newRows.push({ depth: 0, key, value: child, inspectNode: valNode ?? null, isContainer: container, expanded: false, path: `$.${key}` })
+			newRows.push({ depth: 0, key, value: child, inspectNode: valNode ?? null, keyNode: keyNode, isContainer: container, expanded: false, path: `$.${key}` })
 		}
 		rows = newRows
 	}
@@ -143,10 +330,10 @@
 	}
 
 	function valueColor(v: unknown): string {
-		if (typeof v === 'string') return '#ce9178'
-		if (typeof v === 'number') return '#b5cea8'
-		if (typeof v === 'boolean' || v === null || v === undefined) return '#569cd6'
-		return '#d4d4d4'
+		if (typeof v === 'string') return TAG_COLORS[',']
+		if (typeof v === 'number') return TAG_COLORS['+']
+		if (typeof v === 'boolean' || v === null || v === undefined) return TAG_COLORS["'"]
+		return TAG_COLORS[':']
 	}
 
 	function onScroll() {
@@ -160,12 +347,27 @@
 	function handleClick(e: MouseEvent) {
 		if (ctxMenu) { ctxMenu = null; return }
 		let el = e.target as HTMLElement | null
+		let foldClicked = false
 		while (el && el !== viewport) {
-			if (el.dataset.row != null) {
-				toggleExpand(parseInt(el.dataset.row))
-				return
+			if (el.dataset.action === 'fold') {
+				foldClicked = true
 			}
+			if (el.dataset.row != null) break
 			el = el.parentElement
+		}
+		if (!el || el === viewport || el.dataset.row == null) return
+		const idx = parseInt(el.dataset.row)
+		const row = rows[idx]
+		if (!row) return
+		const wasFocused = focusIdx === idx && isActive
+		// Push history before changing focus
+		if (focusIdx != null && focusIdx !== idx) {
+			jumpHistory.push({ path: rows[focusIdx].path, scrollTop: viewport?.scrollTop ?? 0 })
+		}
+		setFocus(idx, { scroll: false })
+		// Only toggle if: fold triangle was clicked directly, or row was already focused
+		if (row.isContainer && (foldClicked || wasFocused)) {
+			toggleExpand(idx)
 		}
 	}
 
@@ -193,25 +395,26 @@
 	async function copyAsRexc() {
 		if (!ctxMenu) return
 		try {
-			const buf = encode(ctxMenu.row.value)
-			await navigator.clipboard.writeText(new TextDecoder().decode(buf))
+			await navigator.clipboard.writeText(stringify(ctxMenu.row.value) ?? '')
 		} catch {}
 		ctxMenu = null
 	}
 
-	function extractAsDocument() {
+	async function extractAsDocument() {
 		if (!ctxMenu) return
 		const value = ctxMenu.row.value
-		const rexc = new TextDecoder().decode(encode(value))
-		const json = JSON.stringify(value)
-		docStore.newTab()
-		appState.restore({ rexcText: rexc, jsonText: json, refsText: '{}', refsEnabled: false, mode: 'data', sourceFormat: 'rexc' })
 		ctxMenu = null
+		// Re-encode via worker to resolve pointers
+		const json = JSON.stringify(value)
+		const { promise } = workerCall({ type: 'json-to-rexc', json, refs: {} })
+		const { result: rexc } = await promise
+		docStore.newTab()
+		appState.restore({ rexcText: rexc, jsonText: '', refsText: '{}', refsEnabled: false, mode: 'data', sourceFormat: 'rexc' })
 	}
 
 	$effect(() => {
-		const text = appState.rexcText
-		untrack(() => buildTree(text))
+		appState.parsedVersion  // track version changes
+		untrack(() => buildTree())
 	})
 
 	$effect(() => {
@@ -251,14 +454,34 @@
 		return pills
 	}
 
+	// Register for focus sync from other views
+	$effect(() => {
+		return appState.onFocusSync((nodeRight, source) => {
+			if (source !== 'data' && appState.mode === 'split') handleExternalFocus(nodeRight)
+		})
+	})
+
+	// Rebuild rows when expand state changes from other view (split mode only)
+	$effect(() => {
+		return appState.onExpandChange(() => {
+			if (appState.mode !== 'split' || appState.activePane === 'data') return
+			if (rootValue && rootInspect) buildRows(rootValue, rootInspect)
+		})
+	})
+
 	const showFilter = $derived(rootInspect?.tag === ':' && rows.length > 20)
 </script>
 
-<div class="h-full flex flex-col bg-[#0a0a0a]">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+	class="h-full flex flex-col bg-[#0a0a0a] outline-none"
+	tabindex="0"
+	onkeydown={handleKeydown}
+>
 	{#if errorMsg}
 		<div class="p-4 text-sm text-[#f48771]">Parse error: {errorMsg}</div>
 	{:else if rows.length === 0}
-		<div class="p-4 text-sm text-[#444]">No data. Switch to Source view to paste data.</div>
+		<div class="p-4 text-sm text-[#444]">No data. Use + to create a new document.</div>
 	{:else}
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -269,23 +492,26 @@
 			oncontextmenu={handleContextMenu}
 			class="flex-1 overflow-auto"
 		>
-			<div style="height: {totalHeight}px; position: relative;">
+			<div style="height: {totalHeight + 4}px; position: relative; padding-top: 4px;">
 				<div style="transform: translateY({visibleStart * ROW_HEIGHT}px);">
 					{#each visibleRows as row, i (visibleStart + i)}
 						{@const idx = visibleStart + i}
 						<div
 							data-row={idx}
-							class="flex items-center hover:bg-[#1a1a1a] cursor-default"
-							style="height: {ROW_HEIGHT}px; line-height: {ROW_HEIGHT}px; padding-left: {8 + row.depth * INDENT_PX}px;"
+							class="flex items-center cursor-default {focusIdx === idx ? (isActive ? 'bg-[#1e1e30]' : 'bg-[#181820]') : 'hover:bg-[#131313]'}"
+							style="height: {ROW_HEIGHT}px; line-height: {ROW_HEIGHT}px; padding-left: {4 + row.depth * INDENT_PX}px;"
 						>
 							<span class="font-[var(--font-mono)] text-[13px] whitespace-nowrap">
 								{#if row.isContainer}
-									<span class="inline-block w-4 text-center text-[10px] text-[#555] cursor-pointer">{row.expanded ? '\u25BC' : '\u25B6'}</span>
+									<span data-action="fold" class="inline-block w-4 text-center text-[10px] text-[#555] cursor-pointer">{row.expanded ? '\u25BC' : '\u25B6'}</span>
 								{:else}
 									<span class="inline-block w-4"></span>
 								{/if}
 								{#if row.key !== undefined}
-									<span style="color: {typeof row.key === 'number' ? '#b5cea8' : '#9cdcfe'}">{row.key}</span>
+									<span style="color: {typeof row.key === 'number' ? TAG_COLORS['+'] : TAG_COLORS['key']}">{row.key}</span>
+									{#each getPills(row.keyNode) as p}
+										<span class="ml-1.5 inline-block text-[10px] leading-[16px] rounded px-[3px]" style="background:{p.color}22;color:{p.color};border:1px solid {p.color}44;">{p.label}</span>
+									{/each}
 									<span class="text-[#555]">: </span>
 								{/if}
 								{#if !row.isContainer}

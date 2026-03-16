@@ -2,12 +2,10 @@
 	import { untrack } from 'svelte'
 	import { appState, type SourceFormat } from '../lib/state.svelte'
 	import { docStore } from '../lib/docs.svelte'
-	import CodeMirrorEditor from './CodeMirrorEditor.svelte'
 	import StatsPanel from './StatsPanel.svelte'
 
 	let localRexc = $state(appState.rexcText)
 	let localJson = $state(appState.jsonText)
-	let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
 	// Sync from appState when it changes externally (e.g. tab switch).
 	// Use untrack on the local var so we don't subscribe to it, and only
@@ -23,35 +21,29 @@
 		appState.syncJson()
 	}
 
-	function handleJsonChange(text: string) {
+	function handleJsonInput(e: Event) {
+		const text = (e.target as HTMLTextAreaElement).value
 		localJson = text
-		if (debounceTimer) clearTimeout(debounceTimer)
-		debounceTimer = setTimeout(() => {
-			appState.setJson(text)
-			// Background sync so rexc size is available in stats
-			appState.syncRexc()
-		}, 300)
+		appState.setJson(text)
+		appState.syncRexc()
 	}
 
 	async function handlePaste(e: ClipboardEvent) {
 		const text = e.clipboardData?.getData('text') ?? ''
 		if (!text) return
 		const wasEmpty = !appState.rexcText.trim() && !appState.jsonText.trim()
-		// Auto-detect: if it looks like JSON, switch format
-		const trimmed = text.trimStart()
-		if (/^[\[{"0-9tfn\-]/.test(trimmed)) {
-			try {
-				JSON.parse(text)
-				if (appState.sourceFormat !== 'json') {
-					appState.sourceFormat = 'json'
-				}
-				localJson = text
-				appState.setJson(text)
-				appState.syncRexc()
-				e.preventDefault()
-				if (wasEmpty) requestAnimationFrame(() => appState.switchMode('data'))
-				return
-			} catch { /* not JSON, keep as rexc */ }
+		// Auto-detect: try parsing as rexc first — if the span covers the whole input, it's rexc
+		if (!appState.isValidRexc(text.trim())) {
+			// Not valid rexc — treat as JSON
+			if (appState.sourceFormat !== 'json') {
+				appState.sourceFormat = 'json'
+			}
+			localJson = text
+			appState.setJson(text)
+			appState.syncRexc()
+			e.preventDefault()
+			if (wasEmpty) requestAnimationFrame(() => appState.switchMode('data'))
+			return
 		}
 		// rexc paste — let the textarea handle it, then switch if was empty
 		if (wasEmpty) {
@@ -99,7 +91,15 @@
 	<!-- Editor -->
 	<div class="flex-1 min-h-0 relative">
 		{#if appState.sourceFormat === 'json'}
-			<CodeMirrorEditor value={localJson} onchange={handleJsonChange} />
+			<textarea
+				value={localJson}
+				oninput={handleJsonInput}
+				class="w-full h-full resize-none bg-transparent text-[#ccc] px-4 py-3 outline-none font-[var(--font-mono)] text-sm"
+				spellcheck="false"
+				autocomplete="off"
+				autocapitalize="off"
+				placeholder="Paste JSON here..."
+			></textarea>
 		{:else}
 			<!-- svelte-ignore a11y_autofocus -->
 			<textarea

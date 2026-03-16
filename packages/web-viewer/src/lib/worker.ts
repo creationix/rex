@@ -1,26 +1,29 @@
 export type WorkerRequestBody =
 	| { type: 'rexc-to-json'; rexc: string; refs: Record<string, unknown> }
 	| { type: 'json-to-rexc'; json: string; refs: Record<string, unknown> }
+	| { type: 'rexc-compact-size'; rexc: string; refs: Record<string, unknown> }
 
 export type WorkerRequest = WorkerRequestBody & { id: number }
 
 export type WorkerResponse = {
 	id: number
 } & (
-	| { ok: true; result: string }
+	| { ok: true; result: string; compactSize?: number }
 	| { ok: false; error: string }
 )
 
 const worker = new Worker(new URL('../decode-worker.ts', import.meta.url), { type: 'module' })
 let workerSeq = 0
 
-export function workerCall(req: WorkerRequestBody): { id: number; promise: Promise<string> } {
+export type WorkerResult = { result: string; compactSize?: number }
+
+export function workerCall(req: WorkerRequestBody): { id: number; promise: Promise<WorkerResult> } {
 	const id = ++workerSeq
-	const promise = new Promise<string>((resolve, reject) => {
+	const promise = new Promise<WorkerResult>((resolve, reject) => {
 		function handler(e: MessageEvent<WorkerResponse>) {
 			if (e.data.id !== id) return
 			worker.removeEventListener('message', handler)
-			if (e.data.ok) resolve(e.data.result)
+			if (e.data.ok) resolve({ result: e.data.result, compactSize: e.data.compactSize })
 			else reject(new Error(e.data.error))
 		}
 		worker.addEventListener('message', handler)

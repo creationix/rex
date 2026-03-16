@@ -1,6 +1,10 @@
 <script lang="ts">
+	import { appState } from '../lib/state.svelte'
 	import { docStore } from '../lib/docs.svelte'
+	import PasteModal from './PasteModal.svelte'
 
+	let fileInput: HTMLInputElement
+	let pasteOpen = $state(false)
 	let renaming = $state<string | null>(null)
 	let renameValue = $state('')
 	let savePromptId = $state<string | null>(null)
@@ -55,16 +59,38 @@
 		window.addEventListener('keydown', onKeyDown)
 		return () => window.removeEventListener('keydown', onKeyDown)
 	})
+
+	function openFile() { fileInput.click() }
+
+	function handleFileSelected(e: Event) {
+		const file = (e.target as HTMLInputElement).files?.[0]
+		if (!file) return
+		const reader = new FileReader()
+		reader.onload = () => {
+			appState.loadFile(file.name, reader.result as string)
+			docStore.renameCurrentTab(file.name.replace(/\.[^.]+$/, ''))
+		}
+		reader.readAsText(file)
+		fileInput.value = ''
+	}
 </script>
 
 <aside class="w-48 flex flex-col border-r border-[#333] bg-[#111] overflow-hidden shrink-0">
+	<input bind:this={fileInput} type="file" accept=".json,.rexc,.rx" class="hidden" onchange={handleFileSelected} />
 	<div class="flex items-center justify-between px-3 py-2 border-b border-[#333]">
 		<span class="text-[10px] font-semibold text-[#666] uppercase tracking-wider">Documents</span>
-		<button
-			onclick={() => docStore.newTab()}
-			class="text-[#666] hover:text-white text-sm cursor-pointer"
-			title="New document"
-		>+</button>
+		<div class="flex items-center gap-1">
+			<button
+				onclick={openFile}
+				class="text-[#666] hover:text-white text-[10px] cursor-pointer px-0.5"
+				title="Open file"
+			>📂</button>
+			<button
+				onclick={() => { pasteOpen = true }}
+				class="text-[#666] hover:text-white text-sm cursor-pointer"
+				title="New document (paste)"
+			>+</button>
+		</div>
 	</div>
 
 	<div class="flex-1 overflow-y-auto">
@@ -145,3 +171,5 @@
 		</div>
 	{/if}
 </aside>
+
+<PasteModal bind:open={pasteOpen} />

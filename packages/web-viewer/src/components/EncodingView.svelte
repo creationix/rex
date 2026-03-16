@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { untrack } from 'svelte'
 	import { appState } from '../lib/state.svelte'
-	import { inspect, type ASTNode } from '@creationix/rx'
+	import { docStore } from '../lib/docs.svelte'
+	import type { ASTNode } from '@creationix/rx'
+	import { workerCall } from '../lib/worker.ts'
+	import { stringify } from '@creationix/rx'
 	import { renderNode, annotateNode } from '../lib/rexc-bytes.ts'
 	import { TAG_COLORS, DIM_COLOR } from '../lib/colors.ts'
 
@@ -17,18 +20,20 @@
 	}
 
 	let viewport = $state<HTMLDivElement | null>(null)
-	let rows = $state<EncRow[]>([])
+	let rows = $state.raw<EncRow[]>([])
 	let visibleStart = $state(0)
 	let visibleEnd = $state(0)
 	let errorMsg = $state<string | null>(null)
-	let flashIdx = $state<number | null>(null)
-	let lastBuiltText = ''
-	let opened = new Set<number>()  // node.left values of explicitly opened containers
+	let lastParsedVersion = -1
 	let filterText = $state('')
-	let rootNode = $state<ASTNode | null>(null)
+	let rootNode = $state.raw<ASTNode | null>(null)
+	let focusIdx = $state<number | null>(null)
+	let ctxMenu = $state<{ x: number; y: number; node: ASTNode } | null>(null)
+	type HistoryEntry = { nodeRight: number; scrollTop: number }
+	let jumpHistory: HistoryEntry[] = []
 
 	const totalHeight = $derived(rows.length * ROW_HEIGHT)
-	const visibleRows = $derived(rows.slice(visibleStart, visibleEnd))
+	const visibleRows = $derived(rows.slice(visibleStart, Math.min(visibleEnd, rows.length)))
 	const gutterWidth = $derived(rows.length > 0 ? Math.max(4, String(rows[rows.length - 1]?.node.right ?? 0).length) : 4)
 
 	function isContainerTag(tag: string): boolean {
@@ -43,7 +48,7 @@
 
 	function walk(node: ASTNode, depth: number, target: EncRow[]) {
 		const isContainer = isContainerTag(node.tag)
-		const isOpened = !isContainer || opened.has(node.left)
+		const isOpened = !isContainer || appState.isOpened(node.right)
 		target.push({ node, depth, opened: isOpened })
 		if (isContainer && isOpened) {
 			for (const child of node) {
@@ -52,74 +57,345 @@
 		}
 	}
 
-	function buildTree(text: string) {
-		if (text === lastBuiltText) return
-		lastBuiltText = text
-		errorMsg = null
+	function buildTree() {
+		const version = appState.parsedVersion
+		if (version === lastParsedVersion) return
+		lastParsedVersion = version
+		errorMsg = appState.parsedError
 		filterText = ''
-		opened = new Set()
-		if (!text.trim()) {
+		jumpHistory = []
+		focusIdx = null
+		const root = appState.parsedInspect
+		if (!root) {
 			rows = []
 			rootNode = null
 			return
 		}
-		try {
-			const buf = new TextEncoder().encode(text.trim())
-			const root = inspect(buf, appState.refsEnabled ? appState.refs : undefined)
-			rootNode = root
-			opened.add(root.left)  // root node is always open by default
-			buildRows(root)
-		} catch (e: any) {
-			errorMsg = e.message
-			rows = []
-			rootNode = null
+		rootNode = root
+		appState.setOpened(root.right)  // root node is always open by default
+		buildRows(root)
+		// Restore focus from previous view if possible
+		const lastRight = appState.lastFocusedNodeRight
+		if (lastRight != null && rows.length > 0) {
+			let idx = rows.findIndex(r => r.node.right === lastRight)
+			if (idx < 0) {
+				let bestIdx = -1, bestDepth = -1
+				for (let i = 0; i < rows.length; i++) {
+					const n = rows[i].node
+					if (lastRight >= n.left - n.size && lastRight <= n.right && rows[i].depth > bestDepth) {
+						bestIdx = i; bestDepth = rows[i].depth
+					}
+				}
+				idx = bestIdx
+			}
+			focusIdx = idx >= 0 ? idx : 0
+		} else if (rows.length > 0) {
+			focusIdx = 0
 		}
 	}
 
 	function toggleFold(idx: number) {
 		const row = rows[idx]
 		if (!row || !isContainerTag(row.node.tag)) return
-		const offset = row.node.left
-		if (opened.has(offset)) {
-			opened.delete(offset)
-		} else {
-			opened.add(offset)
-		}
-		// Rebuild rows from root
+		appState.toggleOpened(row.node.right)
 		if (rootNode) buildRows(rootNode)
 	}
 
-	function jumpToOffset(targetOffset: number) {
-		const idx = rows.findIndex(r => r.node.left === targetOffset || r.node.right === targetOffset)
-		if (idx >= 0 && viewport) {
-			const scrollTarget = idx * ROW_HEIGHT - viewport.clientHeight / 2 + ROW_HEIGHT / 2
-			viewport.scrollTo({ top: Math.max(0, scrollTarget), behavior: 'smooth' })
-			flashIdx = idx
-			setTimeout(() => { flashIdx = null }, 2000)
+	const isActive = $derived(appState.mode !== 'split' || appState.activePane === 'encoding')
+
+	function setFocus(idx: number, { sync = true, scroll = true } = {}) {
+		if (idx < 0 || idx >= rows.length) return
+		focusIdx = idx
+		if (scroll) scrollToIdx(idx)
+		if (sync) appState.notifyFocusSync(rows[idx].node.right, 'encoding')
+	}
+
+	function handleExternalFocus(nodeRight: number) {
+		// Exact match in current rows
+		let idx = rows.findIndex(r => r.node.right === nodeRight)
+		if (idx < 0) {
+			// No exact match — find the nearest visible ancestor (contains the offset)
+			let bestIdx = -1
+			let bestDepth = -1
+			for (let i = 0; i < rows.length; i++) {
+				const n = rows[i].node
+				if (nodeRight >= n.left - n.size && nodeRight <= n.right && rows[i].depth > bestDepth) {
+					bestIdx = i
+					bestDepth = rows[i].depth
+				}
+			}
+			idx = bestIdx
+		}
+		if (idx >= 0) {
+			focusIdx = idx
+			scrollToIdx(idx)
+		}
+	}
+
+	function scrollToIdx(idx: number) {
+		if (!viewport) return
+		const rowTop = idx * ROW_HEIGHT
+		const viewportH = viewport.clientHeight
+		const centered = Math.max(0, rowTop - viewportH / 2 + ROW_HEIGHT / 2)
+		viewport.scrollTo({ top: centered })
+		onScroll()
+	}
+
+	function jumpToOffset(targetOffset: number, pushHistory: boolean = true) {
+		const match = (r: EncRow) => r.node.right === targetOffset
+		// Push current focus to history before jumping
+		if (pushHistory && focusIdx != null && focusIdx < rows.length) {
+			jumpHistory.push({ nodeRight: rows[focusIdx].node.right, scrollTop: viewport?.scrollTop ?? 0 })
+		}
+		// Expand ancestors to reveal the target if needed
+		if (rootNode && !rows.some(match)) {
+			expandPathTo(rootNode, targetOffset)
+			buildRows(rootNode)
+		}
+		// Expand the target itself if it's a container
+		const row = rows.find(match)
+		if (row && isContainerTag(row.node.tag) && !appState.isOpened(row.node.right)) {
+			appState.setOpened(row.node.right)
+			if (rootNode) buildRows(rootNode)
+		}
+		// Focus the target
+		const idx = rows.findIndex(match)
+		if (idx >= 0) {
+			setFocus(idx)
+		}
+	}
+
+	function goBack() {
+		if (jumpHistory.length === 0) return
+		const entry = jumpHistory.pop()!
+		const idx = rows.findIndex(r => r.node.right === entry.nodeRight)
+		if (idx >= 0) {
+			focusIdx = idx
+			// Restore scroll position, but verify the row is visible
+			if (viewport) {
+				const maxScroll = Math.max(0, rows.length * ROW_HEIGHT - viewport.clientHeight)
+				const scrollTop = Math.min(entry.scrollTop, maxScroll)
+				viewport.scrollTo({ top: scrollTop })
+				onScroll()
+				// If the row ended up outside the viewport, scroll to it
+				const rowTop = idx * ROW_HEIGHT
+				const rowBottom = rowTop + ROW_HEIGHT
+				const currentTop = viewport.scrollTop
+				const currentBottom = currentTop + viewport.clientHeight
+				if (rowTop < currentTop || rowBottom > currentBottom) {
+					scrollToIdx(idx)
+				}
+			}
+			appState.notifyFocusSync(entry.nodeRight, 'encoding')
+		}
+	}
+
+	function expandPathTo(node: ASTNode, targetOffset: number): boolean {
+		if (node.right === targetOffset) return true
+		if (!isContainerTag(node.tag)) return false
+		if (targetOffset < node.left - node.size || targetOffset > node.right) return false
+		for (const child of node) {
+			if (expandPathTo(child, targetOffset)) {
+				appState.setOpened(node.right)
+				return true
+			}
+		}
+		return false
+	}
+
+	function findParentIdx(idx: number): number | null {
+		const row = rows[idx]
+		if (!row || row.depth === 0) return null
+		for (let i = idx - 1; i >= 0; i--) {
+			if (rows[i].depth < row.depth) return i
+		}
+		return null
+	}
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === 'Tab' && appState.mode === 'split') {
+			e.preventDefault()
+			appState.activePane = appState.activePane === 'encoding' ? 'data' : 'encoding'
+			return
+		}
+		if (rows.length === 0) return
+		switch (e.key) {
+			case 'ArrowDown': {
+				e.preventDefault()
+				setFocus(focusIdx == null ? 0 : Math.min(focusIdx + 1, rows.length - 1))
+				break
+			}
+			case 'ArrowUp': {
+				e.preventDefault()
+				setFocus(focusIdx == null ? 0 : Math.max(focusIdx - 1, 0))
+				break
+			}
+			case 'ArrowRight': {
+				e.preventDefault()
+				if (focusIdx == null) { setFocus(0); break }
+				const row = rows[focusIdx]
+				if (!row) break
+				if (isContainerTag(row.node.tag)) {
+					if (!row.opened) {
+						// Expand
+						appState.setOpened(row.node.right)
+						if (rootNode) buildRows(rootNode)
+						// Re-find the focused node after rebuild
+						const newIdx = rows.findIndex(r => r.node.right === row.node.right)
+						if (newIdx >= 0) focusIdx = newIdx
+					} else if (focusIdx + 1 < rows.length) {
+						// Already expanded, move to first child
+						setFocus(focusIdx + 1)
+					}
+				}
+				break
+			}
+			case 'ArrowLeft': {
+				e.preventDefault()
+				if (focusIdx == null) { setFocus(0); break }
+				const row = rows[focusIdx]
+				if (!row) break
+				if (isContainerTag(row.node.tag) && row.opened) {
+					// Collapse
+					appState.toggleOpened(row.node.right)
+					if (rootNode) buildRows(rootNode)
+					const newIdx = rows.findIndex(r => r.node.right === row.node.right)
+					if (newIdx >= 0) focusIdx = newIdx
+				} else {
+					// Go to parent
+					const parentIdx = findParentIdx(focusIdx)
+					if (parentIdx != null) setFocus(parentIdx)
+				}
+				break
+			}
+			case 'Enter': {
+				e.preventDefault()
+				if (focusIdx == null) break
+				const row = rows[focusIdx]
+				if (!row) break
+				if (row.node.tag === '^') {
+					// Follow pointer
+					const target = row.node.left - (row.node.b64 as number)
+					jumpToOffset(target)
+				} else if (isContainerTag(row.node.tag)) {
+					toggleFold(focusIdx)
+					// Re-find after rebuild
+					const newIdx = rows.findIndex(r => r.node.right === row.node.right)
+					if (newIdx >= 0) focusIdx = newIdx
+				}
+				break
+			}
+			case 'Backspace': {
+				e.preventDefault()
+				goBack()
+				break
+			}
+			case 'PageDown': {
+				e.preventDefault()
+				const pageSize = viewport ? Math.floor(viewport.clientHeight / ROW_HEIGHT) : 20
+				setFocus(Math.min((focusIdx ?? 0) + pageSize, rows.length - 1))
+				break
+			}
+			case 'PageUp': {
+				e.preventDefault()
+				const pageSize = viewport ? Math.floor(viewport.clientHeight / ROW_HEIGHT) : 20
+				setFocus(Math.max((focusIdx ?? 0) - pageSize, 0))
+				break
+			}
+			case 'Home': {
+				e.preventDefault()
+				setFocus(0)
+				break
+			}
+			case 'End': {
+				e.preventDefault()
+				setFocus(rows.length - 1)
+				break
+			}
 		}
 	}
 
 	function handleClick(e: MouseEvent) {
 		let el = e.target as HTMLElement | null
+		// Check if the fold triangle was clicked directly
+		let foldClicked = false
 		while (el && el !== viewport) {
 			if (el.dataset.action === 'fold' && el.dataset.row != null) {
-				toggleFold(parseInt(el.dataset.row))
-				return
+				foldClicked = true
+				break
 			}
 			if (el.dataset.action === 'jump' && el.dataset.offset != null) {
 				jumpToOffset(parseInt(el.dataset.offset))
 				return
 			}
-			if (el.dataset.row != null && !el.dataset.action) {
-				const idx = parseInt(el.dataset.row)
-				const row = rows[idx]
-				if (row && isContainerTag(row.node.tag)) {
-					toggleFold(idx)
+			if (el.dataset.row != null) break
+			el = el.parentElement
+		}
+		if (!el || el === viewport) return
+		const idx = parseInt(el.dataset.row!)
+		const row = rows[idx]
+		if (!row) return
+		const wasFocused = focusIdx === idx && isActive
+		// Push history before changing focus
+		if (focusIdx != null && focusIdx !== idx) {
+			jumpHistory.push({ nodeRight: rows[focusIdx].node.right, scrollTop: viewport?.scrollTop ?? 0 })
+		}
+		setFocus(idx, { scroll: false })
+		// Only toggle if: fold triangle was clicked directly, or row was already focused
+		if (isContainerTag(row.node.tag) && (foldClicked || wasFocused)) {
+			toggleFold(idx)
+			const newIdx = rows.findIndex(r => r.node.right === row.node.right)
+			if (newIdx >= 0) focusIdx = newIdx
+		}
+	}
+
+	function handleContextMenu(e: MouseEvent) {
+		let el = e.target as HTMLElement | null
+		while (el && el !== viewport) {
+			if (el.dataset.row != null) {
+				e.preventDefault()
+				const row = rows[parseInt(el.dataset.row)]
+				if (row) {
+					// For index nodes (#), use the parent container instead
+					let node = row.node
+					if (node.tag === '#') {
+						const parentIdx = findParentIdx(parseInt(el.dataset.row))
+						if (parentIdx != null) node = rows[parentIdx].node
+					}
+					ctxMenu = { x: e.clientX, y: e.clientY, node }
 				}
 				return
 			}
 			el = el.parentElement
 		}
+	}
+
+	async function copyAsRexc() {
+		if (!ctxMenu) return
+		try {
+			await navigator.clipboard.writeText(stringify(ctxMenu.node.value) ?? '')
+		} catch {}
+		ctxMenu = null
+	}
+
+	async function copyAsJson() {
+		if (!ctxMenu) return
+		try {
+			await navigator.clipboard.writeText(JSON.stringify(ctxMenu.node.value, null, 2))
+		} catch {}
+		ctxMenu = null
+	}
+
+	async function extractAsDocument() {
+		if (!ctxMenu) return
+		const value = ctxMenu.node.value
+		ctxMenu = null
+		// Re-encode via worker to resolve pointers
+		const json = JSON.stringify(value)
+		const { promise } = workerCall({ type: 'json-to-rexc', json, refs: {} })
+		const { result: rexc } = await promise
+		docStore.newTab()
+		appState.restore({ rexcText: rexc, jsonText: '', refsText: '{}', refsEnabled: false, mode: 'encoding', sourceFormat: 'rexc' })
 	}
 
 	function applyFilter(prefix: string) {
@@ -145,8 +421,8 @@
 	}
 
 	$effect(() => {
-		const text = appState.rexcText
-		untrack(() => buildTree(text))
+		appState.parsedVersion  // track version changes
+		untrack(() => buildTree())
 	})
 
 	$effect(() => {
@@ -158,24 +434,52 @@
 		}
 	})
 
+	// Register for focus sync from other views (only active in split mode)
+	$effect(() => {
+		return appState.onFocusSync((nodeRight, source) => {
+			if (source !== 'encoding' && appState.mode === 'split') handleExternalFocus(nodeRight)
+		})
+	})
+
+	// Rebuild rows when expand state changes from other view (split mode only)
+	$effect(() => {
+		return appState.onExpandChange((_nodeRight, _expanded) => {
+			if (appState.mode !== 'split' || appState.activePane === 'encoding') return
+			if (rootNode) {
+				const focusRight = focusIdx != null && focusIdx < rows.length ? rows[focusIdx].node.right : null
+				buildRows(rootNode)
+				if (focusRight != null) {
+					const newIdx = rows.findIndex(r => r.node.right === focusRight)
+					if (newIdx >= 0) focusIdx = newIdx
+				}
+			}
+		})
+	})
+
 	const showFilter = $derived(rootNode?.tag === ':' && rows.length > 20)
 </script>
 
-<div class="h-full flex flex-col bg-[#0a0a0a]">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+	class="h-full flex flex-col bg-[#0a0a0a] outline-none"
+	tabindex="0"
+	onkeydown={handleKeydown}
+>
 	{#if errorMsg}
 		<div class="p-4 text-sm text-[#f48771]">Parse error: {errorMsg}</div>
 	{:else if rows.length === 0}
-		<div class="p-4 text-sm text-[#444]">No data. Switch to Source view to paste data.</div>
+		<div class="p-4 text-sm text-[#444]">No data. Use + to create a new document.</div>
 	{:else}
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			bind:this={viewport}
-			onscroll={onScroll}
-			onclick={handleClick}
+			onscroll={() => { ctxMenu = null; onScroll() }}
+			onclick={(e) => { if (ctxMenu) { ctxMenu = null; return } handleClick(e) }}
+			oncontextmenu={handleContextMenu}
 			class="flex-1 overflow-auto"
 		>
-			<div style="height: {totalHeight}px; position: relative;">
+			<div style="height: {totalHeight + 4}px; position: relative; padding-top: 4px;">
 				<div style="transform: translateY({visibleStart * ROW_HEIGHT}px);">
 					{#each visibleRows as row, i (visibleStart + i)}
 						{@const idx = visibleStart + i}
@@ -185,13 +489,13 @@
 						{@const tagColor = TAG_COLORS[node.tag] || '#d4d4d4'}
 						<div
 							data-row={idx}
-							class="flex items-center hover:bg-[#1a1a1a] group {flashIdx === idx ? 'enc-flash' : ''}"
+							class="flex items-center group {focusIdx === idx ? (isActive ? 'bg-[#1e1e30]' : 'bg-[#181820]') : 'hover:bg-[#131313]'}"
 							style="height: {ROW_HEIGHT}px; line-height: {ROW_HEIGHT}px;"
 						>
 							<!-- Gutter: byte offset -->
 							<div
-								class="shrink-0 text-right pr-2 select-none text-[11px] text-[#444] font-[var(--font-mono)]"
-								style="width: {gutterWidth * 8 + 16}px;"
+								class="shrink-0 text-right pr-2 pl-2 select-none text-[11px] font-[var(--font-mono)] {focusIdx === idx ? (isActive ? 'text-[#888]' : 'text-[#666]') : 'text-[#444]'}"
+								style="width: {gutterWidth * 8 + 24}px;"
 							>
 								{node.left}
 							</div>
@@ -249,12 +553,18 @@
 	{/if}
 </div>
 
-<style>
-	@keyframes enc-highlight {
-		0%, 30% { background-color: rgba(255, 200, 50, 0.25); }
-		100% { background-color: transparent; }
-	}
-	:global(.enc-flash) {
-		animation: enc-highlight 2s ease-out;
-	}
-</style>
+{#if ctxMenu}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="fixed inset-0 z-50" onclick={() => ctxMenu = null} oncontextmenu={(e) => { e.preventDefault(); ctxMenu = null }}>
+		<div
+			class="absolute bg-[#1e1e1e] border border-[#333] rounded shadow-lg py-1 text-[13px] font-[var(--font-mono)]"
+			style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;"
+		>
+			<button class="block w-full text-left px-3 py-1 text-[#ccc] hover:bg-[#094771] hover:text-white whitespace-nowrap" onclick={copyAsJson}>Copy as JSON</button>
+			<button class="block w-full text-left px-3 py-1 text-[#ccc] hover:bg-[#094771] hover:text-white whitespace-nowrap" onclick={copyAsRexc}>Copy as REXC</button>
+			<div class="border-t border-[#333] my-1"></div>
+			<button class="block w-full text-left px-3 py-1 text-[#ccc] hover:bg-[#094771] hover:text-white whitespace-nowrap" onclick={extractAsDocument}>Extract as new document</button>
+		</div>
+	</div>
+{/if}

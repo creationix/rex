@@ -33,4 +33,10 @@ html, body, #app {
 	background: var(--color-bg);
 	color: var(--color-text);
 	font-family: system-ui, sans-serif;
+	color-scheme: dark;
+}
+
+* {
+	scrollbar-width: thin;
+	scrollbar-color: #333 transparent;
 }

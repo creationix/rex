@@ -26,10 +26,10 @@ export function emptyState(): ViewState {
 }
 
 function migrateMode(m: string): Mode {
-	if (m === 'rexc' || m === 'json' || m === 'refs') return 'source'
+	if (m === 'rexc' || m === 'json' || m === 'refs' || m === 'source') return 'data'
 	if (m === 'inspect') return 'encoding'
-	if (m === 'source' || m === 'encoding' || m === 'data') return m as Mode
-	return 'source'
+	if (m === 'encoding' || m === 'data' || m === 'split') return m as Mode
+	return 'data'
 }
 
 export function loadState(): ViewState {
