@@ -131,8 +131,25 @@
 	function toggleExpand(idx: number) {
 		const row = rows[idx]
 		if (!row || !row.isContainer || !row.inspectNode) return
+		const wasExpanded = row.expanded
 		appState.toggleOpened(row.inspectNode.right)
-		if (rootValue && rootInspect) buildRows(rootValue, rootInspect)
+		if (wasExpanded) {
+			// Collapse: remove children (all rows after idx with depth > row.depth)
+			let end = idx + 1
+			while (end < rows.length && rows[end].depth > row.depth) end++
+			const updated = [...rows]
+			updated[idx] = { ...row, expanded: false }
+			updated.splice(idx + 1, end - idx - 1)
+			rows = updated
+		} else {
+			// Expand: insert children after idx
+			const children: DataRow[] = []
+			walk(row.value, row.inspectNode, row.depth + 1, row.path, children)
+			const updated = [...rows]
+			updated[idx] = { ...row, expanded: true }
+			updated.splice(idx + 1, 0, ...children)
+			rows = updated
+		}
 	}
 
 	const isActive = $derived(appState.mode !== 'split' || appState.activePane === 'data')
@@ -467,9 +484,26 @@
 
 	// Rebuild rows when expand state changes from other view (split mode only)
 	$effect(() => {
-		return appState.onExpandChange(() => {
+		return appState.onExpandChange((nodeRight, expanded) => {
 			if (appState.mode !== 'split' || appState.activePane === 'data') return
-			if (rootValue && rootInspect) buildRows(rootValue, rootInspect)
+			const idx = rows.findIndex(r => r.inspectNode?.right === nodeRight)
+			if (idx < 0) return
+			const row = rows[idx]
+			if (expanded) {
+				const children: DataRow[] = []
+				if (row.inspectNode) walk(row.value, row.inspectNode, row.depth + 1, row.path, children)
+				const updated = [...rows]
+				updated[idx] = { ...row, expanded: true }
+				updated.splice(idx + 1, 0, ...children)
+				rows = updated
+			} else {
+				let end = idx + 1
+				while (end < rows.length && rows[end].depth > row.depth) end++
+				const updated = [...rows]
+				updated[idx] = { ...row, expanded: false }
+				updated.splice(idx + 1, end - idx - 1)
+				rows = updated
+			}
 		})
 	})
 

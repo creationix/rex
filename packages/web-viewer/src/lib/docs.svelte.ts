@@ -4,9 +4,9 @@
  */
 
 import { appState, type Mode, type SourceFormat } from './state.svelte'
-import { listDocs, putDoc, deleteDoc, type DocRecord } from './db.ts'
+import { listDocs, putDoc, deleteDoc } from './db.ts'
 import { contentHash } from './content-hash.ts'
-import { loadState, saveState, readHash, writeHash, mergeHashIntoState, emptyState, type ViewState, type FileEntry } from './viewstate.ts'
+import { loadState, saveState, emptyState, type ViewState } from './viewstate.ts'
 
 export interface DocTab {
 	id: string
@@ -41,6 +41,9 @@ function createDocStore() {
 		refsEnabled: boolean
 		mode: Mode
 		sourceFormat: SourceFormat
+		opened: number[]
+		focusRight: number | null
+		activePane: 'data' | 'encoding'
 	}>()
 
 	function activeHash(): string {
@@ -56,6 +59,9 @@ function createDocStore() {
 			refsEnabled: appState.refsEnabled,
 			mode: appState.mode,
 			sourceFormat: appState.sourceFormat,
+			opened: [...appState.opened],
+			focusRight: appState.lastFocusedNodeRight,
+			activePane: appState.activePane,
 		})
 		const tab = tabs.find(t => t.id === activeId)
 		if (tab) tab.contentHash = contentHash(appState.rexcText)
@@ -66,6 +72,9 @@ function createDocStore() {
 		if (!ch || ch === '0') return
 		vs.current = ch
 		vs.mode[ch] = appState.mode
+		vs.expanded[ch] = [...appState.opened]
+		vs.focus[ch] = appState.lastFocusedNodeRight
+		vs.pane[ch] = appState.activePane
 	}
 
 	function syncFilesToVs() {
@@ -85,7 +94,10 @@ function createDocStore() {
 			id: d.id, name: d.name, contentHash: d.contentHash || contentHash(d.rexcText), saved: true,
 		}))
 
+		vs = loadState()
+
 		for (const d of saved) {
+			const ch = savedTabs.find(t => t.id === d.id)?.contentHash ?? ''
 			snapshots.set(d.id, {
 				rexcText: d.rexcText,
 				jsonText: '',  // regenerated on demand
@@ -93,12 +105,11 @@ function createDocStore() {
 				refsEnabled: d.refsEnabled,
 				mode: migrateMode(d.mode),
 				sourceFormat: (d as any).sourceFormat === 'json' ? 'json' : 'rexc',
+				opened: vs.expanded[ch] ?? [],
+				focusRight: vs.focus[ch] ?? null,
+				activePane: vs.pane[ch] === 'encoding' ? 'encoding' : 'data',
 			})
 		}
-
-		vs = loadState()
-		const hash = readHash()
-		if (hash) vs = mergeHashIntoState(vs, hash)
 
 		// Apply mode from viewstate to snapshots (with migration)
 		for (const d of saved) {
@@ -137,15 +148,8 @@ function createDocStore() {
 		saveState(vs)
 	}
 
-	function updateUrlHash(push = false) {
-		const ch = activeHash()
-		writeHash({
-			file: ch,
-			expanded: [],
-			focus: null,
-			mode: appState.mode,
-		}, push)
-	}
+	// Auto-persist on expand/collapse changes
+	appState.onExpandChange(() => { persistViewState() })
 
 	function switchTab(id: string) {
 		if (id === activeId) return
@@ -155,7 +159,6 @@ function createDocStore() {
 		restoreSnapshot(id)
 		syncActiveToVs()
 		saveState(vs)
-		updateUrlHash(true)
 	}
 
 	function newTab() {
@@ -166,7 +169,6 @@ function createDocStore() {
 		activeId = id
 		restoreSnapshot(id)
 		saveState(vs)
-		updateUrlHash()
 	}
 
 	async function saveCurrentAs(name: string) {
@@ -193,7 +195,6 @@ function createDocStore() {
 		syncFilesToVs()
 		syncActiveToVs()
 		saveState(vs)
-		updateUrlHash()
 	}
 
 	async function saveCurrent() {
@@ -227,7 +228,6 @@ function createDocStore() {
 		syncFilesToVs()
 		syncActiveToVs()
 		saveState(vs)
-		updateUrlHash()
 	}
 
 	async function deleteTab(id: string) {
@@ -275,7 +275,6 @@ function createDocStore() {
 			if (tab) { tab.name = name; tabs = [...tabs] }
 		},
 		persistViewState,
-		updateUrlHash,
 	}
 }
 

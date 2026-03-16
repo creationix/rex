@@ -12,7 +12,6 @@
 		if (id === appState.mode) return
 		await appState.switchMode(id)
 		docStore.persistViewState()
-		docStore.updateUrlHash(true)
 	}
 </script>
 
