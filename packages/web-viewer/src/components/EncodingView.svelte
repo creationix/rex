@@ -461,6 +461,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div
 	class="h-full flex flex-col bg-[#0a0a0a] outline-none"
 	tabindex="0"
