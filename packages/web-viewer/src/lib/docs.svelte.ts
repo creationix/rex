@@ -111,10 +111,8 @@ function createDocStore() {
 		}
 
 		if (savedTabs.length === 0) {
-			// No saved docs — create a scratch tab
-			const scratchId = generateId()
-			tabs = [{ id: scratchId, name: 'untitled', contentHash: '0', saved: false }]
-			activeId = scratchId
+			tabs = []
+			activeId = ''
 		} else {
 			tabs = savedTabs
 			if (vs.current) {
@@ -218,7 +216,8 @@ function createDocStore() {
 
 		if (id === activeId) {
 			if (tabs.length === 0) {
-				newTab()
+				activeId = ''
+				appState.restore({ rexcText: '', jsonText: '', refsText: '{}', refsEnabled: false, mode: 'data', sourceFormat: 'rexc' })
 			} else {
 				const nextIdx = Math.min(idx, tabs.length - 1)
 				activeId = tabs[nextIdx].id

@@ -7,6 +7,7 @@
 	import { stringify } from '@creationix/rx'
 	import { renderNode, annotateNode } from '../lib/rexc-bytes.ts'
 	import { TAG_COLORS, DIM_COLOR } from '../lib/colors.ts'
+	import WelcomePage from './WelcomePage.svelte'
 
 	const ROW_HEIGHT = 22
 	const INDENT_PX = 16
@@ -468,7 +469,7 @@
 	{#if errorMsg}
 		<div class="p-4 text-sm text-[#f48771]">Parse error: {errorMsg}</div>
 	{:else if rows.length === 0}
-		<div class="p-4 text-sm text-[#444]">No data. Use + to create a new document.</div>
+		<WelcomePage />
 	{:else}
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->

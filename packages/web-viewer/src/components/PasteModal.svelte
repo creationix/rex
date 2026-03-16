@@ -52,22 +52,20 @@
 		validatedRexc = null
 	}
 
-	function submit() {
+	async function submit() {
 		if (!content.trim()) return
 		const err = validate(content)
 		if (err) { parseError = err; return }
 		docStore.newTab()
 		const docName = name.trim() || 'untitled'
-		docStore.renameCurrentTab(docName)
 		if (validatedRexc) {
-			// Already validated as rexc — load directly
 			appState.setRexc(validatedRexc)
 		} else {
-			// JSON input — need to convert to rexc
 			appState.setJson(content.trim())
-			appState.syncRexc()
+			await appState.syncRexc()
 		}
 		appState.mode = 'data'
+		await docStore.saveCurrentAs(docName)
 		close()
 	}
 

@@ -66,9 +66,11 @@
 		const file = (e.target as HTMLInputElement).files?.[0]
 		if (!file) return
 		const reader = new FileReader()
-		reader.onload = () => {
+		reader.onload = async () => {
+			docStore.newTab()
 			appState.loadFile(file.name, reader.result as string)
-			docStore.renameCurrentTab(file.name.replace(/\.[^.]+$/, ''))
+			const docName = file.name.replace(/\.[^.]+$/, '')
+			await docStore.saveCurrentAs(docName)
 		}
 		reader.readAsText(file)
 		fileInput.value = ''
@@ -142,6 +144,11 @@
 						>✕</button>
 					</div>
 				{/if}
+			</div>
+		{:else}
+			<div class="px-3 py-3 text-[10px] text-[#555]">
+				No documents open.<br/>
+				Click <span class="text-[#888]">+</span> to paste or <span class="text-[#888]">📂</span> to open a file.
 			</div>
 		{/each}
 	</div>

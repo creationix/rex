@@ -5,6 +5,7 @@
 	import { stringify } from '@creationix/rx'
 	import type { ASTNode } from '@creationix/rx'
 	import { TAG_COLORS } from '../lib/colors.ts'
+	import WelcomePage from './WelcomePage.svelte'
 	import { docStore } from '../lib/docs.svelte'
 
 	const ROW_HEIGHT = 24
@@ -481,7 +482,7 @@
 	{#if errorMsg}
 		<div class="p-4 text-sm text-[#f48771]">Parse error: {errorMsg}</div>
 	{:else if rows.length === 0}
-		<div class="p-4 text-sm text-[#444]">No data. Use + to create a new document.</div>
+		<WelcomePage />
 	{:else}
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
