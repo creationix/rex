@@ -1,5 +1,5 @@
 /**
- * Unified view state persistence — REXC-encoded in localStorage and URL hash.
+ * Unified view state persistence — REXC-encoded in localStorage.
  */
 
 import { stringify, parse } from '@creationix/rx'
@@ -14,15 +14,16 @@ export interface FileEntry {
 export interface ViewState {
 	files: FileEntry[]
 	current: string
-	expanded: Record<string, number[]>  // kept for backward compat, not actively used
-	focus: Record<string, string | null>  // kept for backward compat
+	expanded: Record<string, number[]>  // opened nodes keyed by contentHash
+	focus: Record<string, number | null>
 	mode: Record<string, Mode>
+	pane: Record<string, 'data' | 'encoding'>
 }
 
 const LS_KEY = 'rexc-viewer-state'
 
 export function emptyState(): ViewState {
-	return { files: [], current: '', expanded: {}, focus: {}, mode: {} }
+	return { files: [], current: '', expanded: {}, focus: {}, mode: {}, pane: {} }
 }
 
 function migrateMode(m: string): Mode {
@@ -43,12 +44,37 @@ export function loadState(): ViewState {
 				mode[k] = migrateMode(v as string)
 			}
 		}
+		const expanded: Record<string, number[]> = {}
+		if (obj.expanded) {
+			for (const [k, v] of Object.entries(obj.expanded)) {
+				expanded[k] = Array.isArray(v) ? (v as number[]) : []
+			}
+		}
+		const files: ViewState['files'] = []
+		if (Array.isArray(obj.files)) {
+			for (const f of obj.files) {
+				files.push({ id: f.id, name: f.name, contentHash: f.contentHash })
+			}
+		}
+		const focus: Record<string, number | null> = {}
+		if (obj.focus) {
+			for (const [k, v] of Object.entries(obj.focus)) {
+				focus[k] = typeof v === 'number' ? v : null
+			}
+		}
+		const pane: Record<string, 'data' | 'encoding'> = {}
+		if (obj.pane) {
+			for (const [k, v] of Object.entries(obj.pane)) {
+				pane[k] = v === 'encoding' ? 'encoding' : 'data'
+			}
+		}
 		return {
-			files: Array.isArray(obj.files) ? obj.files : [],
+			files,
 			current: obj.current ?? '',
-			expanded: obj.expanded ?? {},
-			focus: obj.focus ?? {},
+			expanded,
+			focus,
 			mode,
+			pane,
 		}
 	} catch {
 		return emptyState()
@@ -61,78 +87,11 @@ export function saveState(state: ViewState): void {
 			files: state.files,
 			current: state.current,
 			mode: state.mode,
+			expanded: state.expanded,
+			focus: state.focus,
+			pane: state.pane,
 		})
 		localStorage.setItem(LS_KEY, rexc)
 	} catch { /* localStorage full or unavailable */ }
 }
 
-// --- URL hash ---
-
-export interface HashState {
-	file: string
-	expanded: number[]
-	focus: string | null
-	mode: Mode | null
-}
-
-export function readHash(): HashState | null {
-	try {
-		const hash = location.hash.slice(1)
-		if (!hash) return null
-
-		const obj = parse(hash) as any
-		if (obj && typeof obj === 'object' && 'file' in obj) {
-			return {
-				file: obj.file ?? '',
-				expanded: [],
-				focus: null,
-				mode: obj.mode ? migrateMode(obj.mode) : null,
-			}
-		}
-
-		// Legacy: mode=xxx query param format
-		const params = new URLSearchParams(hash)
-		const m = params.get('mode')
-		if (m) {
-			return { file: '', expanded: [], focus: null, mode: migrateMode(m) }
-		}
-
-		return null
-	} catch {
-		return null
-	}
-}
-
-export function writeHash(hs: HashState, push = false): void {
-	try {
-		const rexc = stringify({
-			file: hs.file,
-			...(hs.mode ? { mode: hs.mode } : {}),
-		})
-		const url = '#' + rexc
-		if (push) {
-			history.pushState(history.state, '', url)
-		} else {
-			history.replaceState(history.state, '', url)
-		}
-	} catch { /* ignore encoding errors */ }
-}
-
-export function mergeHashIntoState(state: ViewState, hash: HashState): ViewState {
-	const merged = { ...state }
-
-	if (hash.file) {
-		const found = state.files.find(f => f.contentHash === hash.file)
-			?? state.files.find(f => f.name === hash.file)
-		if (found) {
-			merged.current = found.contentHash
-			if (hash.mode) {
-				merged.mode = { ...merged.mode, [found.contentHash]: hash.mode }
-			}
-		}
-	} else if (hash.mode && merged.current) {
-		merged.mode = { ...merged.mode, [merged.current]: hash.mode }
-	}
-
-	return merged
-}

@@ -100,8 +100,27 @@
 	function toggleFold(idx: number) {
 		const row = rows[idx]
 		if (!row || !isContainerTag(row.node.tag)) return
+		const wasOpened = row.opened
 		appState.toggleOpened(row.node.right)
-		if (rootNode) buildRows(rootNode)
+		if (wasOpened) {
+			// Collapse: remove children (all rows after idx with depth > row.depth)
+			let end = idx + 1
+			while (end < rows.length && rows[end].depth > row.depth) end++
+			const updated = [...rows]
+			updated[idx] = { ...row, opened: false }
+			updated.splice(idx + 1, end - idx - 1)
+			rows = updated
+		} else {
+			// Expand: insert children after idx
+			const children: EncRow[] = []
+			walk(row.node, row.depth, children)
+			// walk includes the node itself at [0], remove it — we only want its children
+			children.shift()
+			const updated = [...rows]
+			updated[idx] = { ...row, opened: true }
+			updated.splice(idx + 1, 0, ...children)
+			rows = updated
+		}
 	}
 
 	const isActive = $derived(appState.mode !== 'split' || appState.activePane === 'encoding')
@@ -240,14 +259,8 @@
 				if (!row) break
 				if (isContainerTag(row.node.tag)) {
 					if (!row.opened) {
-						// Expand
-						appState.setOpened(row.node.right)
-						if (rootNode) buildRows(rootNode)
-						// Re-find the focused node after rebuild
-						const newIdx = rows.findIndex(r => r.node.right === row.node.right)
-						if (newIdx >= 0) focusIdx = newIdx
+						toggleFold(focusIdx)
 					} else if (focusIdx + 1 < rows.length) {
-						// Already expanded, move to first child
 						setFocus(focusIdx + 1)
 					}
 				}
@@ -259,13 +272,8 @@
 				const row = rows[focusIdx]
 				if (!row) break
 				if (isContainerTag(row.node.tag) && row.opened) {
-					// Collapse
-					appState.toggleOpened(row.node.right)
-					if (rootNode) buildRows(rootNode)
-					const newIdx = rows.findIndex(r => r.node.right === row.node.right)
-					if (newIdx >= 0) focusIdx = newIdx
+					toggleFold(focusIdx)
 				} else {
-					// Go to parent
 					const parentIdx = findParentIdx(focusIdx)
 					if (parentIdx != null) setFocus(parentIdx)
 				}
@@ -446,15 +454,27 @@
 
 	// Rebuild rows when expand state changes from other view (split mode only)
 	$effect(() => {
-		return appState.onExpandChange((_nodeRight, _expanded) => {
+		return appState.onExpandChange((nodeRight, expanded) => {
 			if (appState.mode !== 'split' || appState.activePane === 'encoding') return
-			if (rootNode) {
-				const focusRight = focusIdx != null && focusIdx < rows.length ? rows[focusIdx].node.right : null
-				buildRows(rootNode)
-				if (focusRight != null) {
-					const newIdx = rows.findIndex(r => r.node.right === focusRight)
-					if (newIdx >= 0) focusIdx = newIdx
-				}
+			const idx = rows.findIndex(r => r.node.right === nodeRight)
+			if (idx < 0) return
+			if (expanded) {
+				// Expand: insert children
+				const children: EncRow[] = []
+				walk(rows[idx].node, rows[idx].depth, children)
+				children.shift()
+				const updated = [...rows]
+				updated[idx] = { ...rows[idx], opened: true }
+				updated.splice(idx + 1, 0, ...children)
+				rows = updated
+			} else {
+				// Collapse: remove children
+				let end = idx + 1
+				while (end < rows.length && rows[end].depth > rows[idx].depth) end++
+				const updated = [...rows]
+				updated[idx] = { ...rows[idx], opened: false }
+				updated.splice(idx + 1, end - idx - 1)
+				rows = updated
 			}
 		})
 	})

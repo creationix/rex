@@ -127,7 +127,7 @@ function createState() {
 		error = null
 	}
 
-	function restore(snap: { rexcText: string, jsonText: string, refsText: string, refsEnabled: boolean, mode: Mode, sourceFormat: SourceFormat }) {
+	function restore(snap: { rexcText: string, jsonText: string, refsText: string, refsEnabled: boolean, mode: Mode, sourceFormat: SourceFormat, opened?: number[], focusRight?: number | null, activePane?: 'data' | 'encoding' }) {
 		rexcText = snap.rexcText
 		jsonText = snap.jsonText
 		rexcFresh = !!snap.rexcText || !snap.jsonText
@@ -138,6 +138,16 @@ function createState() {
 		error = null
 		compactJsonSize = 0
 		setRefs(snap.refsText)  // calls rebuildParsed via setRefs
+		if (snap.opened?.length) {
+			opened = new Set(snap.opened)
+			openedVersion++
+		}
+		if (snap.focusRight != null) {
+			lastFocusedNodeRight = snap.focusRight
+		}
+		if (snap.activePane) {
+			activePane = snap.activePane
+		}
 		// Compute compact JSON size in background
 		if (rexcText.trim()) {
 			const { id, promise } = workerCall({ type: 'rexc-compact-size', rexc: rexcText.trim(), refs: activeRefs() })
