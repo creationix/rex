@@ -14,6 +14,7 @@
 	const INDENT_PX = 16
 	const OVERSCAN = 4
 	const CONTAINER_TAGS = new Set([':', ';', '.', '*'])
+	const MAX_PREFIX_RESULTS = 2000
 
 	type EncRow = {
 		node: ASTNode
@@ -28,6 +29,7 @@
 	let errorMsg = $state<string | null>(null)
 	let lastParsedVersion = -1
 	let filterText = $state('')
+	let prefixTruncated = $state(false)
 	let rootNode = $state.raw<ASTNode | null>(null)
 	let focusIdx = $state<number | null>(null)
 	let ctxMenu = $state<{ x: number; y: number; node: ASTNode } | null>(null)
@@ -235,6 +237,11 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
+		if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+			e.preventDefault()
+			appState.requestSearchFocus()
+			return
+		}
 		if (e.key === 'Tab' && appState.mode === 'split') {
 			e.preventDefault()
 			appState.activePane = appState.activePane === 'encoding' ? 'data' : 'encoding'
@@ -326,6 +333,25 @@
 		}
 	}
 
+	function rowSearchText(row: EncRow): string {
+		const value = row.node.value == null ? '' : String(row.node.value)
+		return `${row.node.tag} ${value} ${row.node.right}`.toLowerCase()
+	}
+
+	function findMatch(direction: 1 | -1) {
+		const q = appState.searchQuery.trim().toLowerCase()
+		if (q.startsWith('^')) return
+		if (!q || rows.length === 0) return
+		let idx = focusIdx ?? (direction === 1 ? -1 : 0)
+		for (let step = 0; step < rows.length; step++) {
+			idx = (idx + direction + rows.length) % rows.length
+			if (rowSearchText(rows[idx]).includes(q)) {
+				setFocus(idx)
+				return
+			}
+		}
+	}
+
 	function handleClick(e: MouseEvent) {
 		let el = e.target as HTMLElement | null
 		// Check if the fold triangle was clicked directly
@@ -349,7 +375,10 @@
 		const wasFocused = focusIdx === idx && isActive
 		// Push history before changing focus
 		if (focusIdx != null && focusIdx !== idx) {
-			jumpHistory.push({ nodeRight: rows[focusIdx].node.right, scrollTop: viewport?.scrollTop ?? 0 })
+			const focusedRow = rows[focusIdx]
+			if (focusedRow) {
+				jumpHistory.push({ nodeRight: focusedRow.node.right, scrollTop: viewport?.scrollTop ?? 0 })
+			}
 		}
 		setFocus(idx, { scroll: false })
 		// Only toggle if: fold triangle was clicked directly, or row was already focused
@@ -411,17 +440,41 @@
 
 	function applyFilter(prefix: string) {
 		filterText = prefix
+		prefixTruncated = false
 		if (!prefix || !rootNode || rootNode.tag !== ':') {
 			if (rootNode) buildRows(rootNode)
 			return
 		}
 		const newRows: EncRow[] = []
 		for (const [keyNode, valNode] of rootNode.filteredKeys(prefix)) {
+			if (newRows.length >= MAX_PREFIX_RESULTS * 2) {
+				prefixTruncated = true
+				break
+			}
 			newRows.push({ node: keyNode, depth: 0, opened: true })
 			newRows.push({ node: valNode, depth: 0, opened: true })
 		}
 		rows = newRows
 	}
+
+	let handledSearchNonce = -1
+	$effect(() => {
+		const q = appState.searchQuery
+		const trimmed = q.trim()
+		if (trimmed.startsWith('^')) {
+			const prefix = trimmed.slice(1)
+			if (prefix.length > 0) applyFilter(prefix)
+		} else if (filterText) {
+			applyFilter('')
+		}
+	})
+
+	$effect(() => {
+		const nonce = appState.searchNonce
+		if (nonce === handledSearchNonce) return
+		handledSearchNonce = nonce
+		findMatch(appState.searchDirection)
+	})
 
 	function onScroll() {
 		if (!viewport) return
@@ -482,18 +535,27 @@
 	const showFilter = $derived(rootNode?.tag === ':' && rows.length > 20)
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div
 	class="h-full flex flex-col bg-[#0a0a0a] outline-none"
 	tabindex="0"
+	role="tree"
+	aria-label="Encoding tree"
+	aria-activedescendant={focusIdx != null ? `enc-row-${focusIdx}` : undefined}
 	onkeydown={handleKeydown}
 >
 	{#if errorMsg}
 		<div class="p-4 text-sm text-[#f48771]">Parse error: {errorMsg}</div>
-	{:else if rows.length === 0}
-		<WelcomePage />
 	{:else}
+		{#if prefixTruncated}
+			<div class="px-3 py-1.5 text-[11px] text-[#dcdcaa] border-b border-[#333] bg-[#171717]">Showing first {MAX_PREFIX_RESULTS} prefix matches. Add more characters to narrow results.</div>
+		{/if}
+		{#if rows.length === 0}
+			{#if filterText}
+				<div class="p-4 text-sm text-[#888]">No matches for prefix "{filterText}".</div>
+			{:else}
+				<WelcomePage />
+			{/if}
+		{:else}
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
@@ -512,7 +574,12 @@
 						{@const ann = annotateNode(node)}
 						{@const tagColor = TAG_COLORS[node.tag] || '#d4d4d4'}
 						<div
+							id={`enc-row-${idx}`}
 							data-row={idx}
+							role="treeitem"
+							aria-level={row.depth + 1}
+							aria-expanded={isC ? row.opened : undefined}
+							aria-selected={focusIdx === idx}
 							class="flex items-center group {focusIdx === idx ? (isActive ? 'bg-[#1e1e30]' : 'bg-[#181820]') : 'hover:bg-[#131313]'}"
 							style="height: {ROW_HEIGHT}px; line-height: {ROW_HEIGHT}px;"
 						>
@@ -531,11 +598,13 @@
 							>
 								<!-- Fold arrow -->
 								{#if isC}
-									<span
+									<button
+										type="button"
 										data-action="fold"
 										data-row={idx}
+										aria-label={row.opened ? 'Collapse node' : 'Expand node'}
 										class="inline-block w-4 text-center text-[10px] text-[#555] cursor-pointer hover:text-white"
-									>{row.opened ? '\u25BC' : '\u25B6'}</span>
+									>{row.opened ? '\u25BC' : '\u25B6'}</button>
 								{:else}
 									<span class="inline-block w-4"></span>
 								{/if}
@@ -574,6 +643,7 @@
 				</div>
 			</div>
 		</div>
+		{/if}
 	{/if}
 </div>
 

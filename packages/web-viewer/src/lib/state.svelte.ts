@@ -19,6 +19,10 @@ function createState() {
 	let error = $state<string | null>(null)
 	let refs = $state.raw<Record<string, unknown>>({})
 	let activePane = $state<'data' | 'encoding'>('data')
+	let searchQuery = $state('')
+	let searchNonce = $state(0)
+	let searchDirection = $state<1 | -1>(1)
+	let searchFocusNonce = $state(0)
 	let lastFocusedNodeRight: number | null = null
 	let focusSyncListeners: Array<(nodeRight: number, source: 'data' | 'encoding') => void> = []
 
@@ -218,6 +222,16 @@ function createState() {
 		get refs() { return refs },
 		get activePane() { return activePane },
 		set activePane(v: 'data' | 'encoding') { activePane = v },
+		get searchQuery() { return searchQuery },
+		set searchQuery(v: string) { searchQuery = v },
+		get searchNonce() { return searchNonce },
+		get searchDirection() { return searchDirection },
+		requestSearch(direction: 1 | -1 = 1) {
+			searchDirection = direction
+			searchNonce++
+		},
+		get searchFocusNonce() { return searchFocusNonce },
+		requestSearchFocus() { searchFocusNonce++ },
 		notifyFocusSync(nodeRight: number, source: 'data' | 'encoding') {
 			activePane = source
 			lastFocusedNodeRight = nodeRight
