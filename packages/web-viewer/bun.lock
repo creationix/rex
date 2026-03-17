@@ -5,7 +5,7 @@
     "": {
       "name": "web-viewer",
       "dependencies": {
-        "@creationix/rx": "^0.6.8",
+        "@creationix/rx": "^0.7.0",
       },
       "devDependencies": {
         "@sveltejs/vite-plugin-svelte": "^7.0.0",
@@ -18,7 +18,7 @@
     },
   },
   "packages": {
-    "@creationix/rx": ["@creationix/rx@0.6.8", "", { "bin": { "rx": "rx-cli.ts" } }, "sha512-1MShJSmmTHD95vFJvir4rZoz8eSnjoThcRF+HxpDxJP5xsmaB/tZvkbuUbFNdAuwC+DL32xoaluUoAqMfkH90A=="],
+    "@creationix/rx": ["@creationix/rx@0.7.0", "", { "bin": { "rx": "dist/rx-cli.js" } }, "sha512-6BE9AQmAPLgbmmMuqKtQr9wR6Sx6h3/F8sAG7Uys/reynt9CDkF7979c1sNFliHhtNteaYCcmebTamra7pWitw=="],
 
     "@emnapi/core": ["@emnapi/core@1.9.0", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.0", "tslib": "^2.4.0" } }, "sha512-0DQ98G9ZQZOxfUcQn1waV2yS8aWdZ6kJMbYCJB3oUBecjWYO1fqJ+a1DRfPF3O5JEkwqwP1A9QEN/9mYm2Yd0w=="],
 
