@@ -9,7 +9,8 @@
 		"preview": "vite preview"
 	},
 	"dependencies": {
-		"@creationix/rx": "^0.7.0"
+		"@creationix/rx": "^0.7.0",
+		"@vercel/speed-insights": "^2.0.0"
 	},
 	"devDependencies": {
 		"@sveltejs/vite-plugin-svelte": "^7.0.0",
