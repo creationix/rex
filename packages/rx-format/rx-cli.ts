@@ -1,4 +1,9 @@
-import { open, inspect, stringify, encode, makeCursor, read, tune, INDEX_THRESHOLD, STRING_CHAIN_THRESHOLD, STRING_CHAIN_DELIMITER, KEY_COMPLEXITY_THRESHOLD } from "./rx";
+import {
+	open, inspect, stringify, encode,
+	makeCursor, read,
+	tune,
+	INDEX_THRESHOLD, STRING_CHAIN_THRESHOLD, STRING_CHAIN_DELIMITER, KEY_COMPLEXITY_THRESHOLD
+} from "./rx.ts";
 import { readdirSync } from "node:fs";
 import { readFile, writeFile, mkdir, unlink, lstat } from "node:fs/promises";
 import { homedir } from "node:os";

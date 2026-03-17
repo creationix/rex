@@ -4,9 +4,11 @@
 		"module": "ESNext",
 		"moduleResolution": "bundler",
 		"allowImportingTsExtensions": true,
-		"noEmit": true,
+		"emitDeclarationOnly": true,
+		"declaration": true,
+		"outDir": "dist",
 		"strict": true,
 		"skipLibCheck": true
 	},
-	"include": ["rx.ts", "b64.ts"]
+	"include": ["rx.ts"]
 }

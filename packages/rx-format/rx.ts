@@ -22,13 +22,114 @@ export function tune(options: Partial<{
   if (options.keyComplexityThreshold !== undefined) KEY_COMPLEXITY_THRESHOLD = options.keyComplexityThreshold;
 }
 
-import {
-  is as isB64,
-  read as b64Read,
-  fromZigZag,
-  toZigZag,
-  stringify as b64Stringify
-} from "./b64.ts";
+// ── Base64 numeric system ──
+// Numbers are written big-endian with the most significant digit on the left
+// There is no padding, not even for zero, which is an empty string
+
+export const b64regex = /^[0-9a-zA-Z\-_]*$/;
+
+export const b64chars =
+  "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
+
+// char-code -> digit-value (0xff = invalid)
+export const b64decodeTable = new Uint8Array(256).fill(0xff);
+
+// digit-value -> char-code
+export const b64encodeTable = new Uint8Array(64);
+
+for (let i = 0; i < 64; i++) {
+  const code = b64chars.charCodeAt(i);
+  b64decodeTable[code] = i;
+  b64encodeTable[i] = code;
+}
+
+// Return true if byte is 0-9, a-z, A-Z, '-' or '_'
+export function isB64(byte: number): boolean {
+  return b64decodeTable[byte] !== 0xff;
+}
+
+// Encode a number as b64 string
+export function b64Stringify(num: number): string {
+  if (!Number.isSafeInteger(num) || num < 0) {
+    throw new Error(`Cannot stringify ${num} as base64`);
+  }
+  let result = "";
+  while (num > 0) {
+    result = b64chars[num % 64] + result;
+    num = Math.floor(num / 64);
+  }
+  return result;
+}
+
+// Decode a b64 string to a number
+export function b64Parse(str: string): number {
+  let result = 0;
+  for (let i = 0; i < str.length; i++) {
+    const digit = b64decodeTable[str.charCodeAt(i)]!;
+    if (digit === 0xff) {
+      throw new Error(`Invalid base64 character: ${str[i]}`);
+    }
+    result = result * 64 + digit;
+  }
+  return result;
+}
+
+// Read a b64 number from a byte range
+export function b64Read(
+  data: Uint8Array,
+  left: number,
+  right: number,
+): number {
+  let result = 0;
+  for (let i = left; i < right; i++) {
+    const digit = b64decodeTable[data[i]!]!
+    if (digit === 0xff) {
+      throw new Error(`Invalid base64 character code: ${data[i]}`);
+    }
+    result = result * 64 + digit;
+  }
+  return result;
+}
+
+// Return the number of b64 digits needed to encode num
+export function b64Sizeof(num: number): number {
+  if (!Number.isSafeInteger(num) || num < 0) {
+    throw new Error(`Cannot calculate size of ${num} as base64`);
+  }
+  return Math.ceil(Math.log(num + 1) / Math.log(64));
+}
+
+export function b64Write(
+  data: Uint8Array,
+  left: number,
+  right: number,
+  num: number,
+) {
+  let offset = right - 1;
+  while (offset >= left) {
+    data[offset--] = b64encodeTable[num % 64]!;
+    num = Math.floor(num / 64);
+  }
+  if (num > 0) {
+    throw new Error(`Cannot write ${num} as base64`);
+  }
+}
+
+// Encode a signed integer as an unsigned zigzag value
+export function toZigZag(num: number): number {
+  if (num >= -0x80000000 && num <= 0x7fffffff) {
+    return ((num << 1) ^ (num >> 31)) >>> 0;
+  }
+  return num < 0 ? num * -2 - 1 : num * 2;
+}
+
+// Decode an unsigned zigzag value back to a signed integer
+export function fromZigZag(num: number): number {
+  if (num <= 0xffffffff) {
+    return (num >>> 1) ^ -(num & 1);
+  }
+  return num % 2 === 0 ? num / 2 : (num + 1) / -2;
+}
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
