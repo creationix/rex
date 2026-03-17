@@ -234,14 +234,14 @@ echo '{"x":1}' | rx --ast    # from stdin
 
 ## Base64 Utilities
 
-A compact base64 number encoding used internally by the REXC format, also available as a standalone import:
+A compact base64 number encoding used internally by the REXC format, exported from the main module:
 
 ```ts
-import { stringify, parse, sizeof, toZigZag, fromZigZag } from "@creationix/rx/b64";
+import { b64Stringify, b64Parse, b64Sizeof, toZigZag, fromZigZag } from "@creationix/rx";
 
-stringify(255)  // "3V"
-parse("3V")     // 255
-sizeof(255)     // 2 (digits needed)
+b64Stringify(255)  // "3V"
+b64Parse("3V")     // 255
+b64Sizeof(255)     // 2 (digits needed)
 
 toZigZag(-1)    // 1 (signed → unsigned)
 fromZigZag(1)   // -1 (unsigned → signed)
