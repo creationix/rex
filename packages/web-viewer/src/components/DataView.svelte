@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte'
 	import { appState } from '../lib/state.svelte'
-	import { workerCall } from '../lib/worker.ts'
+	import { workerCall, workerSearchStream, type SearchHit } from '../lib/worker.ts'
 	import { stringify } from '@creationix/rx'
 	import type { ASTNode } from '@creationix/rx'
 	import { TAG_COLORS } from '../lib/colors.ts'
@@ -12,6 +12,7 @@
 	const ROW_HEIGHT = 24
 	const INDENT_PX = 16
 	const OVERSCAN = 4
+	const MAX_PREFIX_RESULTS = 2000
 
 	type DataRow = {
 		depth: number
@@ -31,15 +32,27 @@
 	let errorMsg = $state<string | null>(null)
 	let lastParsedVersion = -1
 	let filterText = $state('')
+	let prefixTruncated = $state(false)
 	let rootInspect = $state.raw<ASTNode | null>(null)
 	let ctxMenu = $state<{ x: number; y: number; row: DataRow } | null>(null)
 	let focusIdx = $state<number | null>(null)
+	let searchHits = $state.raw<SearchHit[]>([])
+	let searchCursor = $state(-1)
+	let searchBusy = $state(false)
+	let searchTruncated = $state(false)
+	let searchTotal = $state(0)
+	let searchError = $state<string | null>(null)
+	let loadedQuery = ''
+	let searchSeq = 0
+	let cancelSearch: (() => void) | null = null
 	type HistoryEntry = { path: string; scrollTop: number }
 	let jumpHistory: HistoryEntry[] = []
 
 	const totalHeight = $derived(rows.length * ROW_HEIGHT)
 	const visibleRows = $derived(rows.slice(visibleStart, Math.min(visibleEnd, rows.length)))
 	const gutterDigits = $derived(rootInspect ? Math.max(1, b64sizeof(rootInspect.right)) : 1)
+	const searchQueryTrim = $derived(appState.searchQuery.trim())
+	const prefixMode = $derived(searchQueryTrim.startsWith('^'))
 	function fmtOffset(n: number): string { return b64(n).padStart(gutterDigits, '0') }
 
 	function isContainer(v: unknown): boolean {
@@ -235,6 +248,11 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
+		if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+			e.preventDefault()
+			appState.requestSearchFocus()
+			return
+		}
 		if (e.key === 'Tab' && appState.mode === 'split') {
 			e.preventDefault()
 			appState.activePane = appState.activePane === 'data' ? 'encoding' : 'data'
@@ -319,8 +337,133 @@
 		}
 	}
 
+	function rowSearchText(row: DataRow): string {
+		const key = row.key == null ? '' : String(row.key)
+		const value = row.isContainer ? '' : formatValue(row.value)
+		return `${row.path} ${key} ${value}`.toLowerCase()
+	}
+
+	function findMatch(direction: 1 | -1) {
+		const q = appState.searchQuery.trim().toLowerCase()
+		if (q.startsWith('^')) return
+		if (!q) return
+		if (loadedQuery !== q) startGlobalSearch(q)
+		if (searchHits.length === 0) {
+			if (searchBusy) return
+			let idx = focusIdx ?? (direction === 1 ? -1 : 0)
+			for (let step = 0; step < rows.length; step++) {
+				idx = (idx + direction + rows.length) % rows.length
+				if (rowSearchText(rows[idx]).includes(q)) {
+					setFocus(idx)
+					return
+				}
+			}
+			return
+		}
+		const len = searchHits.length
+		let next = searchCursor
+		if (next < 0) next = direction === 1 ? 0 : len - 1
+		else next = (next + direction + len) % len
+		searchCursor = next
+		jumpToSearchHit(searchHits[next])
+	}
+
+	function expandPathSegments(segments: Array<string | number>): number | null {
+		if (!rootInspect || !rootValue) return null
+		appState.setOpened(rootInspect.right)
+		let node: ASTNode | null = rootInspect
+		let value: any = rootValue
+		for (const seg of segments) {
+			if (!node) return null
+			if (typeof seg === 'number') {
+				const childNode: ASTNode | null = node.resolve.tag === ';' ? (node.resolve.index(seg) ?? null) : null
+				if (!childNode) return null
+				node = childNode
+				value = value?.[seg]
+			} else {
+				let childNode: ASTNode | null = null
+				if (node.resolve.tag === ':' || node.resolve.tag === ';') {
+					for (const [keyNode, valNode] of node.resolve.entries()) {
+						if (String(keyNode.value) === seg) {
+							childNode = valNode
+							break
+						}
+					}
+				}
+				if (!childNode) return null
+				node = childNode
+				value = value?.[seg]
+			}
+			if (node && isContainer(value)) appState.setOpened(node.right)
+		}
+		buildRows(rootValue, rootInspect)
+		onScroll()
+		return node?.right ?? null
+	}
+
+	function jumpToSearchHit(hit: SearchHit) {
+		let idx = rows.findIndex(r => r.path === hit.path)
+		if (idx < 0) {
+			const targetRight = expandPathSegments(hit.segments)
+			if (targetRight != null) idx = rows.findIndex(r => r.inspectNode?.right === targetRight)
+		}
+		if (idx >= 0) setFocus(idx)
+	}
+
+	function resetGlobalSearch() {
+		cancelSearch?.()
+		cancelSearch = null
+		searchHits = []
+		searchCursor = -1
+		searchBusy = false
+		searchTruncated = false
+		searchTotal = 0
+		searchError = null
+		loadedQuery = ''
+	}
+
+	function startGlobalSearch(query: string) {
+		cancelSearch?.()
+		searchHits = []
+		searchCursor = -1
+		searchBusy = true
+		searchTruncated = false
+		searchTotal = 0
+		searchError = null
+		loadedQuery = query
+		const rexc = appState.rexcText.trim()
+		if (!rexc) {
+			searchBusy = false
+			return
+		}
+		const seq = ++searchSeq
+		const refs = appState.refsEnabled ? appState.refs : {}
+		const { cancel } = workerSearchStream(
+			{ rexc, refs, query, limit: 20000 },
+			(hits: SearchHit[]) => {
+				if (seq !== searchSeq) return
+				if (hits.length === 0) return
+				searchHits = [...searchHits, ...hits]
+				searchTotal += hits.length
+			},
+			(info: { total: number; truncated: boolean }) => {
+				if (seq !== searchSeq) return
+				searchBusy = false
+				searchTruncated = info.truncated
+				searchTotal = info.total
+			},
+			(error: Error) => {
+				if (seq !== searchSeq) return
+				searchBusy = false
+				searchError = `Background search failed (${error.message}); using visible-row fallback.`
+			},
+		)
+		cancelSearch = cancel
+	}
+
 	function applyFilter(prefix: string) {
 		filterText = prefix
+		prefixTruncated = false
 		if (!prefix || !rootInspect || rootInspect.tag !== ':') {
 			// Rebuild from scratch — force version mismatch
 			lastParsedVersion = -1
@@ -331,6 +474,10 @@
 		if (!root) return
 		const newRows: DataRow[] = []
 		for (const [keyNode, valNode] of rootInspect.filteredKeys(prefix)) {
+			if (newRows.length >= MAX_PREFIX_RESULTS) {
+				prefixTruncated = true
+				break
+			}
 			const key = String(keyNode.value)
 			const child = (root as any)[key]
 			const container = isContainer(child)
@@ -338,6 +485,37 @@
 		}
 		rows = newRows
 	}
+
+	let handledSearchNonce = -1
+	$effect(() => {
+		const q = appState.searchQuery
+		const trimmed = q.trim()
+		if (trimmed.startsWith('^')) {
+			const prefix = trimmed.slice(1)
+			resetGlobalSearch()
+			if (prefix.length > 0) applyFilter(prefix)
+			else if (filterText) applyFilter('')
+		} else if (filterText) {
+			applyFilter('')
+			if (trimmed) startGlobalSearch(trimmed.toLowerCase())
+			else resetGlobalSearch()
+		} else if (trimmed) {
+			startGlobalSearch(trimmed.toLowerCase())
+		} else {
+			resetGlobalSearch()
+		}
+	})
+
+	$effect(() => {
+		const nonce = appState.searchNonce
+		if (nonce === handledSearchNonce) return
+		handledSearchNonce = nonce
+		findMatch(appState.searchDirection)
+	})
+
+	$effect(() => {
+		return () => cancelSearch?.()
+	})
 
 	function formatValue(v: unknown): string {
 		if (v === null) return 'null'
@@ -383,7 +561,10 @@
 		const wasFocused = focusIdx === idx && isActive
 		// Push history before changing focus
 		if (focusIdx != null && focusIdx !== idx) {
-			jumpHistory.push({ path: rows[focusIdx].path, scrollTop: viewport?.scrollTop ?? 0 })
+			const focusedRow = rows[focusIdx]
+			if (focusedRow) {
+				jumpHistory.push({ path: focusedRow.path, scrollTop: viewport?.scrollTop ?? 0 })
+			}
 		}
 		setFocus(idx, { scroll: false })
 		// Only toggle if: fold triangle was clicked directly, or row was already focused
@@ -510,18 +691,40 @@
 	const showFilter = $derived(rootInspect?.tag === ':' && rows.length > 20)
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div
 	class="h-full flex flex-col bg-[#0a0a0a] outline-none"
 	tabindex="0"
+	role="tree"
+	aria-label="Data tree"
+	aria-activedescendant={focusIdx != null ? `data-row-${focusIdx}` : undefined}
 	onkeydown={handleKeydown}
 >
 	{#if errorMsg}
 		<div class="p-4 text-sm text-[#f48771]">Parse error: {errorMsg}</div>
-	{:else if rows.length === 0}
-		<WelcomePage />
 	{:else}
+		{#if searchQueryTrim && !prefixMode}
+			<div class="px-3 py-1.5 text-[11px] text-[#888] border-b border-[#222] bg-[#111]">
+				{#if searchError}
+					{searchError}
+				{:else if searchBusy}
+					Searching all nodes for "{searchQueryTrim}"...
+				{:else if searchTotal > 0}
+					{searchTotal}{searchTruncated ? '+' : ''} matches for "{searchQueryTrim}". Use Enter/Shift+Enter or arrows to jump.
+				{:else}
+					No matches for "{searchQueryTrim}".
+				{/if}
+			</div>
+		{/if}
+		{#if prefixTruncated}
+			<div class="px-3 py-1.5 text-[11px] text-[#dcdcaa] border-b border-[#333] bg-[#171717]">Showing first {MAX_PREFIX_RESULTS} prefix matches. Add more characters to narrow results.</div>
+		{/if}
+		{#if rows.length === 0}
+			{#if filterText}
+				<div class="p-4 text-sm text-[#888]">No matches for prefix "{filterText}".</div>
+			{:else}
+				<WelcomePage />
+			{/if}
+		{:else}
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
@@ -536,7 +739,12 @@
 					{#each visibleRows as row, i (visibleStart + i)}
 						{@const idx = visibleStart + i}
 						<div
+							id={`data-row-${idx}`}
 							data-row={idx}
+							role="treeitem"
+							aria-level={row.depth + 1}
+							aria-expanded={row.isContainer ? row.expanded : undefined}
+							aria-selected={focusIdx === idx}
 							class="flex items-center cursor-default {focusIdx === idx ? (isActive ? 'bg-[#1e1e30]' : 'bg-[#181820]') : 'hover:bg-[#131313]'}"
 							style="height: {ROW_HEIGHT}px; line-height: {ROW_HEIGHT}px;"
 						>
@@ -549,7 +757,13 @@
 							</div>
 							<span class="font-mono text-[13px] whitespace-nowrap" style="padding-left: {row.depth * INDENT_PX}px;">
 								{#if row.isContainer}
-									<span data-action="fold" class="inline-block w-4 text-center text-[10px] text-[#555] cursor-pointer">{row.expanded ? '\u25BC' : '\u25B6'}</span>
+									<button
+										type="button"
+										data-action="fold"
+										data-row={idx}
+										aria-label={row.expanded ? 'Collapse node' : 'Expand node'}
+										class="inline-block w-4 text-center text-[10px] text-[#555] cursor-pointer"
+									>{row.expanded ? '\u25BC' : '\u25B6'}</button>
 								{:else}
 									<span class="inline-block w-4"></span>
 								{/if}
@@ -575,6 +789,7 @@
 				</div>
 			</div>
 		</div>
+		{/if}
 	{/if}
 </div>
 
