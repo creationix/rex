@@ -8,9 +8,10 @@
 	} from "../lib/worker.ts";
 	import { stringify, b64Stringify, b64Sizeof } from "@creationix/rx";
 	import type { ASTNode } from "@creationix/rx";
-	import { TAG_COLORS } from "../lib/colors.ts";
+
 	import WelcomePage from "./WelcomePage.svelte";
 	import { docStore } from "../lib/docs.svelte";
+	import { PILL_INFO, type Pill } from "../lib/colors.ts";
 
 	const ROW_HEIGHT = 24;
 	const INDENT_PX = 16;
@@ -617,11 +618,11 @@
 	}
 
 	function valueColor(v: unknown): string {
-		if (typeof v === "string") return TAG_COLORS[","];
-		if (typeof v === "number") return TAG_COLORS["+"];
+		if (typeof v === "string") return "var(--color-rexc-string)";
+		if (typeof v === "number") return "var(--color-rexc-number)";
 		if (typeof v === "boolean" || v === null || v === undefined)
-			return TAG_COLORS["'"];
-		return TAG_COLORS[":"];
+			return "var(--color-rexc-boolean)";
+		return "var(--color-rexc-object)";
 	}
 
 	function onScroll() {
@@ -735,35 +736,20 @@
 		}
 	});
 
-	const PILL_LABELS: Record<string, string> = {
-		",": "str",
-		".": "chain",
-		"^": "ptr",
-		":": "obj",
-		";": "arr",
-		"#": "idx",
-		"+": "int",
-		"*": "dec",
-		"'": "ref",
-	};
-
-	type Pill = { label: string; color: string };
 
 	function getPills(node: ASTNode | null): Pill[] {
 		if (!node) return [];
 		const pills: Pill[] = [];
 		const tag = node.tag;
-		const label = PILL_LABELS[tag];
-		const color = TAG_COLORS[tag];
-		if (label && color) pills.push({ label, color });
+		const info = PILL_INFO[tag];
+		if (info) pills.push(info);
 		// If it's a pointer or chain, also show the resolved type
 		if (tag === "^" || tag === ".") {
 			try {
 				const r = node.resolve;
 				if (r && r !== node && r.tag !== tag) {
-					const rLabel = PILL_LABELS[r.tag];
-					const rColor = TAG_COLORS[r.tag];
-					if (rLabel && rColor) pills.push({ label: rLabel, color: rColor });
+					const rInfo = PILL_INFO[r.tag];
+					if (rInfo) pills.push(rInfo);
 				}
 			} catch {
 				/* resolve can fail */
@@ -810,7 +796,7 @@
 </script>
 
 <div
-	class="h-full flex flex-col bg-[#0a0a0a] outline-none"
+	class="h-full flex flex-col bg-bg-deep outline-none"
 	tabindex="0"
 	role="tree"
 	aria-label="Data tree"
@@ -818,11 +804,11 @@
 	onkeydown={handleKeydown}
 >
 	{#if errorMsg}
-		<div class="p-4 text-sm text-[#f48771]">Parse error: {errorMsg}</div>
+		<div class="p-4 text-sm text-error">Parse error: {errorMsg}</div>
 	{:else}
 		{#if searchQueryTrim && !prefixMode}
 			<div
-				class="px-3 py-1.5 text-[11px] text-[#888] border-b border-[#222] bg-[#111]"
+				class="px-3 py-1.5 text-[11px] text-text-dim border-b border-border-subtle bg-bg-toolbar"
 			>
 				{#if searchError}
 					{searchError}
@@ -838,7 +824,7 @@
 		{/if}
 		{#if prefixTruncated}
 			<div
-				class="px-3 py-1.5 text-[11px] text-[#dcdcaa] border-b border-[#333] bg-[#171717]"
+				class="px-3 py-1.5 text-[11px] text-rexc-object border-b border-border bg-bg-toolbar"
 			>
 				Showing first {MAX_PREFIX_RESULTS} prefix matches. Add more characters to
 				narrow results.
@@ -846,7 +832,7 @@
 		{/if}
 		{#if rows.length === 0}
 			{#if filterText}
-				<div class="p-4 text-sm text-[#888]">
+				<div class="p-4 text-sm text-text-dim">
 					No matches for prefix "{filterText}".
 				</div>
 			{:else}
@@ -881,9 +867,9 @@
 								aria-selected={focusIdx === idx}
 								class="flex items-center cursor-default {focusIdx === idx
 									? isActive
-										? 'bg-[#1e1e30]'
-										: 'bg-[#181820]'
-									: 'hover:bg-[#131313]'}"
+										? 'bg-bg-row-even'
+										: 'bg-bg-row-odd'
+									: 'hover:bg-bg-hover'}"
 								style="height: {ROW_HEIGHT}px; line-height: {ROW_HEIGHT}px;"
 							>
 								<!-- Gutter: byte offset -->
@@ -891,9 +877,9 @@
 									class="shrink-0 text-right pr-2 pl-2 select-none text-[11px] font-mono {focusIdx ===
 									idx
 										? isActive
-											? 'text-[#888]'
-											: 'text-[#666]'
-										: 'text-[#444]'}"
+											? 'text-text-dim'
+											: 'text-text-muted'
+										: 'text-text-label'}"
 									style="width: calc({gutterDigits}ch + 1rem);"
 								>
 									{fmtOffset((row.keyNode ?? row.inspectNode)?.right ?? 0)}
@@ -910,7 +896,7 @@
 											aria-label={row.expanded
 												? "Collapse node"
 												: "Expand node"}
-											class="inline-block w-4 text-center text-[10px] text-[#555] cursor-pointer"
+											class="inline-block w-4 text-center text-[10px] text-text-placeholder cursor-pointer"
 											>{row.expanded ? "\u25BC" : "\u25B6"}</button
 										>
 									{:else}
@@ -919,17 +905,17 @@
 									{#if row.key !== undefined}
 										<span
 											style="color: {typeof row.key === 'number'
-												? TAG_COLORS['+']
-												: TAG_COLORS['key']}">{row.key}</span
+												? 'var(--color-rexc-number)'
+												: 'var(--color-rexc-variable)'}">{row.key}</span
 										>
 										{#each getPills(row.keyNode) as p}
 											<span
-												class="ml-1.5 inline-block text-[10px] leading-[16px] rounded px-[3px]"
-												style="background:{p.color}22;color:{p.color};border:1px solid {p.color}44;"
+												class="rx-pill ml-1.5 inline-block text-[10px] leading-[16px] rounded px-[3px]"
+												style="--pill-color:{p.color}; background:{p.color}22; color:{p.color}; border:1px solid {p.color}44;"
 												>{p.label}</span
 											>
 										{/each}
-										<span class="text-[#555]">: </span>
+										<span class="text-text-placeholder">: </span>
 									{/if}
 									{#if !row.isContainer}
 										<span style="color: {valueColor(row.value)}"
@@ -938,13 +924,13 @@
 									{/if}
 									{#each getPills(row.inspectNode) as p}
 										<span
-											class="ml-1.5 inline-block text-[10px] leading-[16px] rounded px-[3px]"
-											style="background:{p.color}22;color:{p.color};border:1px solid {p.color}44;"
+											class="rx-pill ml-1.5 inline-block text-[10px] leading-[16px] rounded px-[3px]"
+											style="--pill-color:{p.color}; background:{p.color}22; color:{p.color}; border:1px solid {p.color}44;"
 											>{p.label}</span
 										>
 									{/each}
 									{#if row.isContainer && row.inspectNode}
-										<span class="ml-1 text-[11px]" style="color: #555"
+										<span class="ml-1 text-[11px]" style="color: var(--color-text-placeholder)"
 											>{row.inspectNode.resolve.entryCount}</span
 										>
 									{/if}
@@ -970,20 +956,20 @@
 		}}
 	>
 		<div
-			class="absolute bg-[#1e1e1e] border border-[#333] rounded shadow-lg py-1 text-[13px] font-mono"
+			class="absolute bg-bg border border-border rounded shadow-lg py-1 text-[13px] font-mono"
 			style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;"
 		>
 			<button
-				class="block w-full text-left px-3 py-1 text-[#ccc] hover:bg-[#094771] hover:text-white whitespace-nowrap"
+				class="block w-full text-left px-3 py-1 text-text hover:bg-bg-selection hover:text-white whitespace-nowrap"
 				onclick={copyAsJson}>Copy as JSON</button
 			>
 			<button
-				class="block w-full text-left px-3 py-1 text-[#ccc] hover:bg-[#094771] hover:text-white whitespace-nowrap"
+				class="block w-full text-left px-3 py-1 text-text hover:bg-bg-selection hover:text-white whitespace-nowrap"
 				onclick={copyAsRexc}>Copy as REXC</button
 			>
-			<div class="border-t border-[#333] my-1"></div>
+			<div class="border-t border-border my-1"></div>
 			<button
-				class="block w-full text-left px-3 py-1 text-[#ccc] hover:bg-[#094771] hover:text-white whitespace-nowrap"
+				class="block w-full text-left px-3 py-1 text-text hover:bg-bg-selection hover:text-white whitespace-nowrap"
 				onclick={extractAsDocument}>Extract as new document</button
 			>
 		</div>

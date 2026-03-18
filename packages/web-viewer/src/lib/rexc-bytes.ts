@@ -1,15 +1,10 @@
-import { TAG_COLORS, B64_COLOR, DIM_COLOR } from './colors.ts'
+import { TAG_COLORS, PILL_INFO, B64_COLOR, DIM_COLOR } from './colors.ts'
 import type { ASTNode } from '@creationix/rx'
 
 const textDecoder = new TextDecoder()
 
-const STR_COLOR = TAG_COLORS[',']!
-const NUM_COLOR = TAG_COLORS['+']!
-const PTR_COLOR = TAG_COLORS['^']!
-const CHAIN_COLOR = TAG_COLORS['.']!
-const IDX_COLOR = TAG_COLORS['#']!
-const OBJ_COLOR = TAG_COLORS[':']!
-const REF_COLOR = TAG_COLORS["'"]!
+/** Look up pill info for a tag, returning label and color. */
+function pi(tag: string) { return PILL_INFO[tag] }
 
 /** Render an ASTNode as an HTML string for a single encoding row. */
 export function renderNode(node: ASTNode): string {
@@ -40,24 +35,18 @@ export function renderNode(node: ASTNode): string {
 
 function pill(label: string, color: string, title?: string): string {
 	const tt = title ? ` title="${escHtml(title)}"` : ''
-	return `<span${tt} style="background:${color}22;color:${color};border:1px solid ${color}44;border-radius:3px;padding:0 3px;font-size:10px;margin-right:3px;">${label}</span>`
+	return `<span class="rx-pill"${tt} style="--pill-color:${color};background:${color}22;color:${color};border:1px solid ${color}44;border-radius:3px;padding:0 3px;font-size:10px;margin-right:3px;">${label}</span>`
+}
+
+/** Emit a pill from a tag character. */
+function tagPill(tag: string, title?: string): string {
+	const p = pi(tag)
+	return p ? pill(p.label, p.color, title) : ''
 }
 
 function fmtStr(s: string): string {
 	const truncated = s.length > 200 ? s.slice(0, 197) + '...' : s
-	return `<span style="color:${STR_COLOR}">"${escHtml(truncated)}"</span>`
-}
-
-const TAG_PILL: Record<string, [string, string]> = {
-	',': ['str', STR_COLOR],
-	'.': ['chain', CHAIN_COLOR],
-	'^': ['ptr', PTR_COLOR],
-	':': ['obj', OBJ_COLOR],
-	';': ['arr', OBJ_COLOR],
-	'#': ['idx', IDX_COLOR],
-	'+': ['int', NUM_COLOR],
-	'*': ['dec', NUM_COLOR],
-	"'": ['ref', REF_COLOR],
+	return `<span style="color:${pi(',')!.color}">"${escHtml(truncated)}"</span>`
 }
 
 function resolveValueAnnotation(node: ASTNode): string {
@@ -66,8 +55,7 @@ function resolveValueAnnotation(node: ASTNode): string {
 		// Show a pill for the resolved node's type if it differs from the source
 		let mid = ''
 		if (r !== node && r.tag !== node.tag) {
-			const p = TAG_PILL[r.tag]
-			if (p) mid = pill(p[0], p[1])
+			mid = tagPill(r.tag)
 		}
 		const v = r.value
 		if (typeof v === 'string') return `${mid}${fmtStr(v)}`
@@ -77,7 +65,7 @@ function resolveValueAnnotation(node: ASTNode): string {
 		// For containers, add obj/arr pill only if not already shown via mid
 		const isArr = Array.isArray(v)
 		const cPill = (r.tag !== ':' && r.tag !== ';' && r.tag !== '#')
-			? pill(isArr ? 'arr' : 'obj', OBJ_COLOR) : ''
+			? pill(isArr ? 'arr' : 'obj', pi(':')!.color) : ''
 		return `${mid}${cPill}<span style="color:${DIM_COLOR}">${r.length}</span>`
 	} catch { /* resolve can fail on malformed data */ }
 	return ''
@@ -85,38 +73,42 @@ function resolveValueAnnotation(node: ASTNode): string {
 
 /** Annotation HTML for a node (shown after the main content). */
 export function annotateNode(node: ASTNode): string {
+	const p = pi(node.tag)
+	if (!p) return ''
+	const { color } = p
+
 	switch (node.tag) {
-		case '+': return `${pill('int', NUM_COLOR)}<span style="color:${NUM_COLOR}">${node.b64}</span>`
-		case '*': return `${pill('dec', NUM_COLOR)}<span style="color:${NUM_COLOR}">${node.value}</span>`
+		case '+': return `${tagPill('+')}<span style="color:${color}">${node.b64}</span>`
+		case '*': return `${tagPill('*')}<span style="color:${color}">${node.value}</span>`
 		case ',': {
 			const content = textDecoder.decode(node.data.subarray(node.left - node.size, node.left))
-			return `${pill('str', STR_COLOR)}${fmtStr(content)}`
+			return `${tagPill(',')}${fmtStr(content)}`
 		}
 		case "'": {
 			const v = node.value
-			if (v === null) return `${pill('ref', REF_COLOR)}<span style="color:${REF_COLOR}">null</span>`
-			if (v === true) return `${pill('ref', REF_COLOR)}<span style="color:${REF_COLOR}">true</span>`
-			if (v === false) return `${pill('ref', REF_COLOR)}<span style="color:${REF_COLOR}">false</span>`
-			if (v === undefined) return `${pill('ref', REF_COLOR)}<span style="color:${REF_COLOR}">undefined</span>`
-			if (typeof v === 'number') return `${pill('ref', REF_COLOR)}<span style="color:${REF_COLOR}">${v}</span>`
-			return pill('ref', REF_COLOR)
+			if (v === null) return `${tagPill("'")}<span style="color:${color}">null</span>`
+			if (v === true) return `${tagPill("'")}<span style="color:${color}">true</span>`
+			if (v === false) return `${tagPill("'")}<span style="color:${color}">false</span>`
+			if (v === undefined) return `${tagPill("'")}<span style="color:${color}">undefined</span>`
+			if (typeof v === 'number') return `${tagPill("'")}<span style="color:${color}">${v}</span>`
+			return tagPill("'")
 		}
-		case ':': return `${pill('obj', OBJ_COLOR)}<span style="color:${DIM_COLOR}">${node.length}</span>`
-		case ';': return `${pill('arr', OBJ_COLOR)}<span style="color:${DIM_COLOR}">${node.length}</span>`
+		case ':': return `${tagPill(':')}<span style="color:${DIM_COLOR}">${node.length}</span>`
+		case ';': return `${tagPill(';')}<span style="color:${DIM_COLOR}">${node.length}</span>`
 		case '^': {
 			const target = String(node.left - (node.b64 as number))
 			const val = resolveValueAnnotation(node)
-			if (!val) return pill('ptr', PTR_COLOR, `→ @${target}`)
-			return `${pill('ptr', PTR_COLOR, `→ @${target}`)}${val}`
+			if (!val) return tagPill('^', `→ @${target}`)
+			return `${tagPill('^', `→ @${target}`)}${val}`
 		}
 		case '.': {
 			const val = resolveValueAnnotation(node)
 			if (!val) return ''
-			return `${pill('chain', CHAIN_COLOR)}${val}`
+			return `${tagPill('.')}${val}`
 		}
 		case '#': {
 			const b64 = node.b64 as { count: number; width: number }
-			return `${pill('idx', IDX_COLOR)}<span style="color:${DIM_COLOR}">${b64.count}×${b64.width}</span>`
+			return `${tagPill('#')}<span style="color:${DIM_COLOR}">${b64.count}×${b64.width}</span>`
 		}
 		default: return ''
 	}

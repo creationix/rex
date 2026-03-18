@@ -27,29 +27,29 @@
 	})
 </script>
 
-<div class="flex gap-6 px-4 py-2.5 border-t border-[#222] bg-[#0a0a0a] text-xs text-[#666]">
+<div class="flex gap-6 px-4 py-2.5 border-t border-border-subtle bg-bg-deep text-xs text-text-muted">
 	<div class="flex gap-1.5">
-		<span class="text-[#444]">RX</span>
-		<span class="{appState.rexcFresh ? 'text-[#999]' : 'text-[#444] italic'}">{humanSize(appState.rexcSize)}{appState.rexcFresh ? '' : ' ~'}</span>
+		<span class="text-text-label">RX</span>
+		<span class="{appState.rexcFresh ? 'text-text-dim' : 'text-text-label italic'}">{humanSize(appState.rexcSize)}{appState.rexcFresh ? '' : ' ~'}</span>
 	</div>
 	<div class="flex gap-1.5">
-		<span class="text-[#444]">JSON</span>
+		<span class="text-text-label">JSON</span>
 		{#if appState.jsonFresh && compactJsonSize > 0 && compactJsonSize < appState.jsonSize}
-			<span class="text-[#999]">{humanSize(compactJsonSize)}</span>
-			<span class="text-[#444]">({humanSize(appState.jsonSize)} pretty)</span>
+			<span class="text-text-dim">{humanSize(compactJsonSize)}</span>
+			<span class="text-text-label">({humanSize(appState.jsonSize)} pretty)</span>
 		{:else}
-			<span class="{appState.jsonFresh ? 'text-[#999]' : 'text-[#444] italic'}">{humanSize(appState.jsonSize)}{appState.jsonFresh ? '' : ' ~'}</span>
+			<span class="{appState.jsonFresh ? 'text-text-dim' : 'text-text-label italic'}">{humanSize(appState.jsonSize)}{appState.jsonFresh ? '' : ' ~'}</span>
 		{/if}
 	</div>
 	{#if ratio}
 		<div class="flex gap-1.5">
-			<span class="text-[#444]">Ratio</span>
-			<span class="text-[#999]">{ratio}</span>
+			<span class="text-text-label">Ratio</span>
+			<span class="text-text-dim">{ratio}</span>
 		</div>
 	{/if}
 	{#if savings}
 		<div class="flex gap-1.5">
-			<span class="text-[#4ec9b0]">{savings}</span>
+			<span class="text-accent">{savings}</span>
 		</div>
 	{/if}
 </div>
