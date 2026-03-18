@@ -5,13 +5,34 @@
 	--color-bg-secondary: #252526;
 	--color-bg-tertiary: #2d2d2d;
 	--color-bg-hover: #2a2d2e;
+	--color-bg-deep: #0a0a0a;
+	--color-bg-toolbar: #111;
+	--color-bg-active: #1a1a1a;
+	--color-bg-selection: #094771;
+	--color-bg-error: #2a1215;
+	--color-bg-overlay: rgba(0, 0, 0, 0.67);
+	--color-bg-row-even: #1e1e30;
+	--color-bg-row-odd: #181820;
+
 	--color-border: #333;
+	--color-border-subtle: #222;
+	--color-border-focus: #555;
+	--color-border-error: #f4877133;
+
 	--color-text: #ccc;
 	--color-text-bright: #d4d4d4;
 	--color-text-dim: #888;
+	--color-text-muted: #666;
+	--color-text-label: #444;
 	--color-text-placeholder: #555;
+	--color-text-inverse: #000;
+
 	--color-accent: #4ec9b0;
 	--color-error: #f48771;
+
+	--color-btn-primary-bg: white;
+	--color-btn-primary-text: black;
+	--color-btn-primary-hover: #ddd;
 
 	/* REXC kind colors */
 	--color-rexc-string: #ce9178;
@@ -23,7 +44,7 @@
 	--color-rexc-opcode: #4ec9b0;
 	--color-rexc-mutation: #f48771;
 
-	--font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+--font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
 }
 
 html, body, #app {
@@ -38,5 +59,12 @@ html, body, #app {
 
 * {
 	scrollbar-width: thin;
-	scrollbar-color: #333 transparent;
+	scrollbar-color: var(--color-border) transparent;
+}
+
+/* Brighter pill badges in VS Code webview */
+.vscode .rx-pill {
+	background-color: color-mix(in srgb, var(--pill-color) 15%, transparent) !important;
+	color: var(--pill-color) !important;
+	border-color: color-mix(in srgb, var(--pill-color) 30%, transparent) !important;
 }

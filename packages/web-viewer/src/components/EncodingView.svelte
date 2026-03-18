@@ -598,7 +598,7 @@
 </script>
 
 <div
-	class="h-full flex flex-col bg-[#0a0a0a] outline-none"
+	class="h-full flex flex-col bg-bg-deep outline-none"
 	tabindex="0"
 	role="tree"
 	aria-label="Encoding tree"
@@ -606,11 +606,11 @@
 	onkeydown={handleKeydown}
 >
 	{#if errorMsg}
-		<div class="p-4 text-sm text-[#f48771]">Parse error: {errorMsg}</div>
+		<div class="p-4 text-sm text-error">Parse error: {errorMsg}</div>
 	{:else}
 		{#if prefixTruncated}
 			<div
-				class="px-3 py-1.5 text-[11px] text-[#dcdcaa] border-b border-[#333] bg-[#171717]"
+				class="px-3 py-1.5 text-[11px] text-rexc-object border-b border-border bg-bg-toolbar"
 			>
 				Showing first {MAX_PREFIX_RESULTS} prefix matches. Add more characters to
 				narrow results.
@@ -618,7 +618,7 @@
 		{/if}
 		{#if rows.length === 0}
 			{#if filterText}
-				<div class="p-4 text-sm text-[#888]">
+				<div class="p-4 text-sm text-text-dim">
 					No matches for prefix "{filterText}".
 				</div>
 			{:else}
@@ -653,7 +653,7 @@
 							{@const node = row.node}
 							{@const isC = isContainerTag(node.tag)}
 							{@const ann = annotateNode(node)}
-							{@const tagColor = TAG_COLORS[node.tag] || "#d4d4d4"}
+							{@const tagColor = TAG_COLORS[node.tag] || "var(--color-text-bright)"}
 							<div
 								id={`enc-row-${idx}`}
 								data-row={idx}
@@ -663,9 +663,9 @@
 								aria-selected={focusIdx === idx}
 								class="flex items-center group {focusIdx === idx
 									? isActive
-										? 'bg-[#1e1e30]'
-										: 'bg-[#181820]'
-									: 'hover:bg-[#131313]'}"
+										? 'bg-bg-row-even'
+										: 'bg-bg-row-odd'
+									: 'hover:bg-bg-hover'}"
 								style="height: {ROW_HEIGHT}px; line-height: {ROW_HEIGHT}px;"
 							>
 								<!-- Gutter: byte offset -->
@@ -673,9 +673,9 @@
 									class="shrink-0 text-right pr-2 pl-2 select-none text-[11px] font-mono {focusIdx ===
 									idx
 										? isActive
-											? 'text-[#888]'
-											: 'text-[#666]'
-										: 'text-[#444]'}"
+											? 'text-text-dim'
+											: 'text-text-muted'
+										: 'text-text-label'}"
 									style="width: calc({gutterDigits}ch + 1rem);"
 								>
 									{fmtOffset(node.right)}
@@ -693,7 +693,7 @@
 											data-action="fold"
 											data-row={idx}
 											aria-label={row.opened ? "Collapse node" : "Expand node"}
-											class="inline-block w-4 text-center text-[10px] text-[#555] cursor-pointer hover:text-white"
+											class="inline-block w-4 text-center text-[10px] text-text-placeholder cursor-pointer hover:text-white"
 											>{row.opened ? "\u25BC" : "\u25B6"}</button
 										>
 									{:else}
@@ -754,20 +754,20 @@
 		}}
 	>
 		<div
-			class="absolute bg-[#1e1e1e] border border-[#333] rounded shadow-lg py-1 text-[13px] font-mono"
+			class="absolute bg-bg border border-border rounded shadow-lg py-1 text-[13px] font-mono"
 			style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;"
 		>
 			<button
-				class="block w-full text-left px-3 py-1 text-[#ccc] hover:bg-[#094771] hover:text-white whitespace-nowrap"
+				class="block w-full text-left px-3 py-1 text-text hover:bg-bg-selection hover:text-white whitespace-nowrap"
 				onclick={copyAsJson}>Copy as JSON</button
 			>
 			<button
-				class="block w-full text-left px-3 py-1 text-[#ccc] hover:bg-[#094771] hover:text-white whitespace-nowrap"
+				class="block w-full text-left px-3 py-1 text-text hover:bg-bg-selection hover:text-white whitespace-nowrap"
 				onclick={copyAsRexc}>Copy as REXC</button
 			>
-			<div class="border-t border-[#333] my-1"></div>
+			<div class="border-t border-border my-1"></div>
 			<button
-				class="block w-full text-left px-3 py-1 text-[#ccc] hover:bg-[#094771] hover:text-white whitespace-nowrap"
+				class="block w-full text-left px-3 py-1 text-text hover:bg-bg-selection hover:text-white whitespace-nowrap"
 				onclick={extractAsDocument}>Extract as new document</button
 			>
 		</div>
