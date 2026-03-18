@@ -1,0 +1,34 @@
+# Sample Files
+
+JSON documents with their `.rx` equivalents, demonstrating various data shapes:
+
+| File | What it exercises |
+|------|-------------------|
+| **quest-log** | Deep nesting, repeated sub-objects (`rarity`, `reward`), unicode names, ZWJ emoji |
+| **site-manifest** | Many string paths with shared prefixes, duplicated `auth`/`component` values |
+| **emoji-census** | ZWJ family emoji, emoji object keys, mixed nested structures |
+| **sensor-grid** | Packed integer arrays, negative decimals, empty arrays, ISO timestamps |
+
+## Viewing
+
+```sh
+# Pretty-print as a tree
+bun run rx samples/quest-log.rx
+
+# Convert between formats
+bun run rx samples/quest-log.rx -j    # rx → JSON
+bun run rx samples/quest-log.json -r  # JSON → rx
+
+# Select into a value
+bun run rx samples/quest-log.rx -s hero stats
+```
+
+The `.rx` files also open in the Rex VS Code extension as an interactive data viewer.
+
+## Regenerating
+
+To regenerate all `.rx` files from their JSON sources:
+
+```sh
+for f in samples/*.json; do bun run rx "$f" -w; done
+```
