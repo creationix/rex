@@ -12,15 +12,17 @@ JSON documents with their `.rx` equivalents, demonstrating various data shapes:
 ## Viewing
 
 ```sh
+# Install `rx` CLI with `npm i -g @creationix/rx`
+
 # Pretty-print as a tree
-bun run rx samples/quest-log.rx
+rx samples/quest-log.rx
 
 # Convert between formats
-bun run rx samples/quest-log.rx -j    # rx → JSON
-bun run rx samples/quest-log.json -r  # JSON → rx
+rx samples/quest-log.rx -j    # rx → JSON
+rx samples/quest-log.json -r  # JSON → rx
 
 # Select into a value
-bun run rx samples/quest-log.rx -s hero stats
+rx samples/quest-log.rx -s hero stats
 ```
 
 The `.rx` files also open in the Rex VS Code extension as an interactive data viewer.
@@ -30,5 +32,5 @@ The `.rx` files also open in the Rex VS Code extension as an interactive data vi
 To regenerate all `.rx` files from their JSON sources:
 
 ```sh
-for f in samples/*.json; do bun run rx "$f" -w; done
+for f in samples/*.json; do rx "$f" -w; done
 ```
