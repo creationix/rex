@@ -2,7 +2,7 @@
 	"name": "rex-vscode",
 	"displayName": "Rex",
 	"description": "Rex language support for Visual Studio Code",
-	"version": "0.4.1",
+	"version": "0.7.1",
 	"publisher": "creationix",
 	"icon": "img/rex-icon-dark.png",
 	"repository": {
@@ -28,29 +28,47 @@
 				"extensions": [
 					".rex"
 				],
-				"configuration": "./language-configuration.json"
+				"configuration": "./language-configuration.json",
+				"icon": {
+					"light": "./img/rex-icon-light.svg",
+					"dark": "./img/rex-icon-dark.svg"
+				}
 			},
 			{
-				"id": "rexc",
+				"id": "rx",
 				"aliases": [
-					"Rex Compact Encoding",
-					"rexc"
+					"RX Binary"
 				],
 				"extensions": [
+					".rx",
 					".rexc"
 				],
-				"configuration": "./rexc-language-configuration.json"
+				"icon": {
+					"light": "./img/rx-icon-light.svg",
+					"dark": "./img/rx-icon-dark.svg"
+				}
 			}
 		],
 		"configurationDefaults": {
 			"[rex]": {
 				"editor.wordSeparators": "`~!@#$%^&*()=+[{]}\\|;:'\",.<>/?"
-			},
-			"[rexc]": {
-				"editor.wordSeparators": "`~!@#$%^&*()=+[{]}\\|;:'\",.<>/?",
-				"editor.wordWrap": "on"
 			}
 		},
+		"customEditors": [
+			{
+				"viewType": "rex.rxViewer",
+				"displayName": "RX Viewer",
+				"selector": [
+					{
+						"filenamePattern": "*.rx"
+					},
+					{
+						"filenamePattern": "*.rexc"
+					}
+				],
+				"priority": "default"
+			}
+		],
 		"semanticTokenTypes": [
 			{
 				"id": "rexLocal",
@@ -61,29 +79,13 @@
 				"id": "rexDomain",
 				"superType": "type",
 				"description": "Domain/platform-provided symbol in Rex"
-			},
-			{
-				"id": "objectKey",
-				"description": "Object key in rexc encoding"
-			},
-			{
-				"id": "indexData",
-				"description": "Pointer array index data in rexc encoding"
-			},
-			{
-				"id": "annotation",
-				"superType": "decorator",
-				"description": "Line-drawing annotations in rexc"
 			}
 		],
 		"semanticTokenScopes": [
 			{
 				"scopes": {
 					"rexLocal": ["variable.other.rex"],
-					"rexDomain": ["support.class.rex"],
-					"objectKey": ["support.type.property-name"],
-					"indexData": ["entity.other.attribute-name"],
-					"annotation": ["entity.name.function.decorator"]
+					"rexDomain": ["support.class.rex"]
 				}
 			}
 		],
@@ -117,44 +119,16 @@
 				"embeddedLanguages": {
 					"meta.embedded.block.rex": "rex"
 				}
-			},
-			{
-				"language": "rexc",
-				"scopeName": "source.rexc",
-				"path": "./syntaxes/rexc.tmLanguage.json"
-			},
-			{
-				"scopeName": "markdown.rexc.codeblock",
-				"path": "./syntaxes/rexc-markdown.tmLanguage.json",
-				"injectTo": [
-					"text.html.markdown",
-					"source.gfm"
-				],
-				"embeddedLanguages": {
-					"meta.embedded.block.rexc": "rexc"
-				}
-			},
-			{
-				"scopeName": "inline.rexc.tagged-template",
-				"path": "./syntaxes/rexc-typescript.tmLanguage.json",
-				"injectTo": [
-					"source.ts",
-					"source.tsx",
-					"source.js",
-					"source.jsx",
-					"text.html.markdown"
-				],
-				"embeddedLanguages": {
-					"meta.embedded.block.rexc": "rexc"
-				}
 			}
 		]
 	},
 	"scripts": {
-		"build": "bun build src/extension.ts --outfile dist/extension.js --external vscode --format cjs --target node",
+		"build:webview": "cd ../web-viewer && bun vite build --config vite.webview.config.ts",
+		"build:extension": "bun build src/extension.ts --outfile dist/extension.js --external vscode --format cjs --target node",
+		"build": "bun run build:webview && bun run build:extension",
 		"test": "bun test",
 		"package": "bun run build && bunx @vscode/vsce package --no-dependencies",
-		"reinstall": "bun run package && code --install-extension ./rex-vscode-0.2.2.vsix --force",
+		"reinstall": "bun run package && code --install-extension ./rex-vscode-0.7.1.vsix --force",
 		"publish": "bun run build && bunx @vscode/vsce publish --no-dependencies"
 	},
 	"devDependencies": {
