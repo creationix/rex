@@ -1,24 +1,62 @@
-# Rex Bytecode Format (`rexc`)
+# Rex Bytecode Format (`.rexc`)
 
-Rex compiles to `rexc` — a compact bytecode that serializes as a UTF-8 string. This is the format that Rex interpreters execute. It embeds directly in JSON string values with minimal escaping.
+Rex compiles to REXC — a compact bytecode that serializes as a UTF-8 string. REXC is a **superset of [RX](rx-format.md)**: every valid RX document is valid REXC. The RX layer handles data encoding (numbers, strings, lists, maps, pointers, chains, indexes). REXC adds language constructs: variables, opcodes, control flow, mutation, and evaluation semantics.
 
-## Format Basics
+REXC embeds directly in JSON string values with minimal escaping.
 
-Every encoded value is a **prefix** of base-64 digits followed by a **type tag**:
+---
 
+## Semantics
+
+### Existence, Not Truthiness
+
+Rex uses **existence** instead of truthiness. There is no concept of "falsy" — `false`, `null`, `0`, and `""` are all ordinary defined values. Only `undefined` represents absence.
+
+This drives all control flow:
+
+- **Comparisons** return the left-hand value on success, `undefined` on failure
+- **`when`/`unless`** branch on whether a value is defined
+- **`and`/`or`/`nor`** short-circuit on existence
+- **Type predicates** return the value if it matches, `undefined` otherwise
+
+### Lazy vs Eager Evaluation
+
+| Container | Evaluation            | Returns             |
+|-----------|-----------------------|---------------------|
+| `;` `:`   | **lazy** — on access  | data structure      |
+| `(` `)`   | **eager**             | call result         |
+| `[` `]`   | **eager**, sequential | list of all results |
+| `{` `}`   | **eager**, sequential | last result only    |
+
+RX data containers (`;` lists, `:` maps) evaluate lazily — REXC expressions embedded inside are only executed when accessed. Reading element 5 of a `;` list does not evaluate elements 0–4.
+
+The paired-delimiter containers (`()`, `[]`, `{}`) evaluate eagerly — all expressions are executed in order.
+
+### Gas-Bounded Execution
+
+Evaluation is gas-bounded. Gas is charged per loop/comprehension iteration. The host runtime sets the gas limit; a limit of 0 disables it.
+
+---
+
+## Reading Direction and Value Order
+
+Like RX, REXC is parsed **right-to-left**. The parser starts at the rightmost byte, scans left past b64 digits to collect the varint, then reads the tag. See [rx-format.md](rx-format.md) for the full parsing algorithm.
+
+Values within containers are stored in **reverse page order** so that right-to-left reading yields them in natural (source-code) order.
+
+For example, `a < b` compiles to `lt(a, b)`. On the page the bytes are:
+
+```rexc
+(+b+a%lt)
 ```
-<digits><tag>                     scalar (digits are the value)
-<digits><open><body><close>       paired container (digits are byte-length of body)
-<digits><tag><body>               fixed-arity operator (digits are byte-length of body)
-```
 
-The type tag is the first non-digit character. It determines how to interpret the digit prefix and whether a body follows.
+Reading right-to-left: `)` → `%lt` (opcode) → `+a` (arg 1) → `+b` (arg 2) → `(`. The parser encounters the opcode first, then the arguments in source order.
 
-**Byte-length prefixes are optional on paired containers.** The encoder adds them only when a value needs to be skippable in O(1) — for example, values inside non-indexed arrays and objects. At top level, inside indexed containers, and in other positions where skipping isn't needed, the prefix is omitted.
+Throughout this document, **reading order** means right-to-left. When describing what the parser encounters, earlier means further right on the page.
 
 ## Digit Alphabet
 
-64 characters in a readable order:
+Same as RX — 64 URL-safe characters:
 
 ```
 0  1  2  3  4  5  6  7  8  9      values 0-9
@@ -30,564 +68,461 @@ O  P  Q  R  S  T  U  V  W  X      values 50-59
 Y  Z  -  _                        values 60-63
 ```
 
-Digits form a **big-endian base-64 integer**. Zero is **no digits** (zero-length prefix). Canonical encoding uses the minimum number of digits (no leading `0`).
+Digits form **big-endian base-64 integers**. Zero is an empty string (no digits). Canonical encoding uses the minimum number of digits.
 
-## Type Reference
+---
 
-### Scalars
+## Tag Reference
 
-| Tag | Type        | Digits encode                                            |
-|-----|-------------|----------------------------------------------------------|
-| `+` | Integer     | Zigzag-encoded value (0→0, -1→1, 1→2, -2→3, 2→4, ...)    |
-| `*` | Decimal     | Zigzag-encoded power of 10 (consumes next integer value) |
-| `:` | Bare string | The string content itself                                |
-| `%` | Opcode      | Opcode ID                                                |
-| `@` | Self        | Depth (empty=`self`, `1@`=one level up, etc.)          |
-| `'` | Reference   | Reference ID                                             |
-| `$` | Variable    | The variable name itself                                 |
-| `^` | Pointer     | Byte offset to another value                             |
-| `;` | Loop control| Encodes break/continue kind and depth                    |
+### RX Data Layer (inherited)
 
-### Paired Containers (optional byte-length prefix)
+See [rx-format.md](rx-format.md) for complete documentation.
 
-| Delimiters | Type   | Body contains                    |
-|------------|--------|----------------------------------|
-| `[` `]`    | Array  | Concatenated values              |
-| `{` `}`    | Object | Alternating key, value pairs     |
-| `(` `)`    | Call   | First value determines call type |
+| Tag | Name    | Kind          | Layout                 |
+|-----|---------|---------------|------------------------|
+| `+` | Number  | scalar        | `+[zigzag]`            |
+| `*` | Decimal | scalar prefix | `+[base]*[exp]`        |
+| `,` | String  | sized body    | `[bytes],[length]`     |
+| `'` | Ref     | scalar        | `'[name]`              |
+| `;` | List    | sized body    | `[children];[size]`    |
+| `:` | Map     | sized body    | `[pairs]:[size]`       |
+| `^` | Pointer | scalar        | `^[delta]`             |
+| `.` | Chain   | sized body    | `[segments].[size]`    |
+| `#` | Index   | sized body    | `[entries]#[compound]` |
 
-### Unpaired Containers (required byte-length prefix)
+### REXC Scalars
 
-| Tag | Type   | Body contains   |
-|-----|--------|-----------------|
-| `,` | String | Raw UTF-8 bytes |
+Scalars have no body — just a tag and varint. The tag is the rightmost non-b64 byte; the varint extends to its right.
 
-### Mutation Operators (optional byte-length prefix, fixed arity)
+| Tag | Name           | Varint encodes         |
+|-----|----------------|------------------------|
+| `$` | Variable       | name (string)          |
+| `%` | Opcode         | mnemonic (string)      |
+| `@` | Self           | depth offset (integer) |
+| `\` | Break/Continue | kind + depth (integer) |
 
-| Tag | Type     | Body contains     |
-|-----|----------|-------------------|
-| `=` | Set      | Place, then value |
-| `/` | Swap-set | Place, then value |
-| `~` | Delete   | Place             |
+For `$` and `%`, the varint is a **string identifier** — the b64 characters are the name itself, not a numeric value. Same convention as `'` refs in RX.
 
-### Control-Flow Containers (optional byte-length prefix)
+### REXC Paired Containers
 
-| Opener | Type   | Body contains                                |
-|--------|--------|----------------------------------------------|
-| `?(`   | When   | cond, then-expr, else-expr?                  |
-| `!(`   | Unless | cond, then-expr, else-expr?                  |
-| `\|(`  | Alt    | expr, expr, ... (first non-undefined wins)   |
-| `&(`   | All    | expr, expr, ... (first undefined short-circuits) |
-| `>(`   | For-in | iterable, body OR iterable, value-var, body OR iterable, key-var, value-var, body |
-| `<(`   | For-of | iterable, body OR iterable, key-var, body    |
-| `#(`   | While  | condition, body                               |
-| `>[`,`<[` | Array comprehension | iteration clause, body expression |
-| `>{`,`<{` | Object comprehension | iteration clause, key expression, value expression |
+Paired containers use matching delimiters. On the page, the left delimiter is leftmost and the right delimiter is rightmost, with body bytes between them. The parser reads right-to-left: it encounters the right delimiter first, parses body values, then hits the left delimiter.
 
-### Structural
+An optional size varint may appear to the right of the right delimiter when the container is in a skip position (see [Skip Rules](#skip-rules)).
 
-| Char | Role                                     |
-|------|------------------------------------------|
-| `#`  | Index marker inside `[]` and `{}` bodies |
+| Left | Right | Name       | Evaluation        | Returns             |
+|------|-------|------------|-------------------|---------------------|
+| `(`  | `)`   | Call       | eager             | call result         |
+| `[`  | `]`   | Eager list | eager, sequential | list of all results |
+| `{`  | `}`   | Do block   | eager, sequential | last result         |
 
-## Integers
+### REXC Compound Containers
 
-The `+` tag uses **zigzag encoding** for all integers, matching the decimal power encoding. Zigzag interleaves positive and negative values so small magnitudes get short encodings regardless of sign:
+A compound container is a paired container with a **type tag** next to the right delimiter: `( body )?`. The type tag is read first and identifies the container kind.
 
-| Value | Zigzag | Encoding |
-|-------|--------|----------|
-| 0     | 0      | `+`      |
-| -1    | 1      | `1+`     |
-| 1     | 2      | `2+`     |
-| -2    | 3      | `3+`     |
-| 2     | 4      | `4+`     |
-| 10    | 20     | `k+`     |
-| -10   | 19     | `j+`     |
-| 42    | 84     | `1k+`    |
-| -42   | 83     | `1j+`    |
-| 100   | 200    | `38+`    |
-| -100  | 199    | `37+`    |
+| Left | Right | Name                        |
+|------|-------|-----------------------------|
+| `(`  | `)?`  | When                        |
+| `(`  | `)!`  | Unless / not / nor          |
+| `(`  | `)\|` | Or (alt)                    |
+| `(`  | `)&`  | And (all)                   |
+| `(`  | `)>`  | For-in loop                 |
+| `(`  | `)<`  | For-of loop                 |
+| `(`  | `)#`  | While loop                  |
+| `[`  | `]>`  | For-in list comprehension   |
+| `[`  | `]<`  | For-of list comprehension   |
+| `[`  | `]#`  | While list comprehension    |
+| `{`  | `}>`  | For-in object comprehension |
+| `{`  | `}<`  | For-of object comprehension |
+| `{`  | `}#`  | While object comprehension  |
 
-Zigzag formula: `encode(n) = n >= 0 ? 2n : -2n - 1`, `decode(z) = z even ? z/2 : -(z+1)/2`
+### REXC Mutation Operators
 
-## Decimals
+Fixed-arity operators. On the page: `[body][tag]`. The tag is rightmost; the body extends to its left. An optional size varint may appear to the right of the tag in skip positions.
 
-The `*` tag encodes a decimal number in two parts — "significand times power of 10". The digit prefix is a **zigzag-encoded power of 10**. The tag then **consumes the next value**, which must be an integer, as the significand.
+| Tag | Name     | Body (in reading order)    |
+|-----|----------|----------------------------|
+| `=` | Set      | place, value               |
+| `/` | Swap-set | place, value (returns old) |
+| `~` | Delete   | place                      |
 
-The decoded value is: **significand &times; 10<sup>power</sup>**
+---
+
+## Variables
+
+The `$` tag encodes a variable name using b64 characters.
 
 ```rexc
-*2+    │ 1 × 10^0   = 1         │ power: zigzag(0) = 0
-1*a+   │ 5 × 10^-1  = 0.5       │ power: zigzag(1) = -1
-3*9Q+  │ 314 × 10^-2 = 3.14     │ power: zigzag(3) = -2
-c*2+   │ 1 × 10^6   = 1000000   │ power: zigzag(12) = 6
-b*1+   │ -1 × 10^-6 = -0.000001 │ power: zigzag(11) = -6
-3*9P+  │ -314 × 10^-2 = -3.14   │ power: zigzag(3) = -2, significand: zigzag(627) = -314
+$x       │ variable x
+$age     │ variable age
+$my-var  │ variable my-var
 ```
 
-Both the power and significand use zigzag encoding, so the sign of any decimal is determined by the significand's zigzag value being odd (negative) or even (positive).
-
-## Bare Strings
-
-The `:` tag interprets the digit characters as literal string content instead of a number. The digit alphabet (`0-9a-zA-Z-_`) covers all Rex identifiers, so bare strings handle most keys and names with zero overhead.
+For navigation, wrap in a call. Arguments after the variable are key lookups:
 
 ```rexc
-:         │ ""
-a:        │ "a"
-hello:    │ "hello"
-x-action: │ "x-action"
-foo_bar:  │ "foo_bar"
-42:       │ "42" (string, not integer — the tag disambiguates)
-```
-
-For strings with spaces, punctuation, or unicode, use the length-prefixed `,` container:
-
-```rexc
-,             │ ""
-b,hello world │ "hello world"
+(name,4 $user)           │ user.name
+(street,6 address,7 $user)  │ user.address.street
+($key $table)            │ table[key]
 ```
 
 ## Opcodes
 
-Opcodes use short mnemonic string keys. The digit prefix is the raw key string (not a base-64 integer). Control flow (`when`, `unless`, `alt`, `all`, loops, loop control) has dedicated syntax and is not in this table.
+The `%` tag encodes an opcode mnemonic.
 
-| Opcode | Enc.  |  | Opcode    | Enc.  |
-|--------|-------|--|-----------|-------|
-| `do`   | `%`   |  | `and`     | `an%` |
-| `add`  | `ad%` |  | `or`      | `or%` |
-| `sub`  | `sb%` |  | `xor`     | `xr%` |
-| `mul`  | `ml%` |  | `not`     | `nt%` |
-| `div`  | `dv%` |  | `boolean` | `bt%` |
-| `eq`   | `eq%` |  | `number`  | `nm%` |
-| `neq`  | `nq%` |  | `string`  | `st%` |
-| `lt`   | `lt%` |  | `array`   | `ar%` |
-| `lte`  | `le%` |  | `object`  | `ob%` |
-| `gt`   | `gt%` |  | `mod`     | `md%` |
-| `gte`  | `ge%` |  | `neg`     | `ng%` |
-| `range`| `rn%` |  |           |       |
+| Opcode | Encoding |  | Opcode    | Encoding |
+|--------|----------|--|-----------|----------|
+| `add`  | `%ad`    |  | `and`     | `%an`    |
+| `sub`  | `%sb`    |  | `or`      | `%or`    |
+| `mul`  | `%ml`    |  | `xor`     | `%xr`    |
+| `div`  | `%dv`    |  | `not`     | `%nt`    |
+| `eq`   | `%eq`    |  | `boolean` | `%bt`    |
+| `neq`  | `%nq`    |  | `number`  | `%nm`    |
+| `lt`   | `%lt`    |  | `string`  | `%st`    |
+| `lte`  | `%le`    |  | `array`   | `%ar`    |
+| `gt`   | `%gt`    |  | `object`  | `%ob`    |
+| `gte`  | `%ge`    |  | `mod`     | `%md`    |
+| `neg`  | `%ng`    |  | `range`   | `%rn`    |
 
-Domain functions also compile as opcodes with their own short codes (e.g., `jp%` for `json.parse`).
+Domain functions also compile as opcodes with their own mnemonics (e.g., `%jp` for `json.parse`).
 
-Opcodes are used as the first value inside `()` calls:
+## Self
+
+`@` reads `self` from a dynamic depth stack. Depth = varint + 1.
 
 ```rexc
-(ad%2+4+)   │ 1 + 2
-(gt%x$k+)   │ x > 10
-(%=x$k+E+)  │ do x = 10 20 end
+@    │ self (depth 1)
+@1   │ parent self (depth 2)
+@2   │ grandparent self (depth 3)
 ```
 
 ## References
 
-References use short mnemonic string keys. The digit prefix is the raw key string (not a base-64 integer).
+Refs use the `'` tag from RX. The varint is a name, not a number.
 
 **Built-in constants:**
 
 | Value       | Encoding |
 |-------------|----------|
-| `true`      | `tr'`    |
-| `false`     | `fl'`    |
-| `null`      | `nl'`    |
-| `undefined` | `un'`    |
-| `NaN`       | `nan'`   |
-| `Infinity`  | `inf'`   |
-| `-Infinity` | `nif'`   |
+| `true`      | `'t`     |
+| `false`     | `'f`     |
+| `null`      | `'n`     |
+| `undefined` | `'u`     |
+| `NaN`       | `'nan`   |
+| `+Infinity` | `'inf`   |
+| `-Infinity` | `'nif`   |
 
-**Domain data** also compiles as references with short codes defined in the domain config (e.g., `H'` for `headers`, `M'` for `method`).  By convention, domain references use uppercase letters to distinguish them from opcode references.
-
-For navigation into a domain reference, use a call:
+**Domain references** use short codes defined in the domain config (e.g., `'H` for `headers`, `'M` for `method`). By convention, domain refs use uppercase letters.
 
 ```rexc
-(H'host:)                   │ headers.host
-(H'x-forwarded-for:origin:) │ headers.x-forwarded-for.origin
-(H'key$)                    │ headers[key]
+(host,4 'H)                      │ headers.host
+(origin,6 x-forwarded-for,f 'H)  │ headers.x-forwarded-for.origin
+($key 'H)                        │ headers[key]
 ```
 
-## Self Depth
-
-`@` reads `self` from a dynamic depth stack:
-
-```rexc
-@   │ self (depth 1)
-1@  │ parent self (depth 2)
-2@  │ grandparent self (depth 3)
-```
-
-Depth decode rule: `depth = prefix + 1`.
-
-## Variables
-
-The `$` tag works like `:` — digit characters are the variable name. Rex identifiers always fit within the digit alphabet, so no length-prefixed variant is needed.
-
-```rexc
-x$      │ read variable x
-age$    │ read variable age
-my-var$ │ read variable my-var
-```
-
-For navigation, use a call:
-
-```rexc
-(user$name:)           │ user.name
-(user$address:street:) │ user.address.street
-(table$key$)           │ table[key]
-```
-
-## Set, Swap-Set, and Delete
-
-The `=` operator binds a value to a place. Fixed arity: place then value. The `/` operator binds a value to a place but returns the **old** value (swap-set). Fixed arity: place then value. The `~` operator removes a place. Fixed arity: place only.
-
-All three have an optional byte-length prefix for when the operation itself needs to be skippable.
-
-```rexc
-=x$1k+                  │ x = 42
-/x$1k+                  │ x := 42 (returns old value of x)
-=(H'x-handler:)handler$ │ headers['x-handler'] = handler
-~x$                     │ delete x
-~(user$temp:)           │ delete user.temp
-```
+---
 
 ## Calls
 
-The `(` `)` container groups a function-like expression. The first value determines the call type:
+The `(` `)` container groups a function-like expression. Reading right-to-left, the parser encounters `)`, then reads body values. The first body value read (rightmost on the page) determines the call type:
 
-| First value type | Meaning                   |
-|------------------|---------------------------|
-| Opcode `%`       | Operation call            |
-| Variable `$`     | Navigation (place read)   |
-| Reference `'`    | Domain builtin navigation |
-| Any other value  | Navigation from expression result |
+| First value type | Meaning                    |
+|------------------|----------------------------|
+| Opcode `%`       | Operation call             |
+| Variable `$`     | Navigation (place read)    |
+| Reference `'`    | Domain builtin navigation  |
+| Any other value  | Navigation from expression |
 
 ```rexc
-(ad%2+4+)                   │ 1 + 2
-(gt%x$k+)                   │ x > 10
-(user$address:street:)      │ user.address.street
-(H'x-forwarded-for:origin:) │ headers.x-forwarded-for.origin
-({a:2+}a:)                  │ {a:1}.a
+(+4 +2 %ad)          │ 1 + 2 → add(1, 2)
+(+k $x %gt)          │ x > 10 → gt(x, 10)
+(name,4 $user)       │ user.name
+(host,4 'H)          │ headers.host
+(a,1 +2a,1+4b,1:a)   │ {a:1, b:2}.a
 ```
+
+## Eager List
+
+The `[` `]` container evaluates all expressions in order and returns their results as a list. This differs from `;` (RX list), which evaluates lazily on access.
+
+```rexc
+[+6 +4 +2]                     │ → [1, 2, 3]
+[(+4 $x %ml) (+2 $x %ad)]      │ → [x+1, x*2] (both evaluated in order)
+```
+
+Use `;` for inert data. Use `[]` when expressions have side effects or ordering dependencies.
+
+## Do Block
+
+The `{` `}` container evaluates all expressions in order and returns only the last result.
+
+```rexc
+{$y +4 $y= +1k $x=}     │ x = 42; y = 2; return y → 2
+```
+
+---
+
+## Mutation
+
+### Set
+
+`=` binds a value to a place and returns the value. On the page: `[value][place]=`.
+
+```rexc
++1k $x=                     │ x = 42
+$handler ('H x-handler,9)=  │ headers['x-handler'] = handler
+```
+
+### Swap-Set
+
+`/` binds a value and returns the **old** value. On the page: `[value][place]/`.
+
+```rexc
++1k $x/              │ x := 42 (returns previous x)
+```
+
+### Delete
+
+`~` removes a place. On the page: `[place]~`.
+
+```rexc
+$x~                  │ delete x
+($user temp,4)~      │ delete user.temp
+```
+
+---
 
 ## Control Flow
 
-Control-flow operations have dedicated container syntax with compound openers. `?(`, `!(`, `|(`, `&(`, `>(`, and `<(` close with `)`. `>[` closes with `]`, and `>{` closes with `}`. The encoder adds byte-length prefixes to container values in skip positions.
-
 ### When / Unless
 
-```rexc
-?(cond then-expr)            │ when: evaluate then if cond is defined
-?(cond then-expr else-expr)  │ when: evaluate then or else
-!(cond then-expr else-expr)  │ unless: evaluate then if cond is undefined
-```
+`(?…)?` evaluates its then-branch if the condition is defined. `(!…)!` evaluates if the condition is undefined.
 
-The condition is always evaluated. Then-expr and else-expr are in skip positions — the interpreter jumps past whichever branch isn't taken. Container values in these positions get byte-length prefixes.
-
-```rexc
-?((gt%x$k+)7(ad%x$2+)7(sb%x$4+))
-├╯╰───┬───╯╰────┬───╯╰────┬───╯╰─ closer
-│     │         │         ╰────── else: sub(x, 2) — prefixed, skip position
-│     │         ╰──────────────── then: add(x, 1) — prefixed, skip position
-│     ╰────────────────────────── cond: gt(x, 10) — bare, always evaluated
-╰──────────────────────────────── when opener
-```
-
-### Logical Or / And / Not / Nor
+In reading order (right-to-left), the parser encounters:
+1. `)?` — compound right delimiter
+2. Condition — always evaluated
+3. Then-expr — in a skip position
+4. Else-expr (optional) — in a skip position
+5. `(` — left delimiter
 
 ```rexc
-|(expr1 expr2 expr3)  │ or: first non-undefined result or return undefined
-&(expr1 expr2 expr3)  │ and: short-circuit on first undefined or return last value
-!(expr)               │ not: return undefined if expr is defined, otherwise return true
-!(expr1 expr2)        │ nor: return expr2 if expr1 is undefined, otherwise undefined
+// when x do 42 end
+(+1k$x)?
+
+// when x > 10 do x + 1 end
+((+2$x%ad)(+k$x%gt))?
+
+// when x > 10 do x + 1 else x - 2 end
+((+4$x%sb)(+2$x%ad)(+k$x%gt))?
+├─────┬──╯╰───┬───╯╰───┬───╯╰── )? when
+│     │       │        ╰─────── cond: gt(x, 10) — read first
+│     │       ╰──────────────── then: add(x, 1) — skip position
+│     ╰──────────────────────── else: sub(x, 2) — skip position
+╰────────────────────────────── ( left delimiter
 ```
 
-The first expression is always evaluated. Remaining expressions are in skip positions (the operation may short-circuit past them).
+### Unless / Not / Nor
 
-`nor` reuses the `!(` unless container with exactly 2 arguments. This is equivalent to `unless expr1 do expr2 end`.
+The `(!…)!` container has three forms depending on how many body values are present:
+
+| Count | Semantics                                                    |
+|-------|--------------------------------------------------------------|
+| 1     | **not** — `undefined` if defined, `true` if undefined        |
+| 2     | **nor** — expr2 if expr1 is undefined, else `undefined`      |
+| 3     | **unless** — then-expr if cond undefined, with optional else |
+
+### Or / And
+
+`(|…)|` returns the first defined value. `(&…)&` short-circuits on the first undefined.
+
+In reading order: the first expression is always evaluated. Remaining expressions are in skip positions.
 
 ```rexc
-|((user$name:)anonymous:)
-├╯╰────┬─────╯╰───┬────╯╰─ closer
-│      │          ╰─────── "anonymous" — scalar, self-delimiting
-│      ╰────────────────── user.name — bare, always evaluated
-╰───────────────────────── or opener
+│ user.name or "anonymous"
+(anonymous,9 ($user name,4))|
+├────┬──────╯╰──────┬─────╯╰── )| or
+│    │              ╰────────── read first: user.name — always evaluated
+│    ╰───────────────────────── read second: "anonymous" — skip position
+╰────────────────────────────── ( left delimiter
 ```
 
-### Loops and Comprehensions
+---
 
-`for` and `while` forms are dedicated control-flow containers, not opcodes.
+## Iteration
+
+### For-In / For-Of Loops
+
+`(>…)>` iterates values (`in`). `(<…)<` iterates keys (`of`).
+
+In reading order:
+1. Iterable — always evaluated
+2. Bindings — zero or more `$` variables
+3. Body expressions — remaining values
+
+The number of `$` bindings determines the form:
+
+| Compound | 0 bindings | 1 binding  | 2 bindings    |
+|----------|------------|------------|---------------|
+| `(>…)>`  | `for in`   | `for v in` | `for k, v in` |
+| `(<…)<`  | `for of`   | `for k of` | —             |
+
+In `in` forms, `self` is the current value. In `of` forms, `self` is the current key.
 
 ```rexc
->(iter body)        │ for in iter do ... end
->(iter v$ body)     │ for v in iter do ... end
->(iter k$ v$ body)  │ for k, v in iter do ... end
-<(iter body)        │ for of iter do ... end
-<(iter k$ body)     │ for k of iter do ... end
-#(cond body)        │ while cond do ... end
+│ for v in [1,2,3] do v + 1 end
+((+2 $v %ad) $v +6+4+2;6)>
+├──────┬────╯╰╯╰───┬───╯╰── )> for-in
+│      │    │      ╰──────── read first: iterable [1,2,3]
+│      │    ╰─────────────── read next: binding v
+│      ╰──────────────────── read last: body add(v, 1)
+╰─────────────────────────── ( left delimiter
 ```
 
-Comprehensions put the body expression first, then `for`/`in`/`of` and the iterator:
+### While Loops
+
+`(#…)#` repeats while the condition is defined.
+
+In reading order:
+1. Condition — evaluated each iteration
+2. Body expressions — remaining values
+
+### Comprehensions
+
+Comprehensions use `[…]` or `{…}` delimiters with iteration suffixes:
+
+| Right | Iterates | Returns | Body after iterable/bindings |
+|-------|----------|---------|------------------------------|
+| `]>`  | for-in   | list    | value-expr                   |
+| `]<`  | for-of   | list    | value-expr                   |
+| `]#`  | while    | list    | value-expr                   |
+| `}>`  | for-in   | map     | key-expr, value-expr         |
+| `}<`  | for-of   | map     | key-expr, value-expr         |
+| `}#`  | while    | map     | key-expr, value-expr         |
+
+List comprehensions collect defined values (undefined results are skipped). Map comprehensions collect key-value pairs where the value is defined.
 
 ```rexc
->[iter val]            │ [val in iter] array comprehension (self is value)
->[iter v$ val]         │ [val for v in iter]
->[iter k$ v$ val]      │ [val for k, v in iter]
->{iter key val}        │ {key:val in iter} object comprehension (self is value)
->{iter v$ key val}     │ {key:val for v in iter}
->{iter k$ v$ key val}  │ {key:val for k, v in iter}
-<[iter val]            │ [val of iter] array comprehension (self is key)
-<[iter k$ val]         │ [val for k of iter]
-<{iter key val}        │ {key:val of iter} object comprehension  (self is key)
-<{iter k$ key val}     │ {key:val for k of iter}
-#[conf val]            │ [val while conf] while loop (self is value)
-#{cond key val}        │ {key:val while cond} while loop (self is key)
+│ [v * 2 for v in [1,2,3]] → [2,4,6]
+[(+4 $v %ml) $v +6+4+2;6]>
 ```
 
-`>[...]` collects defined body results into a new array (undefined results are skipped). `>{...}` evaluates key/value expressions and writes entries only when the value is defined.
+### Loop Control
 
-`break` and `continue` use scalar `;` with a compact digit payload:
+`\` encodes `break` and `continue`:
+
+```
+varint = (depth - 1) * 2 + kind
+kind: 0 = break, 1 = continue
+```
 
 ```rexc
-;    │ break depth 1
-1;   │ continue depth 1
-2;   │ break depth 2
-3;   │ continue depth 2
+\    │ break depth 1       (varint empty = 0)
+\1   │ continue depth 1    (varint 1)
+\2   │ break depth 2       (varint 2)
+\3   │ continue depth 2    (varint 3)
 ```
 
-Decode rule: `kind = n % 2` (`0=break`, `1=continue`), `depth = floor(n / 2) + 1`.
+`\` is valid only inside loop bodies. Requires `\\` escaping in JSON strings.
 
-`;` is valid only inside loop bodies; otherwise decoding/validation must fail.
-
-## Objects
-
-Body alternates key, value pairs. Keys are typically bare strings, which makes the `:` tag pull double duty as a visual separator.
-
-```rexc
-{color:red:size:1k+}
-│╰─┬──╯╰┬─╯╰─┬─╯╰┬╯╰─ closer
-│  │    │    │   ╰─── val 42
-│  │    │    ╰─────── key "size"
-│  │    ╰──────────── val "red"
-│  ╰───────────────── key "color"
-╰──────────────────── opener
-```
-
-When an object is in a skip position (e.g., value in a non-indexed array), the encoder adds a byte-length prefix:
-
-```rexc
-j{color:red:size:1k+}   │ prefixed — body is 19 bytes
-```
-
-## Arrays
-
-Arrays hold values with or without a length prefix depending on needs.
-
-```rexc
-[2+4+6+]
-│╰─┬──╯╰─ closer
-│  ╰───── elements: 1, 2, 3 (no prefixes needed)
-╰──────── opener
-6[2+4+6+] 
-├╯╰─┬──╯╰─ closer
-│   ╰───── elements: 1, 2, 3 (no prefixes needed)
-╰───────── opener with length prefix
-```
-
-## Pointers
-
-Deduplicate repeated values. The offset counts **forward** from the end of the pointer to the canonical value. The encoder places canonical values after their pointers so offsets always point forward.
-
-```rexc
-^  │ the value immediately after this pointer (offset 0)
-1^ │ the value 1 byte after this pointer
-a^ │ the value 10 bytes after this pointer
-```
-
-Avoid pointer chains — always point directly to the final value, not to another pointer.
-
-**`[1, 1]`** — second element is a pointer to the first:
-
-```rexc
-[^2+]
-││├╯╰─ closer
-││╰─── integer 1 (canonical value)
-│╰──── pointer, offset 0 → resolves to 2+ immediately after
-╰───── opener
-```
-
-## Indexes
-
-The `#` marker appears inside `[]` and `{}` containers, immediately after the opening delimiter. It provides an index for O(1) element access (arrays) or O(log n) key lookup (objects).
-
-Values inside indexed containers don't need byte-length prefixes — the index provides O(1) access.
-
-### Indexed Arrays
-
-The index entries point to the values
-
-```rexc
-[3#10242+4+6+]
-│╰┬╯╰┬╯╰─┬──╯╰─ closer
-│ │  │   ╰───── elements: 1, 2, 3 (no prefixes needed)
-│ │  ╰───────── index: offset 0→2+, offset 2→4+, offset 4→6+
-│ ╰──────────── index metadata (3x1)
-╰────────────── opener
-```
-
-### Indexed Objects
-
-The index entries point to the keys, but are sorted to enable fast binary search.
-
-```rexc
-{2#180size:1k+color:red:}
-│╰┬╯├╯╰────────┬───────╯╰─ closer
-│ │ │          ╰────────── key-value pairs (unsorted iteration order)
-│ │ ╰───────────────────── sorted index: offset 8→color:, offset 0→size:
-│ ╰─────────────────────── index metadata (2x1)
-╰───────────────────────── opener
-```
+---
 
 ## Skip Rules
 
-The encoder adds byte-length prefixes to container values only where O(1) skipping is needed. Scalars and strings are already self-delimiting.
+Paired containers in **skip positions** carry an optional size varint to the right of their right delimiter, enabling O(1) skipping. The size varint gives the byte count of the body (between delimiters). Scalars and RX sized-body containers (`,` `;` `:` `.`) are already self-delimiting and never need a skip varint.
 
-**No prefix needed:**
+**No skip varint needed:**
 - Top-level value
 - Inside indexed containers (index provides direct access)
-- Condition in `?(` / `!(`  (always evaluated)
-- First expression in `|(` / `&(` (always evaluated)
-- Iterable and binding slots in `>(` / `<(` (always evaluated)
-- Iterable and binding slots in `>[` / `>{` (always evaluated)
-- All arguments in regular `()` calls (all evaluated)
-- Body of `=` / `/` / `~` (fixed arity, all parts evaluated)
-- `;` loop-control scalar (self-delimiting)
+- Condition in `(?…)?` / `(!…)!` (always evaluated)
+- First expression in `(|…)|` / `(&…)&` (always evaluated)
+- Iterable and bindings in loops/comprehensions (always evaluated)
+- All arguments in `(…)` calls (all evaluated)
+- All parts of `=` / `/` / `~` (all evaluated)
 
-**Prefix added to container values in:**
-- Non-indexed array elements
-- Non-indexed object values
-- Then-expr and else-expr in `?(` / `!(`
-- Second and later expressions in `|(` / `&(`
-- Loop body in `>(` / `<(` (skip/jump target)
-- Body expression in `>[` (skip/jump target)
-- Key/value expressions in `>{` (skip/jump targets)
+**Skip varint added to paired containers in:**
+- Non-indexed `;` list elements
+- Non-indexed `:` map values
+- Then-expr and else-expr in `(?…)?` / `(!…)!`
+- Later expressions in `(|…)|` / `(&…)&`
+- Loop body in `(>…)>` / `(<…)<` / `(#…)#`
+- Body/key/value expressions in comprehensions
+
+---
 
 ## Worked Examples
 
 ### `1 + 2`
 
 ```rexc
-(ad%2+4+)
-│╰┬╯├╯├╯╰─ call closer
-│ │ │ ╰─── integer 2 (zigzag)
-│ │ ╰───── integer 1 (zigzag)
-│ ╰─────── add opcode
-╰───────── call opener
+(+4 +2 %ad)
+├┬╯╰┬╯╰┬╯╰── ) right delimiter
+││  │   ╰──── read first: opcode add
+││  ╰──────── read next: integer 1 (zigzag 2)
+│╰────────── read next: integer 2 (zigzag 4)
+╰──────────── ( left delimiter
 ```
 
 ### `x = 42`
 
 ```rexc
-=x$1k+
-│├╯╰┬╯
-││  ╰─ integer 42
-│╰──── variable x
-╰───── set operator
++1k $x=
+├┬╯╰┬╯╰── = set
+│   ╰──── read first: place — variable x
+╰──────── read next: value — integer 42
 ```
 
 ### `when x > 10 do x + 1 end`
 
 ```rexc
-?((gt%x$k+)7(ad%x$2+))
-├╯╰───┬───╯╰────┬───╯╰─ closer
-│     │         ╰────── then: (add x 1) — prefixed(7), skip position
-│     ╰─────────────── cond: x > 10 — bare, always evaluated
-╰───────────────────── when opener
-```
-
-### `{color: "red", size: 42}`
-
-```rexc
-{color:red:size:1k+}
-│╰─┬──╯╰┬─╯╰─┬─╯╰┬╯╰─ closer
-│  │    │    │   ╰─── val 42
-│  │    │    ╰─────── key "size"
-│  │    ╰──────────── val "red"
-│  ╰───────────────── key "color"
-╰──────────────────── opener
+((+2 $x %ad) (+k $x %gt))?
+├─────┬─────╯╰─────┬────╯╰── )? when
+│     │            ╰──────── read first: cond gt(x, 10)
+│     ╰───────────────────── read next: then add(x, 1) — skip position
+╰─────────────────────────── ( left delimiter
 ```
 
 ### `user.name or "anonymous"`
 
 ```rexc
-|((user$name:)anonymous:)
-├╯╰────┬─────╯╰───┬────╯╰─ alt closer
-│      │          ╰─────── "anonymous" — scalar, self-delimiting
-│      ╰────────────────── user.name — bare, first expr always evaluated
-╰───────────────────────── alt opener
+(anonymous,9 ($user name,4))|
+├─────┬─────╯╰──────┬─────╯╰── )| or
+│     │             ╰────────── read first: user.name
+│     ╰──────────────────────── read next: "anonymous" — skip position
+╰────────────────────────────── ( left delimiter
 ```
 
-### `[when self % 3 > 0 do x * 3 end for x in 1..10]`
+### `{color: "red", size: 42}`
+
+Pure data — uses the RX `:` map, no REXC tags:
 
 ```rexc
->[(rn%2+k+)x$o?((gt%(md%@6+)+)7(ml%x$6+))]
-├╯╰┬─╯╰┬╯╰─────┬──────╯╰───┬────╯│╰─ array comprehension closer
-│  │   │       │           │     ╰── when closer
-│  │   │       │           ╰──────── then: x * 3 — prefixed(7), skip position
-│  │   │       ╰──────────────────── condition: self % 3 > 0
-│  │   ╰──────────────────────────── when body opener (length prefixed)
-│  ╰──────────────────────────────── x in 1..10 (range opcode produces [1..10])
-╰─────────────────────────────────── array comprehension opener
++1ksize,4red,3color,5:k
 ```
 
-This yields `[3, 6, 12, 15, 21, 24, 30]`.
-
-### HTTP Server Action Annotations
-
-This is a larger example using domain ref `H'` for `headers`.
-
-```rex
-map = {
-  abc: "/letters"
-  123: "/numbers"
-}
-when act = map.(headers.x-action) do
-  headers.x-handler = act
-end
-```
-
-This compiles down to 86 bytes:
+### `[v * 2 for v in 1..10]`
 
 ```rexc
-(%=map$r{abc:8,/letters3S+8,/numbers}?(=act$h(map$(H'x-action:))i=(H'x-handler:)act$))
+[(+4 $v %ml) $v (+k +2 %rn)]>
+├─────┬─────╯╰╯╰──────┬────╯╰── ]> for-in list comprehension
+│     │       │        ╰──────── read first: iterable range(1, 10)
+│     │       ╰────────────────── read next: binding v
+│     ╰────────────────────────── read next: value-expr mul(v, 2)
+╰──────────────────────────────── [ left delimiter
 ```
 
-This can be optimized using inline data and `self` instead of two local variables.
+### Lazy vs Eager
 
-```rex
-when {
-  "abc": "/letters"
-  "123": "/numbers"
-}.(headers.x-action) do
-  headers.x-handler = self
-end
-```
-
-Which compiles down to 65 bytes:
+A `;` list with computed elements — each evaluated only on access:
 
 ```rexc
-?(({abc:8,/letters123:8,/numbers}(H'x-action:))f=(H'x-handler:)@)
+(+4 $x %ml)(+2 $x %ad);8
 ```
 
-### Repeated Value with Pointers
+Reading element 0 evaluates `add(x, 1)` without touching element 1. Reading element 1 evaluates `mul(x, 2)` without touching element 0.
 
-Consider this array with a repeated large string value:
-
-```rex
-[
-  { cache-key: "tenant:public:route:GET:/v1/search" }
-  { cache-key: "tenant:public:route:GET:/v1/search" }
-  { cache-key: "tenant:public:route:GET:/v1/search" }
-]
-```
-
-Using pointers, this encodes to 81 bytes:
+The same expressions in an eager list — both evaluate immediately, in order:
 
 ```rexc
-[K{cache-key:-^}K{cache-key:L^}K{cache-key:y,tenant:public:route:GET:/v1/search}]
+[(+2 $x %ad)(+4 $x %ml)]
 ```
+
+Both `add(x, 1)` and `mul(x, 2)` execute in that order. The result is a two-element list.
