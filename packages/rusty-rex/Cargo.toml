@@ -1,0 +1,13 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.dependencies]
+rex-core = { path = "crates/rex-core" }
+criterion = { version = "0.8", features = ["html_reports"] }
+napi = { version = "3", default-features = false, features = ["napi4"] }
+napi-derive = "3"
+napi-build = "2"
+logos = "0.16"
+rowan = "0.16"
+clap = { version = "4", features = ["derive"] }

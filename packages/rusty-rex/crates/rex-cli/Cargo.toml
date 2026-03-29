@@ -1,0 +1,12 @@
+[package]
+name = "rex-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "rex"
+path = "src/main.rs"
+
+[dependencies]
+rex-core.workspace = true
+clap.workspace = true
