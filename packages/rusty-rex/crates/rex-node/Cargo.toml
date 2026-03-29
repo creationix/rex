@@ -1,0 +1,15 @@
+[package]
+name = "rex-node"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rex-core.workspace = true
+napi.workspace = true
+napi-derive.workspace = true
+
+[build-dependencies]
+napi-build.workspace = true

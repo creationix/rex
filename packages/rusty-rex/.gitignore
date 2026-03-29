@@ -1,0 +1,7 @@
+target/
+*.node
+*.cpuprofile
+*.so
+*.dylib
+node_modules/
+bun.lockb

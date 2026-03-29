@@ -1,0 +1,15 @@
+[package]
+name = "rex-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+logos.workspace = true
+rowan.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "compiler"
+harness = false
