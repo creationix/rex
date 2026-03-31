@@ -44,25 +44,26 @@ fn infix_binding_power(kind: SyntaxKind) -> Option<(u8, u8)> {
     // Left-associative: left_bp < right_bp
     // Right-associative: left_bp > right_bp
     let bp = match kind {
-        // Logical existence: and / or / nor
-        SyntaxKind::KwAnd | SyntaxKind::KwOr | SyntaxKind::KwNor => (1, 2),
+        // Logical existence
+        SyntaxKind::KwOr => (1, 2),
+        SyntaxKind::KwAnd => (3, 4),
         // Bitwise
-        SyntaxKind::Pipe => (3, 4),
-        SyntaxKind::Caret => (5, 6),
-        SyntaxKind::Amp => (7, 8),
+        SyntaxKind::Pipe => (5, 6),
+        SyntaxKind::Caret => (7, 8),
+        SyntaxKind::Amp => (9, 10),
         // Comparison
         SyntaxKind::EqEq
         | SyntaxKind::BangEq
         | SyntaxKind::Gt
         | SyntaxKind::GtEq
         | SyntaxKind::Lt
-        | SyntaxKind::LtEq => (9, 10),
+        | SyntaxKind::LtEq => (11, 12),
         // Range
-        SyntaxKind::DotDot => (11, 12),
+        SyntaxKind::DotDot => (13, 14),
         // Additive
-        SyntaxKind::Plus | SyntaxKind::Minus => (13, 14),
+        SyntaxKind::Plus | SyntaxKind::Minus => (15, 16),
         // Multiplicative
-        SyntaxKind::Star | SyntaxKind::Slash | SyntaxKind::Percent => (15, 16),
+        SyntaxKind::Star | SyntaxKind::Slash | SyntaxKind::Percent => (17, 18),
         _ => return None,
     };
     Some(bp)
@@ -391,7 +392,6 @@ impl<'s, 'c> Parser<'s, 'c> {
             | SyntaxKind::KwBoolean => {
                 self.bump();
             }
-            SyntaxKind::KwSelf => self.parse_self_expr(),
             SyntaxKind::Ident => {
                 if self.nth(1) == SyntaxKind::TemplateLiteral {
                     // Tagged template: ident`...`
@@ -442,17 +442,6 @@ impl<'s, 'c> Parser<'s, 'c> {
         }
     }
 
-    fn parse_self_expr(&mut self) {
-        let cp = self.checkpoint();
-        self.bump(); // self
-        if self.current() == SyntaxKind::At {
-            self.start_node_at(cp, SyntaxKind::SelfExpr);
-            self.bump(); // @
-            self.expect(SyntaxKind::DecimalNumber);
-            self.finish_node();
-        }
-        // Plain `self` is just the keyword token — no wrapper node needed
-    }
 
     // ── Type and extern declarations ───────────────────────────────
 
@@ -571,11 +560,6 @@ impl<'s, 'c> Parser<'s, 'c> {
     fn parse_iter_binding(&mut self) {
         self.start_node(SyntaxKind::IterBinding);
         match self.current() {
-            // bare `in expr` or `of expr`
-            SyntaxKind::KwIn | SyntaxKind::KwOf => {
-                self.bump(); // in | of
-                self.parse_expr();
-            }
             SyntaxKind::Ident => {
                 self.bump(); // first ident
                 match self.current() {

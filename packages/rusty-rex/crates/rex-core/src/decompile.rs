@@ -54,7 +54,7 @@ impl Ctx {
             Value::Ref(name) => write_ref(name, out),
             Value::Variable(name) => out.push_str(name),
             Value::Opcode(name) => out.push_str(name), // standalone opcode (type predicate)
-            Value::SelfRef(depth) => write_self(*depth, out),
+
             Value::BreakCont(v) => write_break_cont(*v, out),
             Value::Pointer(delta) => {
                 if self.raw {
@@ -69,8 +69,7 @@ impl Ctx {
             Value::Block(items) => self.write_block(items, out, prec),
             Value::Call(items) => self.write_call(items, out, prec),
 
-            Value::When(items) => self.write_conditional("when", items, out),
-            Value::Unless(items) => self.write_conditional("unless", items, out),
+            Value::When(items) => self.write_conditional(items, out),
             Value::Or(items) => self.write_binary_logic("or", items, out, prec, Prec::Or),
             Value::And(items) => self.write_binary_logic("and", items, out, prec, Prec::And),
             Value::ForIn(items) => self.write_for("in", items, out),
@@ -208,7 +207,7 @@ impl Ctx {
                 let is_nav = !args.is_empty()
                     && args.iter().all(|a| {
                         matches!(a, Value::String(_) | Value::Variable(_)
-                            | Value::Call(_) | Value::SelfRef(_))
+                            | Value::Call(_))
                     });
 
                 if is_nav && args.iter().all(|a| matches!(a, Value::String(_))) {
@@ -357,53 +356,65 @@ impl Ctx {
             out.push('(');
         }
         self.write(&items[0], out, op_prec);
-        out.push(' ');
-        out.push_str(keyword);
-        out.push(' ');
-        self.write(&items[1], out, Prec::from_u8(op_prec.to_u8() + 1));
+        for item in &items[1..] {
+            out.push(' ');
+            out.push_str(keyword);
+            out.push(' ');
+            self.write(item, out, Prec::from_u8(op_prec.to_u8() + 1));
+        }
         if need_parens {
             out.push(')');
         }
     }
 
-    fn write_conditional(&mut self, keyword: &str, items: &[Value], out: &mut String) {
-        out.push_str(keyword);
-        out.push(' ');
-        if let Some(cond) = items.first() {
-            self.write(cond, out, Prec::Top);
-        }
-        out.push_str(" do");
-        if items.len() > 1 {
+    /// Decompile variadic cond: ?(c1 t1 [c2 t2 ...] [else])
+    /// Recognizes ?(c no' body) as `unless c do body end`.
+    fn write_conditional(&mut self, items: &[Value], out: &mut String) {
+        // Detect unless: ?(cond no' body) — exactly 3 items, body at [1] is none ref
+        if items.len() == 3 && items[1] == Value::Ref("no".into()) {
+            out.push_str("unless ");
+            self.write(&items[0], out, Prec::Top);
+            out.push_str(" do");
             self.indent += 1;
             out.push('\n');
             write_indent(self.indent, out);
-            self.write(&items[1], out, Prec::Top);
+            self.write(&items[2], out, Prec::Top);
             self.indent -= 1;
+            out.push('\n');
+            write_indent(self.indent, out);
+            out.push_str("end");
+            return;
         }
-        if items.len() > 2 {
+
+        let mut i = 0;
+        let mut first = true;
+        while i + 1 < items.len() {
+            if !first {
+                out.push('\n');
+                write_indent(self.indent, out);
+                out.push_str("else ");
+            }
+            first = false;
+            out.push_str("when ");
+            self.write(&items[i], out, Prec::Top);
+            out.push_str(" do");
+            self.indent += 1;
+            out.push('\n');
+            write_indent(self.indent, out);
+            self.write(&items[i + 1], out, Prec::Top);
+            self.indent -= 1;
+            i += 2;
+        }
+        // Odd trailing child = else
+        if i < items.len() {
             out.push('\n');
             write_indent(self.indent, out);
             out.push_str("else");
-            // Check if else branch is another conditional
-            match &items[2] {
-                Value::When(inner) => {
-                    out.push(' ');
-                    self.write_conditional("when", inner, out);
-                    return;
-                }
-                Value::Unless(inner) => {
-                    out.push(' ');
-                    self.write_conditional("unless", inner, out);
-                    return;
-                }
-                _ => {
-                    self.indent += 1;
-                    out.push('\n');
-                    write_indent(self.indent, out);
-                    self.write(&items[2], out, Prec::Top);
-                    self.indent -= 1;
-                }
-            }
+            self.indent += 1;
+            out.push('\n');
+            write_indent(self.indent, out);
+            self.write(&items[i], out, Prec::Top);
+            self.indent -= 1;
         }
         out.push('\n');
         write_indent(self.indent, out);
@@ -673,13 +684,7 @@ fn write_ref(name: &str, out: &mut String) {
     }
 }
 
-fn write_self(depth: u32, out: &mut String) {
-    out.push_str("self");
-    if depth > 0 {
-        use std::fmt::Write;
-        write!(out, "@{depth}").unwrap();
-    }
-}
+
 
 fn write_break_cont(v: u32, out: &mut String) {
     if v % 2 == 0 {
@@ -773,11 +778,6 @@ mod tests {
         assert_eq!(decompile(&Value::Variable("my-var".into())), "my-var");
     }
 
-    #[test]
-    fn decompile_self() {
-        assert_eq!(decompile(&Value::SelfRef(0)), "self");
-        assert_eq!(decompile(&Value::SelfRef(2)), "self@2");
-    }
 
     #[test]
     fn decompile_break_continue() {
@@ -911,13 +911,14 @@ mod tests {
     fn decompile_list_comp() {
         let v = Value::ListCompIn(vec![
             Value::Variable("items".into()),
+            Value::Variable("x".into()),
             Value::Call(vec![
                 Value::Opcode("ml".into()),
-                Value::SelfRef(0),
-                Value::SelfRef(0),
+                Value::Variable("x".into()),
+                Value::Variable("x".into()),
             ]),
         ]);
-        assert_eq!(decompile(&v), "[self * self in items]");
+        assert_eq!(decompile(&v), "[x * x for x in items]");
     }
 
     #[test]

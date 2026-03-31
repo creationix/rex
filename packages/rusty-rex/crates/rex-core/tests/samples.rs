@@ -303,23 +303,12 @@ fn method_style_call() {
     assert_parses("contains(principal.roles, policy.required-role)");
 }
 
-// ─── Self ───────────────────────────────────────────────────────────────
+// ─── Self (now just an identifier) ──────────────────────────────────────
 
 #[test]
-fn self_keyword() {
+fn self_as_identifier() {
     assert_parses("self");
-}
-
-#[test]
-fn self_depth() {
-    assert_parses("self@2");
-    assert_parses("self@0");
-}
-
-#[test]
-fn self_in_expression() {
     assert_parses("self * self");
-    assert_parses("self % 2 == 0");
 }
 
 // ─── Conditionals ───────────────────────────────────────────────────────
@@ -389,8 +378,9 @@ fn for_key_of() {
 }
 
 #[test]
-fn for_bare_in() {
-    assert_parses("for in 1..4 do\n  mask = mask | bit\nend");
+fn for_bare_in_rejected() {
+    let (_, errors) = parse("for in 1..4 do\n  mask = mask | bit\nend");
+    assert!(!errors.is_empty(), "bare `for in` should be rejected");
 }
 
 #[test]
@@ -542,7 +532,7 @@ fn fibonacci_program() {
 #[test]
 fn primes_sieve() {
     assert_parses(
-        "max = max or 100\ncomposites = {}\nn = 2\nwhile n * n <= max do\n  unless composites.(n) do\n    m = n * n\n    while m <= max do\n      composites.(m) = true\n      m += n\n    end\n  end\n  n += 1\nend\n[composites.(self) nor self in 2..max]",
+        "max = max or 100\ncomposites = {}\nn = 2\nwhile n * n <= max do\n  unless composites.(n) do\n    m = n * n\n    while m <= max do\n      composites.(m) = true\n      m += n\n    end\n  end\n  n += 1\nend\n[n for n in 2..max]",
     );
 }
 

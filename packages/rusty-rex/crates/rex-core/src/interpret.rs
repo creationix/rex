@@ -181,7 +181,6 @@ pub fn run<'a>(bytecode: &'a str, mut ctx: Context<'a>) -> Result<RunResult, Rex
     let mut interp = Interpreter {
         code: bytecode.as_bytes(),
         pos: 0,
-        self_stack: Vec::new(),
         vars: std::mem::take(&mut ctx.vars),
         refs: ctx.refs,
         host_objects: ctx.host_objects,
@@ -204,7 +203,6 @@ pub fn run<'a>(bytecode: &'a str, mut ctx: Context<'a>) -> Result<RunResult, Rex
 struct Interpreter<'a> {
     code: &'a [u8],
     pos: usize,
-    self_stack: Vec<RexValue>,
     vars: HashMap<String, RexValue>,
     refs: HashMap<String, RexValue>,
     host_objects: Vec<&'a mut dyn HostObject>,
@@ -323,11 +321,6 @@ impl<'a> Interpreter<'a> {
                 // When used standalone (not in a call), it's a type predicate
                 Ok(RexValue::Str(format!("%{name}")))
             }
-            b'@' => {
-                let depth = parse_uint(raw) as usize;
-                let idx = self.self_stack.len().checked_sub(depth + 1);
-                Ok(idx.map(|i| self.self_stack[i].clone()).unwrap_or(RexValue::RexNone))
-            }
             b'\\' => {
                 let v = parse_uint(raw) as u32;
                 if v % 2 == 0 {
@@ -399,8 +392,7 @@ impl<'a> Interpreter<'a> {
             b'{' => self.eval_block(),
 
             // Compound containers
-            b'?' => self.eval_when(),
-            b'!' => self.eval_unless(),
+            b'?' => self.eval_cond(),
             b'|' => self.eval_or(),
             b'&' => self.eval_and(),
             b'>' => self.eval_for_in(),
@@ -604,86 +596,66 @@ impl<'a> Interpreter<'a> {
 
     // ── Control flow ────────────────────────────────────────────────
 
-    fn eval_when(&mut self) -> Result<RexValue, RexError> {
+    /// Variadic cond: ?(c1 t1 [c2 t2 ...] [else])
+    /// Evaluate condition-body pairs. First match wins. Odd trailing child = else.
+    fn eval_cond(&mut self) -> Result<RexValue, RexError> {
         self.read_byte(); // consume '('
-        let cond = self.eval()?;
-        if cond.is_defined() {
-            self.self_stack.push(cond);
-            let result = self.eval()?;
-            self.self_stack.pop();
-            // Skip else branch if present
-            if self.peek() != b')' {
-                self.skip_value_fast()?;
+        while self.peek() != b')' && !self.at_end() {
+            let cond = self.eval()?;
+            if self.peek() == b')' {
+                // Odd trailing child = else value (already evaluated)
+                self.read_byte(); // ')'
+                return Ok(cond);
             }
-            self.read_byte(); // ')'
-            Ok(result)
-        } else {
-            self.skip_value_fast()?; // skip then
-            let result = if self.peek() != b')' {
-                self.eval()?
+            if cond.is_defined() {
+                let result = self.eval()?;
+                // Skip remaining children
+                while self.peek() != b')' && !self.at_end() {
+                    self.skip_value_fast()?;
+                }
+                self.read_byte(); // ')'
+                return Ok(result);
             } else {
-                RexValue::RexNone
-            };
-            self.read_byte(); // ')'
-            Ok(result)
+                self.skip_value_fast()?; // skip body for this unmatched condition
+            }
         }
+        self.read_byte(); // ')'
+        Ok(RexValue::RexNone)
     }
 
-    fn eval_unless(&mut self) -> Result<RexValue, RexError> {
-        self.read_byte(); // '('
-        let cond = self.eval()?;
-        if !cond.is_defined() {
-            // Condition is none → execute then branch
-            let result = self.eval()?;
-            if self.peek() != b')' {
-                self.skip_value_fast()?;
-            }
-            self.read_byte(); // ')'
-            Ok(result)
-        } else {
-            self.skip_value_fast()?; // skip then
-            let result = if self.peek() != b')' {
-                self.eval()?
-            } else {
-                RexValue::RexNone
-            };
-            self.read_byte(); // ')'
-            Ok(result)
-        }
-    }
-
+    /// Variadic or: |(a b c ...) — return first defined value.
     fn eval_or(&mut self) -> Result<RexValue, RexError> {
         self.read_byte(); // '('
-        let left = self.eval()?;
-        if left.is_defined() {
-            // Skip right
-            if self.peek() != b')' {
-                self.skip_value_fast()?;
+        while self.peek() != b')' && !self.at_end() {
+            let val = self.eval()?;
+            if val.is_defined() {
+                while self.peek() != b')' && !self.at_end() {
+                    self.skip_value_fast()?;
+                }
+                self.read_byte(); // ')'
+                return Ok(val);
             }
-            self.read_byte(); // ')'
-            Ok(left)
-        } else {
-            let right = self.eval()?;
-            self.read_byte(); // ')'
-            Ok(right)
         }
+        self.read_byte(); // ')'
+        Ok(RexValue::RexNone)
     }
 
+    /// Variadic and: &(a b c ...) — return last value if all defined, else none.
     fn eval_and(&mut self) -> Result<RexValue, RexError> {
         self.read_byte(); // '('
-        let left = self.eval()?;
-        if !left.is_defined() {
-            // Skip right
-            if self.peek() != b')' {
-                self.skip_value_fast()?;
+        let mut last = RexValue::RexNone;
+        while self.peek() != b')' && !self.at_end() {
+            last = self.eval()?;
+            if !last.is_defined() {
+                while self.peek() != b')' && !self.at_end() {
+                    self.skip_value_fast()?;
+                }
+                self.read_byte(); // ')'
+                return Ok(RexValue::RexNone);
             }
-            self.read_byte(); // ')'
-            Ok(RexValue::RexNone)
-        } else {
-            let right = self.eval()?;
-            self.read_byte(); // ')'
-            Ok(right)
         }
+        self.read_byte(); // ')'
+        Ok(last)
     }
 
     fn eval_for_in(&mut self) -> Result<RexValue, RexError> {
@@ -720,7 +692,7 @@ impl<'a> Interpreter<'a> {
 
         for (i, item) in items.iter().enumerate() {
             self.tick()?;
-            self.self_stack.push(item.clone());
+
 
             // Bind variables
             if bindings.len() == 1 {
@@ -742,11 +714,11 @@ impl<'a> Interpreter<'a> {
                     };
                     results.push(forced);
                 }
-                Err(RexError::BreakSignal(0)) => { self.self_stack.pop(); break; }
-                Err(RexError::ContinueSignal(0)) => { self.self_stack.pop(); continue; }
-                Err(e) => { self.self_stack.pop(); return Err(e); }
+                Err(RexError::BreakSignal(0)) => { break; }
+                Err(RexError::ContinueSignal(0)) => { continue; }
+                Err(e) => { return Err(e); }
             }
-            self.self_stack.pop();
+
         }
 
         self.pos = body_end + 1; // past closer
@@ -788,7 +760,7 @@ impl<'a> Interpreter<'a> {
 
         for key in &keys {
             self.tick()?;
-            self.self_stack.push(key.clone());
+
 
             if bindings.len() >= 1 {
                 self.vars.insert(bindings[0].clone(), key.clone());
@@ -804,11 +776,11 @@ impl<'a> Interpreter<'a> {
                     };
                     results.push(forced);
                 }
-                Err(RexError::BreakSignal(0)) => { self.self_stack.pop(); break; }
-                Err(RexError::ContinueSignal(0)) => { self.self_stack.pop(); continue; }
-                Err(e) => { self.self_stack.pop(); return Err(e); }
+                Err(RexError::BreakSignal(0)) => { break; }
+                Err(RexError::ContinueSignal(0)) => { continue; }
+                Err(e) => { return Err(e); }
             }
-            self.self_stack.pop();
+
         }
 
         self.pos = body_end + 1;
@@ -843,7 +815,7 @@ impl<'a> Interpreter<'a> {
             if !cond.is_defined() {
                 break;
             }
-            self.self_stack.push(cond);
+
             self.pos = body_start;
             match self.eval_until(closer) {
                 Ok(val) => {
@@ -854,11 +826,11 @@ impl<'a> Interpreter<'a> {
                     };
                     results.push(forced);
                 }
-                Err(RexError::BreakSignal(0)) => { self.self_stack.pop(); break; }
-                Err(RexError::ContinueSignal(0)) => { self.self_stack.pop(); continue; }
-                Err(e) => { self.self_stack.pop(); return Err(e); }
+                Err(RexError::BreakSignal(0)) => { break; }
+                Err(RexError::ContinueSignal(0)) => { continue; }
+                Err(e) => { return Err(e); }
             }
-            self.self_stack.pop();
+
         }
 
         self.pos = body_end + 1;
@@ -1150,7 +1122,7 @@ impl<'a> Interpreter<'a> {
         let raw = self.read_raw();
         let tag = self.read_byte();
         match tag {
-            b'+' | b'\'' | b'$' | b'%' | b'@' | b'\\' | b'^' => {}
+            b'+' | b'\'' | b'$' | b'%' | b'\\' | b'^' => {}
             b'*' => { self.skip_value()?; }
             b',' | b'.' => {
                 let size = parse_uint(raw) as usize;
@@ -1170,7 +1142,7 @@ impl<'a> Interpreter<'a> {
                     self.skip_until(closer)?;
                 }
             }
-            b'?' | b'!' | b'|' | b'&' | b'>' | b'<' | b'#' => {
+            b'?' | b'|' | b'&' | b'>' | b'<' | b'#' => {
                 let opener = self.read_byte();
                 let closer = match opener { b'(' => b')', b'[' => b']', b'{' => b'}', _ => b')' };
                 self.skip_until(closer)?;

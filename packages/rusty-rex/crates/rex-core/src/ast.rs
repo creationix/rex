@@ -84,7 +84,6 @@ impl BinaryExpr {
                     | SyntaxKind::LtEq
                     | SyntaxKind::KwAnd
                     | SyntaxKind::KwOr
-                    | SyntaxKind::KwNor
             )
         })
     }

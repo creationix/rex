@@ -35,7 +35,7 @@ fn lower_node(node: &SyntaxNode) -> Option<Value> {
         SyntaxKind::CallExpr => Some(lower_call(node)),
         SyntaxKind::NavExpr => Some(lower_nav(node)),
         SyntaxKind::GroupExpr => lower_group(node),
-        SyntaxKind::SelfExpr => Some(lower_self_expr(node)),
+
         SyntaxKind::ConditionalExpr => Some(lower_conditional(node)),
         SyntaxKind::ForExpr => Some(lower_for(node)),
         SyntaxKind::WhileExpr => Some(lower_while(node)),
@@ -98,7 +98,7 @@ fn lower_token(token: &crate::syntax::SyntaxToken) -> Option<Value> {
         SyntaxKind::KwNone => Some(Value::Ref("no".into())),
         SyntaxKind::KwNan => Some(Value::Ref("nan".into())),
         SyntaxKind::KwInf => Some(Value::Ref("inf".into())),
-        SyntaxKind::KwSelf => Some(Value::SelfRef(0)),
+
         SyntaxKind::KwBreak => Some(Value::BreakCont(0)),
         SyntaxKind::KwContinue => Some(Value::BreakCont(1)),
         // Type predicates as opcodes
@@ -247,7 +247,7 @@ fn lower_binary(node: &SyntaxNode) -> Value {
         Some(SyntaxKind::LtEq) => "le",
         Some(SyntaxKind::KwAnd) => return flatten_variadic(Value::And, lhs, rhs),
         Some(SyntaxKind::KwOr) => return flatten_variadic(Value::Or, lhs, rhs),
-        Some(SyntaxKind::KwNor) => return flatten_variadic(Value::Unless, lhs, rhs),
+
         _ => "ad", // fallback
     };
 
@@ -262,11 +262,10 @@ fn flatten_variadic(ctor: fn(Vec<Value>) -> Value, lhs: Value, rhs: Value) -> Va
         (v, ctor(vec![])),
         (Value::And(_), Value::And(_))
         | (Value::Or(_), Value::Or(_))
-        | (Value::Unless(_), Value::Unless(_))
     );
     let mut items = if is_same(&lhs) {
         match lhs {
-            Value::And(v) | Value::Or(v) | Value::Unless(v) => v,
+            Value::And(v) | Value::Or(v) => v,
             _ => unreachable!(),
         }
     } else {
@@ -453,18 +452,6 @@ fn lower_group(node: &SyntaxNode) -> Option<Value> {
         .find_map(|child| lower_child(child))
 }
 
-fn lower_self_expr(node: &SyntaxNode) -> Value {
-    // SelfExpr: self @ number
-    let mut depth: u32 = 0;
-    for child in non_trivia_children(node) {
-        if let Some(t) = child.as_token() {
-            if t.kind() == SyntaxKind::DecimalNumber {
-                depth = t.text().parse().unwrap_or(0);
-            }
-        }
-    }
-    Value::SelfRef(depth)
-}
 
 fn lower_conditional(node: &SyntaxNode) -> Value {
     let mut items = Vec::new();
@@ -486,7 +473,7 @@ fn lower_conditional(node: &SyntaxNode) -> Value {
                     items.push(lower_block_body(&n));
                 }
                 SyntaxKind::ElseBranch => {
-                    items.push(lower_else_branch(&n));
+                    lower_else_into(&n, &mut items);
                 }
                 _ => {
                     if let Some(v) = lower_node(&n) {
@@ -498,17 +485,36 @@ fn lower_conditional(node: &SyntaxNode) -> Value {
     }
 
     if is_unless {
-        Value::Unless(items)
-    } else {
-        Value::When(items)
+        // unless c do t end       → ?(c no' t)
+        // unless c do t else e end → ?(c e t)
+        // items = [cond, body] or [cond, body, else]
+        match items.len() {
+            2 => {
+                // [cond, body] → [cond, none, body]
+                let body = items.pop().unwrap();
+                items.push(Value::Ref("no".into()));
+                items.push(body);
+            }
+            n if n >= 3 => {
+                // [cond, body, else...] → [cond, else..., body]
+                // Swap body (index 1) to the end
+                let body = items.remove(1);
+                items.push(body);
+            }
+            _ => {}
+        }
     }
+
+    Value::When(items)
 }
 
-fn lower_else_branch(node: &SyntaxNode) -> Value {
-    // ElseBranch can contain: else block, or else when/unless ... (nested conditional)
+/// Append else-branch children into an existing When's item list.
+/// `else when c2 do t2 else e end` adds [c2, t2, ...] directly,
+/// flattening the chain into a single variadic When.
+fn lower_else_into(node: &SyntaxNode, items: &mut Vec<Value>) {
     let mut has_when = false;
     let mut is_unless = false;
-    let mut items = Vec::new();
+    let mut branch_items = Vec::new();
 
     for child in non_trivia_children(node) {
         match child {
@@ -522,20 +528,20 @@ fn lower_else_branch(node: &SyntaxNode) -> Value {
                 SyntaxKind::KwDo => {}
                 _ => {
                     if let Some(v) = lower_token(&t) {
-                        items.push(v);
+                        branch_items.push(v);
                     }
                 }
             },
             rowan::NodeOrToken::Node(n) => match n.kind() {
                 SyntaxKind::Block => {
-                    items.push(lower_block_body(&n));
+                    branch_items.push(lower_block_body(&n));
                 }
                 SyntaxKind::ElseBranch => {
-                    items.push(lower_else_branch(&n));
+                    lower_else_into(&n, &mut branch_items);
                 }
                 _ => {
                     if let Some(v) = lower_node(&n) {
-                        items.push(v);
+                        branch_items.push(v);
                     }
                 }
             },
@@ -543,17 +549,29 @@ fn lower_else_branch(node: &SyntaxNode) -> Value {
     }
 
     if has_when {
+        // else when/unless: append cond-body pair(s) to parent
         if is_unless {
-            Value::Unless(items)
-        } else {
-            Value::When(items)
+            // else unless c do t [else e] → append [c, e/no', t]
+            match branch_items.len() {
+                2 => {
+                    let body = branch_items.pop().unwrap();
+                    branch_items.push(Value::Ref("no".into()));
+                    branch_items.push(body);
+                }
+                n if n >= 3 => {
+                    let body = branch_items.remove(1);
+                    branch_items.push(body);
+                }
+                _ => {}
+            }
         }
+        items.extend(branch_items);
     } else {
-        // Plain else block
-        match items.len() {
-            0 => Value::Ref("no".into()),
-            1 => items.into_iter().next().unwrap(),
-            _ => Value::Block(items),
+        // Plain else block — append as the trailing else value
+        match branch_items.len() {
+            0 => items.push(Value::Ref("no".into())),
+            1 => items.push(branch_items.into_iter().next().unwrap()),
+            _ => items.push(Value::Block(branch_items)),
         }
     }
 }
@@ -1057,10 +1075,6 @@ mod tests {
         assert_eq!(compile("x = 42"), "=x$1k+");
     }
 
-    #[test]
-    fn compile_self() {
-        assert_eq!(compile("self"), "@");
-    }
 
     #[test]
     fn compile_array_data() {
