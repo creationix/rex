@@ -27,6 +27,8 @@ pub enum TokenKind {
     KwElse,
     #[token("end", word_boundary)]
     KwEnd,
+    #[token("extern", word_boundary)]
+    KwExtern,
     #[token("false", word_boundary)]
     KwFalse,
     #[token("for", word_boundary)]
@@ -57,6 +59,8 @@ pub enum TokenKind {
     KwString,
     #[token("true", word_boundary)]
     KwTrue,
+    #[token("type", word_boundary)]
+    KwType,
     #[token("none", word_boundary)]
     KwNone,
     #[token("unless", word_boundary)]
@@ -84,6 +88,8 @@ pub enum TokenKind {
     DoubleString,
     #[regex(r"'([^'\\]|\\.)*'")]
     SingleString,
+    #[token("`", lex_template_literal)]
+    TemplateLiteral,
 
     // ── Multi-char operators (longest-match first) ───────────────────
     #[token(":=")]
@@ -180,6 +186,88 @@ pub enum TokenKind {
 /// Check that the character after a keyword match is not a valid identifier
 /// continuation character (`[a-zA-Z0-9_-]`). This mirrors the Ohm `~nameTail`
 /// guard on every keyword token.
+/// Manually scan a template literal, tracking `${...}` brace depth so that
+/// nested template literals inside interpolations are handled correctly.
+/// Called after the opening backtick has been consumed.
+fn lex_template_literal(lex: &mut logos::Lexer<TokenKind>) -> bool {
+    let rest = lex.remainder().as_bytes();
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            b'`' => {
+                // Closing backtick — consume it and succeed
+                lex.bump(i + 1);
+                return true;
+            }
+            b'\\' => {
+                // Escape sequence — skip next byte
+                i += 2;
+            }
+            b'$' if i + 1 < rest.len() && rest[i + 1] == b'{' => {
+                // Interpolation start — track brace depth
+                i += 2;
+                let mut depth: u32 = 1;
+                while i < rest.len() && depth > 0 {
+                    match rest[i] {
+                        b'{' => depth += 1,
+                        b'}' => depth -= 1,
+                        b'`' => {
+                            // Nested template literal — recurse by scanning it
+                            i += 1;
+                            let mut nested_done = false;
+                            while i < rest.len() && !nested_done {
+                                match rest[i] {
+                                    b'`' => { i += 1; nested_done = true; }
+                                    b'\\' => { i += 2; }
+                                    b'$' if i + 1 < rest.len() && rest[i + 1] == b'{' => {
+                                        // Nested interpolation in nested template
+                                        i += 2;
+                                        let mut d2: u32 = 1;
+                                        while i < rest.len() && d2 > 0 {
+                                            match rest[i] {
+                                                b'{' => d2 += 1,
+                                                b'}' => d2 -= 1,
+                                                b'\\' => { i += 1; }
+                                                _ => {}
+                                            }
+                                            i += 1;
+                                        }
+                                    }
+                                    _ => { i += 1; }
+                                }
+                            }
+                            continue;
+                        }
+                        b'\\' => { i += 1; }
+                        b'\'' => {
+                            // Skip single-quoted string inside interpolation
+                            i += 1;
+                            while i < rest.len() && rest[i] != b'\'' {
+                                if rest[i] == b'\\' { i += 1; }
+                                i += 1;
+                            }
+                        }
+                        b'"' => {
+                            // Skip double-quoted string inside interpolation
+                            i += 1;
+                            while i < rest.len() && rest[i] != b'"' {
+                                if rest[i] == b'\\' { i += 1; }
+                                i += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    false // unterminated template literal
+}
+
 fn word_boundary(lex: &logos::Lexer<TokenKind>) -> bool {
     lex.remainder()
         .chars()
@@ -339,6 +427,29 @@ mod tests {
     #[test]
     fn dashed_identifier() {
         assert_eq!(non_trivia("my-var"), vec![TokenKind::Ident]);
+    }
+
+    #[test]
+    fn template_literal() {
+        assert_eq!(non_trivia("`hello`"), vec![TokenKind::TemplateLiteral]);
+        assert_eq!(non_trivia(r"`hello ${name}`"), vec![TokenKind::TemplateLiteral]);
+        assert_eq!(non_trivia(r"`escaped \` backtick`"), vec![TokenKind::TemplateLiteral]);
+        // Tagged template: identifier followed by template
+        assert_eq!(
+            non_trivia(r"html`<p>${text}</p>`"),
+            vec![TokenKind::Ident, TokenKind::TemplateLiteral]
+        );
+    }
+
+    #[test]
+    fn type_and_extern_keywords() {
+        assert_eq!(non_trivia("type"), vec![TokenKind::KwType]);
+        assert_eq!(non_trivia("extern"), vec![TokenKind::KwExtern]);
+        // Not keywords when part of longer identifier
+        assert_eq!(non_trivia("typedef"), vec![TokenKind::Ident]);
+        assert_eq!(non_trivia("external"), vec![TokenKind::Ident]);
+        // mut is NOT a keyword — always an identifier
+        assert_eq!(non_trivia("mut"), vec![TokenKind::Ident]);
     }
 
     #[test]
