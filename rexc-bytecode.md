@@ -160,9 +160,9 @@ $my-var  │ variable my-var
 For navigation, wrap in a call. Arguments after the variable are key lookups:
 
 ```rexc
-(name,4 $user)           │ user.name
-(street,6 address,7 $user)  │ user.address.street
-($key $table)            │ table[key]
+(name,4$user)            │ user.name
+(street,6address,7$user) │ user.address.street
+($key$table)             │ table.(key)
 ```
 
 ## Opcodes

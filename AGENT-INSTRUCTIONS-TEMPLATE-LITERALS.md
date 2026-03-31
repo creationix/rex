@@ -1,4 +1,6 @@
-# Instructions: Implement Template Literals in Rex
+# Instructions: Template Literals in Rex
+
+> **Status: COMPLETE.** Template literals are fully implemented across lexer, parser, lowerer, interpreter, and syntax highlighting. The rex-serve knowledge-base examples use both untagged and tagged (`html` tag) template literals in production. This file is retained as a design reference.
 
 ## Goal
 
