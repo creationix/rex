@@ -67,7 +67,7 @@ when res.status < 400 and reject == undefined do
     attempts = 0
     delivered = false
 
-    for in [1, 2, 3] do
+    for attempt in [1, 2, 3] do
       attempts += 1
       delivery = deliver-event(route, parsed, {
         request-id: request-id,
