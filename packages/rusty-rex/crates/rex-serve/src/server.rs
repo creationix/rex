@@ -183,6 +183,9 @@ async fn ws_pubsub_connection(
                             break;
                         }
                     }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("pub/sub client lagged, skipped {n} messages");
+                    }
                     Err(_) => break,
                 }
             }
@@ -190,7 +193,7 @@ async fn ws_pubsub_connection(
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        let mut store = state.kv.lock().unwrap();
+                        let store = state.kv.lock().unwrap();
                         store.publish(&channel, &text);
                     }
                     Some(Ok(Message::Close(_))) | None => break,
