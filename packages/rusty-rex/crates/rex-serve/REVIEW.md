@@ -95,6 +95,3 @@ Every original pain point was resolved during the project:
 
 The compiler treats `time.uuid()` as `$time.uuid` — variable navigation. Rex-serve creates `OpcodeNamespace` host objects that return `"%tu"` when navigated, which the interpreter then dispatches as an opcode call. With domain-aware compilation (reading `.rexd` declarations), the compiler could emit `%tu` directly — eliminating the runtime indirection and ~8 host objects per request.
 
-### `\${` escape rendering in source views
-
-The `\${` escape works correctly in Rex source — `\${x}` produces literal `${x}`. But the syntax highlighter doesn't render it distinctly from a real interpolation in the source view. Minor cosmetic issue.
