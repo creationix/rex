@@ -223,12 +223,26 @@ async fn ws_pubsub_connection(
 /// Returns the transformed message string, or None to suppress.
 fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<String> {
     use rex_core::interpret::{Context, RexValue};
+    use crate::refs::OpcodeNamespace;
     use std::collections::HashMap;
 
     let mut vars = HashMap::new();
     vars.insert("event".into(), RexValue::Object(vec![
         ("data".into(), RexValue::Str(data.to_string())),
     ]));
+
+    // Set up opcode namespaces so json.parse, kv.*, log.*, etc. work
+    let mut ns_json = OpcodeNamespace { methods: vec![("parse", "jp"), ("stringify", "js")], tag_opcode: None };
+    let mut ns_log = OpcodeNamespace { methods: vec![("info", "li"), ("warning", "lw"), ("error", "le")], tag_opcode: None };
+    let mut ns_kv = OpcodeNamespace { methods: vec![("get", "kg"), ("set", "ks"), ("delete", "kd"), ("keys", "kk"), ("incr", "ki"), ("publish", "kp")], tag_opcode: None };
+    let mut ns_db = OpcodeNamespace { methods: vec![("get", "dg"), ("set", "ds"), ("delete", "dd"), ("list", "dl")], tag_opcode: None };
+    let mut ns_time = OpcodeNamespace { methods: vec![("now", "tn"), ("uuid", "tu")], tag_opcode: None };
+
+    vars.insert("json".into(), RexValue::Host(0));
+    vars.insert("log".into(), RexValue::Host(1));
+    vars.insert("kv".into(), RexValue::Host(2));
+    vars.insert("db".into(), RexValue::Host(3));
+    vars.insert("time".into(), RexValue::Host(4));
 
     let opcodes = crate::opcodes::build_opcodes(
         state.db.clone(),
@@ -239,7 +253,13 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
     let ctx = Context {
         refs: HashMap::new(),
         vars,
-        host_objects: vec![],
+        host_objects: vec![
+            &mut ns_json,   // 0
+            &mut ns_log,    // 1
+            &mut ns_kv,     // 2
+            &mut ns_db,     // 3
+            &mut ns_time,   // 4
+        ],
         opcodes,
         gas_limit: state.config.server.gas_limit,
     };
@@ -247,10 +267,9 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
     match rex_core::interpret::run(bytecode, ctx) {
         Ok(result) => {
             match &result.value {
-                RexValue::RexNone => None, // suppress message
+                RexValue::RexNone => None,
                 RexValue::Str(s) => Some(s.clone()),
                 RexValue::Object(_) | RexValue::Array(_) => {
-                    // Auto-serialize objects/arrays to JSON
                     let json = crate::refs::rex_value_to_json(&result.value);
                     Some(json.to_string())
                 }
@@ -259,13 +278,16 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
         }
         Err(e) => {
             tracing::error!("ws transform error: {e}");
-            Some(data.to_string()) // pass through on error
+            Some(data.to_string())
         }
     }
 }
 
 async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
     use notify::{Watcher, RecursiveMode, Event, EventKind};
+
+    // Load the domain schema for type checking (look for *.rexd in project root)
+    let schema = load_domain_schema(&state.project_root);
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<PathBuf>>(8);
 
@@ -285,6 +307,11 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
 
     tracing::info!("watching {} for changes", routes_dir.display());
 
+    // Run type check on startup
+    if let Some(ref s) = schema {
+        run_type_check(&routes_dir, s);
+    }
+
     while rx.recv().await.is_some() {
         // Debounce: wait briefly then drain queued events
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -303,6 +330,16 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
         );
         *state.route_table.write().await = new_table;
 
+        // Type-check changed .rex files
+        if let Some(ref s) = schema {
+            let rex_files: Vec<&PathBuf> = changed_paths.iter()
+                .filter(|p| p.extension().is_some_and(|e| e == "rex"))
+                .collect();
+            if !rex_files.is_empty() {
+                type_check_files(&rex_files, &routes_dir, s);
+            }
+        }
+
         // Notify WebSocket clients of changed files
         for path in &changed_paths {
             let rel = path.strip_prefix(&routes_dir)
@@ -312,6 +349,93 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
             let _ = state.reload_tx.send(rel);
         }
     }
+}
+
+/// Load the domain schema from *.rexd files in the project root.
+fn load_domain_schema(project_root: &std::path::Path) -> Option<rex_core::typecheck::DomainSchema> {
+    // Find .rexd files in project root
+    let mut rexd_content = String::new();
+    if let Ok(entries) = std::fs::read_dir(project_root) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "rexd") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    tracing::info!("type checking with {}", path.display());
+                    rexd_content.push_str(&content);
+                    rexd_content.push('\n');
+                }
+            }
+        }
+    }
+    if rexd_content.is_empty() {
+        None
+    } else {
+        Some(rex_core::typecheck::parse_rexd(&rexd_content))
+    }
+}
+
+/// Type-check all .rex files in the routes directory.
+fn run_type_check(routes_dir: &std::path::Path, schema: &rex_core::typecheck::DomainSchema) {
+    let mut files = Vec::new();
+    collect_rex_files(routes_dir, &mut files);
+    if files.is_empty() { return; }
+    type_check_files(&files.iter().collect::<Vec<_>>(), routes_dir, schema);
+}
+
+/// Recursively collect all .rex files.
+fn collect_rex_files(dir: &std::path::Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rex_files(&path, files);
+        } else if path.extension().is_some_and(|e| e == "rex") {
+            files.push(path);
+        }
+    }
+}
+
+/// Type-check specific files and log diagnostics.
+fn type_check_files(
+    files: &[&PathBuf],
+    routes_dir: &std::path::Path,
+    schema: &rex_core::typecheck::DomainSchema,
+) {
+    use rex_core::typecheck::DiagnosticKind;
+
+    let mut total_errors = 0u32;
+    let mut total_warnings = 0u32;
+
+    for path in files {
+        let Ok(source) = std::fs::read_to_string(path) else { continue };
+        let diagnostics = rex_core::typecheck::check_source(&source, schema);
+
+        for d in &diagnostics {
+            let rel = path.strip_prefix(routes_dir).unwrap_or(path);
+            let line = span_to_line(&source, d.span.start);
+            match d.kind {
+                DiagnosticKind::Warning => {
+                    tracing::warn!("{}:{}: {}", rel.display(), line, d.message);
+                    total_warnings += 1;
+                }
+                DiagnosticKind::Error => {
+                    tracing::error!("{}:{}: {}", rel.display(), line, d.message);
+                    total_errors += 1;
+                }
+            }
+        }
+    }
+
+    if total_errors > 0 || total_warnings > 0 {
+        tracing::info!("type check: {} error(s), {} warning(s)", total_errors, total_warnings);
+    } else if !files.is_empty() {
+        tracing::info!("type check: all clear");
+    }
+}
+
+/// Convert a byte offset to a 1-based line number.
+fn span_to_line(source: &str, offset: usize) -> usize {
+    source[..offset.min(source.len())].matches('\n').count() + 1
 }
 
 async fn shutdown_signal() {
