@@ -7,6 +7,7 @@ pub mod lexer;
 pub mod lower;
 pub mod parser;
 pub mod syntax;
+pub mod typecheck;
 
 /// Compile Rex source to REXC bytecode with full optimizations.
 /// Always uses the full Rex pipeline (lex → parse → CST → lower → encode).

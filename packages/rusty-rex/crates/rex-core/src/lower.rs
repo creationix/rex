@@ -245,13 +245,35 @@ fn lower_binary(node: &SyntaxNode) -> Value {
         Some(SyntaxKind::GtEq) => "ge",
         Some(SyntaxKind::Lt) => "lt",
         Some(SyntaxKind::LtEq) => "le",
-        Some(SyntaxKind::KwAnd) => return Value::And(vec![lhs, rhs]),
-        Some(SyntaxKind::KwOr) => return Value::Or(vec![lhs, rhs]),
-        Some(SyntaxKind::KwNor) => return Value::Unless(vec![lhs, rhs]),
+        Some(SyntaxKind::KwAnd) => return flatten_variadic(Value::And, lhs, rhs),
+        Some(SyntaxKind::KwOr) => return flatten_variadic(Value::Or, lhs, rhs),
+        Some(SyntaxKind::KwNor) => return flatten_variadic(Value::Unless, lhs, rhs),
         _ => "ad", // fallback
     };
 
     Value::Call(vec![Value::Opcode(opcode.into()), lhs, rhs])
+}
+
+/// Flatten chained logical ops: `a and b and c` → `And([a, b, c])` instead
+/// of nested `And([And([a, b]), c])`. The parser produces left-nested binary
+/// trees; this collapses same-type chains into a single variadic node.
+fn flatten_variadic(ctor: fn(Vec<Value>) -> Value, lhs: Value, rhs: Value) -> Value {
+    let is_same = |v: &Value| matches!(
+        (v, ctor(vec![])),
+        (Value::And(_), Value::And(_))
+        | (Value::Or(_), Value::Or(_))
+        | (Value::Unless(_), Value::Unless(_))
+    );
+    let mut items = if is_same(&lhs) {
+        match lhs {
+            Value::And(v) | Value::Or(v) | Value::Unless(v) => v,
+            _ => unreachable!(),
+        }
+    } else {
+        vec![lhs]
+    };
+    items.push(rhs);
+    ctor(items)
 }
 
 fn lower_unary(node: &SyntaxNode) -> Value {
