@@ -20,9 +20,11 @@ Implement a type checker for Rex that infers types from `.rexd` domain files and
 
 ## Prerequisites
 
-1. **`type` and `extern` keywords** must be added to the lexer, syntax, and parser before `.rexd` files can be parsed. See `AGENT-INSTRUCTIONS-TYPE-EXTERN-KEYWORDS.md` for that task. This task depends on those keywords being implemented.
+1. **`type` and `extern` keywords** — **COMPLETE.** `KwType`, `KwExtern` tokens and `TypeDecl`, `ExternDecl` composite nodes are implemented in the lexer, syntax, and parser. `mut` is contextual after `extern`. `Star` is a valid object key (for `{*: T}` map types). The lowerer ignores `TypeDecl`/`ExternDecl` nodes.
 
-2. **No dependency on bytecode v2 migration.** The type checker works on the CST (syntax tree), not bytecode. It does not touch `Value`, the encoder, decoder, or interpreter. It can be built in parallel with the v2 migration.
+2. **`return` keyword** — **COMPLETE.** `KwReturn` and `ReturnExpr` are implemented. The type checker must handle `ReturnExpr` (see SyntaxKind table below).
+
+3. **No dependency on bytecode or interpreter.** The type checker works on the CST (syntax tree), not bytecode. It does not touch `Value`, the encoder, decoder, or interpreter.
 
 ## Working Example: rex-serve
 
@@ -77,6 +79,10 @@ db.list()                     // error: db.list expects 1 argument, got 0
 The type checker should live in `packages/rusty-rex/crates/rex-core/src/` as a new module, or in a new `rex-lsp` crate. The core infrastructure:
 
 1. **`.rexd` parser** — Parse `.rexd` files into a `DomainSchema` struct. `.rexd` files use standard Rex grammar with `type` and `extern` keywords — parse them with the existing Rex parser, then walk the CST to extract type declarations. See `rex-types.md` for the full syntax.
+
+   **Important:** Function signatures like `extern json.parse(text: string) = some` produce parse errors on the `:` inside the call args (`:` is not an expression operator). This is expected and acceptable — the CST preserves all tokens regardless of parse errors. The `.rexd` walker must extract argument names and types from the raw token sequence inside `CallExpr` nodes, tolerating error tokens.
+
+   **Rest parameters:** The `rex-serve.rexd` file uses `...values: some` for variadic functions (e.g., `extern html(parts: [string], ...values: some) = string`). The lexer tokenizes `...` as `DotDot` + `Dot`. The `.rexd` walker should detect this pattern and mark the parameter as rest/variadic.
 
 2. **Type representation** — An enum:
    ```rust
@@ -145,8 +151,11 @@ The inference walk must cover these composite node kinds (from `syntax.rs`):
 | `KwTrue`, `KwFalse` | `true`, `false` | Boolean literals |
 | `KwNull` | `null` | Null literal |
 | `KwNone` | `none` | None literal |
+| `ReturnExpr` | `return expr` | Return statement — infer child, type is `never` |
+| `TypeDecl` | `type Name = T` | Type alias declaration — skip (only used in `.rexd` parsing) |
+| `ExternDecl` | `extern name = T` | Host binding declaration — skip (only used in `.rexd` parsing) |
 
-**Note:** `TemplateExpr` has an `ast_node!` definition in `syntax.rs` but does NOT currently have a typed wrapper in `ast.rs`. You may need to add one, or work with the raw `SyntaxNode` directly.
+**Note on AST wrappers:** Most composite nodes have `ast_node!` typed wrappers in `ast.rs` (e.g., `BinaryExpr`, `ConditionalExpr`, `ReturnExpr`). However, `TypeDecl` and `ExternDecl` do **not** have typed wrappers — work with the raw `SyntaxNode` for `.rexd` parsing.
 
 ## Key Design Decisions Already Made
 
@@ -220,9 +229,9 @@ SyntaxKind::TemplateExpr => {
 }
 ```
 
-## Return Statement Type Inference (future)
+## Return Statement Type Inference
 
-When early return lands (see `AGENT-INSTRUCTIONS-EARLY-RETURN.md`, which depends on the v2 migration), the type checker will need a `ReturnExpr` arm:
+Early return is implemented (`KwReturn` + `ReturnExpr`). The type checker must handle it:
 
 ```rust
 SyntaxKind::ReturnExpr => {
@@ -233,8 +242,6 @@ SyntaxKind::ReturnExpr => {
     Type::Never  // code after return is unreachable
 }
 ```
-
-This is a small incremental addition — don't block on it.
 
 ## Testing Strategy
 

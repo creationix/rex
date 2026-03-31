@@ -30,10 +30,10 @@ routes/_middleware.rex:13:3: warning: Unknown property 'headrs' on request. Did 
 
 ## Prerequisites
 
-1. **Type/extern keywords** — `AGENT-INSTRUCTIONS-TYPE-EXTERN-KEYWORDS.md` must be complete.
+1. **Type/extern keywords** — **COMPLETE.** `KwType`, `KwExtern`, `TypeDecl`, `ExternDecl` are implemented.
 2. **Type checker engine** — `AGENT-INSTRUCTIONS-TYPE-SYSTEM.md` must be complete. This task builds the CLI wrapper around the engine built there.
 
-This task does NOT depend on the bytecode v2 migration. The type checker works on the CST, not bytecode.
+This task does NOT depend on the bytecode v2 migration or early return. The type checker works on the CST, not bytecode.
 
 ## Key Documents
 
