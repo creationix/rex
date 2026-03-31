@@ -73,15 +73,12 @@ default</strong>. Laziness is opt-in via an explicit index marker. Object litera
 handler code evaluate immediately — no workarounds needed. This was the single
 biggest improvement from the v2 migration.</p>
 
-<h3>Pointer deduplication interacts badly with skipped branches (open bug)</h3>
-<p>The bytecode compiler deduplicates repeated patterns using pointer references.
-When the same <code>res.status = 401</code> appears in multiple branches, the second
-occurrence becomes a pointer to the first. But if the first branch is inside a
-<code>when</code> block that gets skipped, the pointer target is at a bytecode position
-the interpreter never reached — causing incorrect execution.</p>
-<p>Workaround: rex-serve uses <code>compile_no_dedup()</code> to avoid pointers entirely.
-This persists after the v2 migration — it's a compiler/encoder issue, not a
-format issue.</p>
+<h3>Pointer deduplication interacts badly with skipped branches (fixed in v2)</h3>
+<p>The v1 bytecode encoder's pointer deduplication created references across
+conditional branches. When a pointer's target was inside a skipped <code>when</code>
+block, the interpreter misread the bytecode. This required a
+<code>compile_no_dedup()</code> workaround. The v2 bytecode migration fixed this —
+dedup now works correctly for all handler patterns.</p>
 
 <h3>No closure or callback model</h3>
 <p>Rex programs are linear scripts, not event-driven. There's no way to define a
