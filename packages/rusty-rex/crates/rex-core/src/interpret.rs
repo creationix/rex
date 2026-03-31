@@ -518,25 +518,44 @@ impl<'a> Interpreter<'a> {
 
         // Check for schema pointer: varint + '^'
         if self.peek_is_pointer() {
-            // Eval the pointer — if it resolves to an object, treat as schema-shared
             let first = self.eval()?;
-            if let RexValue::Object(schema_pairs) = &first {
-                let keys: Vec<String> = schema_pairs.iter().map(|(k, _)| k.clone()).collect();
-                let mut pairs = Vec::new();
-                for key in &keys {
+            match &first {
+                // Pointer resolved to an object → schema-shared object
+                RexValue::Object(schema_pairs) => {
+                    let keys: Vec<String> = schema_pairs.iter().map(|(k, _)| k.clone()).collect();
+                    let mut pairs = Vec::new();
+                    for key in &keys {
+                        let v = self.eval()?;
+                        pairs.push((key.clone(), v));
+                    }
+                    self.read_byte(); // consume '}'
+                    return Ok(RexValue::Object(pairs));
+                }
+                // Pointer resolved to a string → deduped first key of a regular object
+                RexValue::Str(key) => {
+                    let mut pairs = Vec::new();
                     let v = self.eval()?;
                     pairs.push((key.clone(), v));
+                    while self.peek() != b'}' && !self.at_end() {
+                        let k = self.eval()?;
+                        let v = self.eval()?;
+                        if let Some(ks) = k.as_str() {
+                            pairs.push((ks.to_string(), v));
+                        }
+                    }
+                    self.read_byte(); // consume '}'
+                    return Ok(RexValue::Object(pairs));
                 }
-                self.read_byte(); // consume '}'
-                return Ok(RexValue::Object(pairs));
+                // Not an object or string pointer — treat as block
+                _ => {
+                    let mut last = first;
+                    while self.peek() != b'}' && !self.at_end() {
+                        last = self.eval()?;
+                    }
+                    self.read_byte(); // consume '}'
+                    return Ok(last);
+                }
             }
-            // Not an object pointer — treat as block, continue
-            let mut last = first;
-            while self.peek() != b'}' && !self.at_end() {
-                last = self.eval()?;
-            }
-            self.read_byte(); // consume '}'
-            return Ok(last);
         }
 
         // Code block — evaluate expressions, return last
@@ -990,6 +1009,58 @@ impl<'a> Interpreter<'a> {
             }
 
             Ok(val)
+        } else if tag == b'^' {
+            // Pointer to a place expression — follow it and re-dispatch.
+            // The pointer target is typically a (call chain) for navigation writes.
+            self.read_byte(); // consume '^'
+            let delta = parse_uint(raw) as usize;
+            let target = self.pos + delta;
+
+            // Check what the pointer target starts with
+            let target_tag = {
+                let mut i = target;
+                while i < self.code.len() && is_b64(self.code[i]) { i += 1; }
+                if i < self.code.len() { self.code[i] } else { 0 }
+            };
+
+            if target_tag == b'(' {
+                // Pointer to a navigation chain — save pos, seek, read the chain
+                let save = self.pos;
+                self.pos = target;
+                let raw2 = self.read_raw();
+                self.read_byte(); // consume '('
+
+                let mut parts = Vec::new();
+                while self.peek() != b')' && !self.at_end() {
+                    parts.push(self.eval()?);
+                }
+                self.read_byte(); // consume ')'
+                self.pos = save; // restore
+
+                let val = self.eval()?;
+
+                if parts.len() >= 2 {
+                    let mut nav_target = parts[0].clone();
+                    for i in 1..parts.len() - 1 {
+                        nav_target = self.read_property(&nav_target, &parts[i])?;
+                    }
+                    let last_key = &parts[parts.len() - 1];
+                    if let RexValue::Host(idx) = &nav_target {
+                        if let Some(k) = last_key.as_str() {
+                            self.host_objects[*idx].set(k, val.clone())?;
+                        }
+                    }
+                }
+                Ok(val)
+            } else {
+                // Pointer to something else — eval as read + discard
+                let save = self.pos;
+                self.pos = target;
+                let _place = self.eval()?;
+                self.pos = save;
+                let val = self.eval()?;
+                Ok(val)
+            }
         } else {
             // Some other place expression — eval it
             let _place = self.eval()?;
