@@ -74,8 +74,12 @@ cursor-script = `<script>
     if (cursors[id]) { cursors[id].remove(); delete cursors[id]; }
   }
 
+  var lastSend = 0;
   area.addEventListener('mousemove', function(e) {
     if (!ws || ws.readyState !== 1) return;
+    var now = Date.now();
+    if (now - lastSend < 30) return;
+    lastSend = now;
     var rect = area.getBoundingClientRect();
     var x = (e.clientX - rect.left) / rect.width;
     var y = (e.clientY - rect.top) / rect.height;

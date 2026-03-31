@@ -68,9 +68,12 @@ impl KvStore {
     }
 
     /// Publish a message to a channel. Returns number of receivers notified.
-    pub fn publish(&mut self, channel: &str, data: &str) -> usize {
+    pub fn publish(&self, channel: &str, data: &str) -> usize {
         if let Some(tx) = self.channels.get(channel) {
-            tx.send(data.to_string()).unwrap_or(0)
+            match tx.send(data.to_string()) {
+                Ok(n) => n,
+                Err(_) => 0, // no active receivers
+            }
         } else {
             0
         }
@@ -79,7 +82,7 @@ impl KvStore {
     /// Get or create a broadcast channel, return a receiver.
     pub fn subscribe(&mut self, channel: &str) -> broadcast::Receiver<String> {
         let tx = self.channels.entry(channel.to_string())
-            .or_insert_with(|| broadcast::channel(64).0);
+            .or_insert_with(|| broadcast::channel(256).0);
         tx.subscribe()
     }
 
