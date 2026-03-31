@@ -3,7 +3,7 @@
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-type Headers = {*: string | [string]}
+type Headers = {*: string & [string]}
 type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD"
 type FileMeta = {size: integer, modified: integer}
 type FetchOptions = {method: string, headers: {*: string}, body: string}
@@ -17,11 +17,11 @@ extern req = {
   // HTTP method (GET, POST, etc.)
   method: HttpMethod
   // URL path (e.g. "/api/users/123")
-  path: string | [string]
+  path: string & [string]
   // Request headers as a case-insensitive map
   headers: Headers
   // Parsed query string parameters
-  query: {*: string | [string]}
+  query: {*: string & [string]}
   // Parsed cookie values
   cookies: {*: string}
   // Client IP address
@@ -31,24 +31,24 @@ extern req = {
   // Host/domain from the Host header
   domain: string
   // Route parameters from [param] segments (e.g. {slug: "hello-world"})
-  params: {*: string | [string]}
+  params: {*: string & [string]}
 }
 
 // Short aliases for common request fields
 // HTTP method
 extern method = HttpMethod
 // URL path
-extern path = string | [string]
+extern path = string & [string]
 // Request headers
 extern headers = Headers
 // Parsed query parameters
-extern query = {*: string | [string]}
+extern query = {*: string & [string]}
 // Parsed cookies
 extern cookies = {*: string}
 // Request body
 extern body = string
 // Route parameters
-extern params = {*: string | [string]}
+extern params = {*: string & [string]}
 
 // ── Response (mutable) ─────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ extern res = {
   // Response status code (default: 200)
   mut status: integer
   // Response headers
-  mut headers: {mut *: string | [string]}
+  mut headers: {mut *: string & [string]}
 }
 
 // Response status code (shorthand for res.status)
