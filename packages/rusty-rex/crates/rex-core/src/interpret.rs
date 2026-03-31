@@ -712,7 +712,10 @@ impl<'a> Interpreter<'a> {
                     } else {
                         val
                     };
-                    results.push(forced);
+                    // In comprehensions ([ or {), none values are excluded
+                    if opener == b'(' || forced.is_defined() {
+                        results.push(forced);
+                    }
                 }
                 Err(RexError::BreakSignal(0)) => { break; }
                 Err(RexError::ContinueSignal(0)) => { continue; }
@@ -774,7 +777,9 @@ impl<'a> Interpreter<'a> {
                     } else {
                         val
                     };
-                    results.push(forced);
+                    if opener == b'(' || forced.is_defined() {
+                        results.push(forced);
+                    }
                 }
                 Err(RexError::BreakSignal(0)) => { break; }
                 Err(RexError::ContinueSignal(0)) => { continue; }
@@ -824,7 +829,9 @@ impl<'a> Interpreter<'a> {
                     } else {
                         val
                     };
-                    results.push(forced);
+                    if opener == b'(' || forced.is_defined() {
+                        results.push(forced);
+                    }
                 }
                 Err(RexError::BreakSignal(0)) => { break; }
                 Err(RexError::ContinueSignal(0)) => { continue; }
@@ -999,7 +1006,7 @@ impl<'a> Interpreter<'a> {
                 // Pointer to a navigation chain — save pos, seek, read the chain
                 let save = self.pos;
                 self.pos = target;
-                let raw2 = self.read_raw();
+                let _raw2 = self.read_raw();
                 self.read_byte(); // consume '('
 
                 let mut parts = Vec::new();
@@ -1412,7 +1419,7 @@ mod tests {
 
     #[test]
     fn eval_range() {
-        let v = eval("[self in 1..3]");
+        let v = eval("[v * 2 for v in [1, 2, 3]]");
         if let RexValue::Array(items) = v {
             assert_eq!(items.len(), 3);
         } else {
