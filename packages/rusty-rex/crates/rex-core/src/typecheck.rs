@@ -881,6 +881,19 @@ pub fn check_source(source: &str, schema: &DomainSchema) -> Vec<Diagnostic> {
     env.diagnostics
 }
 
+/// A narrowing constraint extracted from a condition expression.
+#[derive(Debug, Clone)]
+enum Narrowing {
+    /// Variable exists (not none) — from `when x do`
+    Exists(String),
+    /// Variable has a specific type — from `when number(x) do`
+    TypePredicate(String, Type),
+    /// Variable equals a literal — from `when x == "GET" do`
+    Equals(String, Type),
+    /// Variable is assigned in the condition — from `when x = expr do`
+    Assigned(String, Type),
+}
+
 /// Type environment — tracks variable scopes and diagnostics.
 struct TypeEnv<'a> {
     schema: &'a DomainSchema,
@@ -958,6 +971,7 @@ impl<'a> TypeEnv<'a> {
         range.start().into()..range.end().into()
     }
 
+    #[allow(dead_code)]
     fn token_span(token: &SyntaxToken) -> std::ops::Range<usize> {
         let range = token.text_range();
         range.start().into()..range.end().into()
@@ -1432,33 +1446,46 @@ impl<'a> TypeEnv<'a> {
         if children.is_empty() { return Type::None; }
 
         // First token is `when` or `unless`
-        let _keyword = &children[0];
+        let is_unless = as_token_kind(&children[0]) == Some(SyntaxKind::KwUnless);
 
         // Find `do` to separate condition from body
         let do_idx = children.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::KwDo));
         let do_idx = match do_idx { Some(i) => i, None => return Type::None };
 
-        // Infer condition
-        for child in &children[1..do_idx] {
-            if as_token_kind(child) != Some(SyntaxKind::KwDo) {
-                self.infer_child(child);
-            }
+        // Infer condition and extract narrowing info
+        let cond_children = &children[1..do_idx];
+        for child in cond_children {
+            self.infer_child(child);
         }
+        let narrowings = self.extract_narrowings(cond_children);
 
-        // Infer then block
+        // Infer then block with narrowing applied
         let mut then_type = Type::None;
         let mut else_type: Option<Type> = None;
 
         for child in &children[do_idx + 1..] {
-            match as_token_kind(child) {
-                Some(SyntaxKind::KwEnd) => break,
-                _ => {}
-            }
+            if as_token_kind(child) == Some(SyntaxKind::KwEnd) { break; }
             if let Some(n) = as_node(child) {
                 if n.kind() == SyntaxKind::Block {
+                    self.push_scope();
+                    // Apply narrowing: when → apply, unless → apply inverse
+                    if is_unless {
+                        self.apply_narrowings_inverse(&narrowings);
+                    } else {
+                        self.apply_narrowings(&narrowings);
+                    }
                     then_type = self.infer_block(n);
+                    self.pop_scope();
                 } else if n.kind() == SyntaxKind::ElseBranch {
+                    self.push_scope();
+                    // Else branch gets inverse narrowing
+                    if is_unless {
+                        self.apply_narrowings(&narrowings);
+                    } else {
+                        self.apply_narrowings_inverse(&narrowings);
+                    }
                     else_type = Some(self.infer_else_branch(n));
+                    self.pop_scope();
                 }
             }
         }
@@ -1493,6 +1520,201 @@ impl<'a> TypeEnv<'a> {
         last
     }
 
+    // ── Narrowing ──────────────────────────────────────────────────────
+
+    /// Extract narrowing information from a condition expression.
+    fn extract_narrowings(
+        &self,
+        cond_children: &[rowan::NodeOrToken<SyntaxNode, SyntaxToken>],
+    ) -> Vec<Narrowing> {
+        let mut narrowings = Vec::new();
+
+        if cond_children.is_empty() { return narrowings; }
+
+        // Single child — could be a variable, call, comparison, assignment, or binary
+        if cond_children.len() == 1 {
+            self.extract_narrowing_from_child(&cond_children[0], &mut narrowings);
+        }
+
+        narrowings
+    }
+
+    fn extract_narrowing_from_child(
+        &self,
+        child: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>,
+        narrowings: &mut Vec<Narrowing>,
+    ) {
+        match child {
+            // Bare variable: `when x do` → x exists
+            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Ident => {
+                narrowings.push(Narrowing::Exists(t.text().to_string()));
+            }
+            rowan::NodeOrToken::Node(n) => {
+                match n.kind() {
+                    // Call: `when number(x) do` → type predicate
+                    SyntaxKind::CallExpr => {
+                        if let Some((predicate_type, var_name)) = self.extract_type_predicate(n) {
+                            narrowings.push(Narrowing::TypePredicate(var_name, predicate_type));
+                        }
+                    }
+                    // Binary: `when x == "GET" do` → equality narrowing
+                    // Also: `when x and y do` → both exist
+                    SyntaxKind::BinaryExpr => {
+                        let children: Vec<_> = non_trivia_children(n).collect();
+                        if children.len() >= 3 {
+                            let op = as_token_kind(&children[1]);
+                            match op {
+                                Some(SyntaxKind::EqEq) => {
+                                    // x == literal → narrow x to literal type
+                                    if let Some(name) = self.child_as_var_name(&children[0]) {
+                                        let rhs_type = self.child_as_literal_type(&children[2]);
+                                        if let Some(ty) = rhs_type {
+                                            narrowings.push(Narrowing::Equals(name, ty));
+                                        }
+                                    }
+                                }
+                                Some(SyntaxKind::KwAnd) => {
+                                    // a and b → both narrow
+                                    self.extract_narrowing_from_child(&children[0], narrowings);
+                                    self.extract_narrowing_from_child(&children[2], narrowings);
+                                }
+                                _ => {
+                                    // Other comparisons: `x > 10` → x exists
+                                    if let Some(name) = self.child_as_var_name(&children[0]) {
+                                        narrowings.push(Narrowing::Exists(name));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Assignment in condition: `when x = get-data() do`
+                    SyntaxKind::AssignExpr => {
+                        let children: Vec<_> = non_trivia_children(n).collect();
+                        let eq_idx = children.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::Eq));
+                        if eq_idx.is_some() {
+                            if let Some(name) = self.child_as_var_name(&children[0]) {
+                                // The assigned type was already inferred when we inferred the condition
+                                if let Some(ty) = self.lookup_var(&name) {
+                                    narrowings.push(Narrowing::Assigned(name, ty));
+                                }
+                            }
+                        }
+                    }
+                    // Navigation: `when user.name do` → user.name exists
+                    SyntaxKind::NavExpr => {
+                        let name = collect_nav_name(n);
+                        narrowings.push(Narrowing::Exists(name));
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Extract type predicate info from a CallExpr like `number(x)`.
+    fn extract_type_predicate(&self, call_node: &SyntaxNode) -> Option<(Type, String)> {
+        let children: Vec<_> = non_trivia_children(call_node).collect();
+        let lparen_idx = children.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::LParen))?;
+
+        // Check if callee is a type predicate keyword
+        if lparen_idx != 1 { return None; }
+        let predicate_type = match as_token_kind(&children[0])? {
+            SyntaxKind::KwString => Type::Str,
+            SyntaxKind::KwNumber => Type::Number,
+            SyntaxKind::KwBoolean => Type::Bool,
+            SyntaxKind::KwObject => Type::Some, // TODO: more specific object type
+            SyntaxKind::KwArray => Type::Some,   // TODO: more specific array type
+            _ => return None,
+        };
+
+        // Get the variable name from the first arg
+        let rparen_idx = children.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::RParen))
+            .unwrap_or(children.len());
+        for child in &children[lparen_idx + 1..rparen_idx] {
+            if let Some(name) = self.child_as_var_name(child) {
+                return Some((predicate_type, name));
+            }
+        }
+        None
+    }
+
+    fn child_as_var_name(&self, child: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>) -> Option<String> {
+        match child {
+            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Ident => {
+                Some(t.text().to_string())
+            }
+            rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::NavExpr => {
+                Some(collect_nav_name(n))
+            }
+            _ => None,
+        }
+    }
+
+    fn child_as_literal_type(&self, child: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>) -> Option<Type> {
+        match child {
+            rowan::NodeOrToken::Token(t) => match t.kind() {
+                SyntaxKind::DoubleString | SyntaxKind::SingleString => {
+                    let text = t.text();
+                    let inner = &text[1..text.len() - 1];
+                    Some(Type::LiteralStr(inner.to_string()))
+                }
+                SyntaxKind::KwTrue | SyntaxKind::KwFalse => Some(Type::Bool),
+                SyntaxKind::KwNull => Some(Type::Null),
+                _ => None,
+            }
+            _ => None,
+        }
+    }
+
+    /// Apply narrowings to the current scope (for the then-branch).
+    fn apply_narrowings(&mut self, narrowings: &[Narrowing]) {
+        for n in narrowings {
+            match n {
+                Narrowing::Exists(name) => {
+                    if let Some(ty) = self.lookup_var(name) {
+                        self.set_var(name, ty.remove_none());
+                    }
+                }
+                Narrowing::TypePredicate(name, predicate_type) => {
+                    self.set_var(name, predicate_type.clone());
+                }
+                Narrowing::Equals(name, literal_type) => {
+                    self.set_var(name, literal_type.clone());
+                }
+                Narrowing::Assigned(name, ty) => {
+                    // Variable was assigned in condition — it exists with that type
+                    self.set_var(name, ty.remove_none());
+                }
+            }
+        }
+    }
+
+    /// Apply inverse narrowings to the current scope (for the else-branch).
+    fn apply_narrowings_inverse(&mut self, narrowings: &[Narrowing]) {
+        for n in narrowings {
+            match n {
+                Narrowing::Exists(name) => {
+                    // In else branch, the variable is none
+                    self.set_var(name, Type::None);
+                }
+                Narrowing::TypePredicate(_name, _) => {
+                    // In else branch, the variable is NOT that type
+                    // For simplicity, keep the original type minus the predicate type
+                    // (full implementation would subtract the predicate type from the union)
+                }
+                Narrowing::Equals(_name, _) => {
+                    // In else branch, the variable is not equal to the literal
+                    // Keep original type (can't narrow further without more info)
+                }
+                Narrowing::Assigned(name, _) => {
+                    // Assignment didn't produce a defined value — variable is none
+                    self.set_var(name, Type::None);
+                }
+            }
+        }
+    }
+
     fn infer_block(&mut self, node: &SyntaxNode) -> Type {
         let mut last = Type::None;
         for child in node.children_with_tokens() {
@@ -1506,13 +1728,59 @@ impl<'a> TypeEnv<'a> {
     }
 
     fn infer_for(&mut self, node: &SyntaxNode) -> Type {
-        // For simplicity, infer all children and return body type | none
+        let mut iterable_type = Type::unknown();
+        let mut binding_names: Vec<String> = Vec::new();
+        let mut is_of = false;
         let mut body_type = Type::None;
-        for child in node.children() {
-            if child.kind() == SyntaxKind::Block {
-                self.push_scope();
-                body_type = self.infer_block(&child);
-                self.pop_scope();
+
+        for child in node.children_with_tokens() {
+            match &child {
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::KwOf => {
+                    is_of = true;
+                }
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::IterBinding => {
+                    // Extract binding names and iterable
+                    for bc in non_trivia_children(n) {
+                        match &bc {
+                            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Ident => {
+                                binding_names.push(t.text().to_string());
+                            }
+                            rowan::NodeOrToken::Token(t) if matches!(t.kind(),
+                                SyntaxKind::KwIn | SyntaxKind::KwOf | SyntaxKind::Comma) => {
+                                if t.kind() == SyntaxKind::KwOf { is_of = true; }
+                            }
+                            _ => {
+                                iterable_type = self.infer_child(&bc);
+                            }
+                        }
+                    }
+                }
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::Block => {
+                    self.push_scope();
+                    // Set iteration variable types
+                    let iterable = self.resolve_type(&iterable_type);
+                    let elem_type = match &iterable {
+                        Type::Array(elem) => (**elem).clone(),
+                        _ => Type::Some,
+                    };
+                    match binding_names.len() {
+                        1 => {
+                            if is_of {
+                                self.set_var(&binding_names[0], Type::Str); // key
+                            } else {
+                                self.set_var(&binding_names[0], elem_type); // value
+                            }
+                        }
+                        2 => {
+                            self.set_var(&binding_names[0], Type::Int); // key (index)
+                            self.set_var(&binding_names[1], elem_type); // value
+                        }
+                        _ => {}
+                    }
+                    body_type = self.infer_block(n);
+                    self.pop_scope();
+                }
+                _ => {}
             }
         }
         body_type.add_none()
@@ -2268,5 +2536,69 @@ extern method = HttpMethod"#,
 
         let count = visit_dir(&base.join("routes"), &schema);
         assert!(count > 0, "no .rex files found");
+    }
+
+    // ── Narrowing tests ───────────────────────────────────────────────
+
+    #[test]
+    fn narrow_existence() {
+        // when x do → x has none removed
+        let diags = check_with(
+            "when name do\n  name + \" suffix\"\nend",
+            "extern name = string | none",
+        );
+        assert!(diags.is_empty(), "unexpected errors: {:?}", diags);
+    }
+
+    #[test]
+    fn narrow_type_predicate() {
+        // when number(x) do → x is number
+        let diags = check_with(
+            "when number(value) do\n  value + 1\nend",
+            "extern value = unknown",
+        );
+        assert!(diags.is_empty(), "unexpected errors: {:?}", diags);
+    }
+
+    #[test]
+    fn narrow_equality() {
+        // when method == "GET" do → method is "GET"
+        let diags = check_with(
+            r#"when method == "GET" do
+  method
+end"#,
+            r#"type HttpMethod = "GET" | "POST"
+extern method = HttpMethod"#,
+        );
+        assert!(diags.is_empty(), "unexpected errors: {:?}", diags);
+    }
+
+    #[test]
+    fn narrow_and_chain() {
+        // when input and input.slug do → both exist
+        let diags = check_with(
+            "when input and input.slug do\n  input.slug + \"-suffix\"\nend",
+            "extern input = {slug: string | none} | none",
+        );
+        // After narrowing: input is {slug: string | none} (none removed)
+        // input.slug after `and` narrowing: string (none removed)
+        assert!(diags.is_empty(), "unexpected errors: {:?}", diags);
+    }
+
+    #[test]
+    fn for_loop_variable_type() {
+        // for v in items → v gets element type
+        let diags = check_with(
+            "for a in articles do\n  a.value + \"-suffix\"\nend",
+            "type DbEntry = {key: string, value: string}\nextern articles = [DbEntry]",
+        );
+        assert!(diags.is_empty(), "unexpected errors: {:?}", diags);
+    }
+
+    #[test]
+    fn for_loop_key_value() {
+        // for k, v in items → k is integer, v is element type
+        let diags = check("for k, v in [1, 2, 3] do\n  k + v\nend");
+        assert!(diags.is_empty(), "unexpected errors: {:?}", diags);
     }
 }
