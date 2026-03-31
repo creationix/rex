@@ -258,12 +258,17 @@ The interpreter distinguishes objects from blocks by context: inside data positi
 
 ### Return
 
-`;value` — evaluates the child value and halts execution of the current program, producing that value as the final result. Propagates through all enclosing blocks, loops, and conditionals.
+`[value][varint];` — the preceding value is the return value. The `;` tag halts execution and propagates through all enclosing blocks, loops, and conditionals.
+
+The varint encodes the number of return values minus one (reserved for future multi-return). Currently always 0 (single return).
 
 ```
-;1k+             → return 42
-;(ad%x$2+)       → return x + 1
+1k+;             → return 42
+(ad%x$2+);       → return x + 1
+no';             → return none (bare return)
 ```
+
+A bare `return` with no value compiles to `no';` — the compiler injects `none` before the return tag.
 
 Rex source:
 ```rex
@@ -360,4 +365,4 @@ Gas is charged per loop/comprehension iteration. The host sets the limit; 0 = un
 | `=`     | fixed    | Set (2 children)                 |
 | `/`     | fixed    | Swap-set (2 children)            |
 | `~`     | fixed    | Delete (1 child)                 |
-| `;`     | fixed    | Return (1 child)                 |
+| `;`     | postfix  | Return (follows its value, varint = count - 1) |
