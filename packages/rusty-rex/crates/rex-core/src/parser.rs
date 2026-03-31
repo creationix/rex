@@ -266,7 +266,7 @@ impl<'s, 'c> Parser<'s, 'c> {
             // Type-annotated assignment: name: Type = value
             self.start_node_at(cp, SyntaxKind::AssignExpr);
             self.bump(); // :
-            self.parse_expr(); // type expression
+            self.parse_pratt_expr(0); // type expression (no assignment — must not consume `=`)
             if self.eat(SyntaxKind::Eq) {
                 self.parse_assign_expr(); // value (right-assoc)
             }
