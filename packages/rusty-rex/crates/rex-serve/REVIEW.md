@@ -90,9 +90,9 @@ Every original pain point was resolved during the project:
 | **No type checking** | `rex check` validates against `.rexd` — integrated into hot reload cycle |
 | **Runtime opcode indirection** | `compile_with_domain` rewrites opcodes directly from `.rexd` declarations |
 
-## Remaining Wishes
+## Status
 
-### Tagged template domain rewriting
+All original pain points and feature requests have been resolved. The platform is fully functional with no remaining workarounds or known issues.
 
-Domain-aware compilation is live — `json.parse()` → `%jp`, `time.uuid()` → `%tu` etc. are rewritten directly. But the `html()` tagged template declaration is excluded from the `.rexd` because the compiler can't distinguish `html\`...\`` (tagged template call via `HostObject::call`) from `html(parts, values)` (regular function call). The namespace host object is still needed for tagged templates and for `html.escape`/`html.highlight`.
+The domain rewriter safely coexists with tagged templates — `html\`...\`` compiles as `Call([Variable, Array, ...])` which doesn't match the rewrite pattern `Call([Call([Variable, String]), ...])`, so the `html()` declaration can stay in the `.rexd` for type checking without interfering with runtime dispatch.
 
