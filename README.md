@@ -53,7 +53,7 @@ This drives the language:
 
 - Comparisons return value-or-`undefined`
 - `when` / `unless` branch on defined-vs-`undefined`
-- `and` / `or` / `nor` short-circuit on existence
+- `and` / `or` short-circuit on existence
 
 ## Quick Language Tour
 
@@ -163,7 +163,7 @@ while n * n <= max do
   n += 1
 end
 
-[composites.(self) nor self in 2..max]
+[composites.(n) != true and n for n in 2..max]
 ```
 
 ## Compilation

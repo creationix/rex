@@ -13,7 +13,7 @@ students = [
   {name: "Eve" scores: {math: 100 science: 97 english: 99 history: 96}}
 ]
 
-subjects = [self of students.0.scores]
+subjects = [k for k of students.0.scores]
 results = []
 
 for i, student in students do
@@ -63,8 +63,8 @@ for subj in subjects do
 end
 
 class-total = 0
-for in results do
-  class-total += self.average
+for r in results do
+  class-total += r.average
 end
 class-avg = class-total / results.size
 
