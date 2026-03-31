@@ -1,0 +1,110 @@
+:root {
+  --bg: #fff; --fg: #1a1a1a; --muted: #6b7280;
+  --border: #e5e7eb; --surface: #f9fafb;
+  --accent: #2563eb; --accent-hover: #1d4ed8;
+  --code-bg: #f3f4f6; --code-fg: #1f2937;
+  --success: #059669; --warning: #d97706; --error: #dc2626;
+  --nav-bg: #f9fafb;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111827; --fg: #f3f4f6; --muted: #9ca3af;
+    --border: #374151; --surface: #1f2937;
+    --accent: #60a5fa; --accent-hover: #93bbfd;
+    --code-bg: #1e293b; --code-fg: #e2e8f0;
+    --success: #34d399; --warning: #fbbf24; --error: #f87171;
+    --nav-bg: #1f2937;
+  }
+}
+
+/* ── Reset & base ────────────────────────────────────────── */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, sans-serif; font-size: 1rem; line-height: 1.65; color: var(--fg); background: var(--bg); -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+/* ── Layout ──────────────────────────────────────────────── */
+.container { max-width: 64rem; margin: 0 auto; padding: 0 2rem; }
+
+/* ── Header ──────────────────────────────────────────────── */
+header { background: var(--nav-bg); border-bottom: 1px solid var(--border); padding: 0.75rem 0; margin-bottom: 2.5rem; }
+header .container { display: flex; align-items: center; gap: 2rem; flex-wrap: wrap; }
+header .logo { font-weight: 700; font-size: 1.05rem; color: var(--fg); text-decoration: none; letter-spacing: -0.01em; }
+header .logo:hover { color: var(--accent); text-decoration: none; }
+header nav { display: flex; gap: 0.25rem; font-size: 0.85rem; }
+header nav a { color: var(--muted); padding: 0.35rem 0.65rem; border-radius: 0.25rem; transition: background 0.1s, color 0.1s; }
+header nav a:hover { color: var(--fg); background: var(--border); text-decoration: none; }
+
+/* ── Main content ────────────────────────────────────────── */
+main { min-height: 70vh; padding-bottom: 1rem; }
+main h1 { font-size: 1.65rem; margin-bottom: 0.75rem; line-height: 1.25; letter-spacing: -0.02em; font-weight: 700; }
+main h2 { font-size: 1.2rem; margin-top: 2.5rem; margin-bottom: 0.75rem; color: var(--fg); font-weight: 600; letter-spacing: -0.01em; }
+main h2:first-of-type { margin-top: 1.5rem; }
+main h3 { font-size: 1.05rem; margin-top: 1.75rem; margin-bottom: 0.5rem; font-weight: 600; }
+main p { margin-bottom: 1rem; color: var(--fg); }
+main > p:first-of-type { color: var(--muted); font-size: 1.05rem; line-height: 1.7; }
+main ul, main ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+main li { margin-bottom: 0.3rem; }
+main li p { margin-bottom: 0.25rem; }
+
+/* ── Code ────────────────────────────────────────────────── */
+pre { background: #1a1b26; color: #a9b1d6; padding: 1.1rem 1.35rem; border-radius: 0.5rem; overflow-x: auto; margin-bottom: 1.5rem; font-size: 0.82rem; line-height: 1.65; border: 1px solid #292e42; }
+code { font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace; font-size: 0.875em; }
+p code, li code, h3 code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 0.25rem; font-size: 0.85em; }
+
+/* ── Tokyo Night syntax highlighting ─────────────────────── */
+.hl-kw { color: #bb9af7; }
+.hl-st { color: #9ece6a; }
+.hl-nm { color: #ff9e64; }
+.hl-cm { color: #565f89; font-style: italic; }
+.hl-op { color: #89ddff; }
+.hl-bl { color: #ff9e64; }
+.hl-ct { color: #ff9e64; }
+.hl-ty { color: #2ac3de; }
+.hl-pn { color: #545c7e; }
+.hl-ky { color: #73daca; }
+.hl-pr { color: #7dcfff; }
+.hl-fn { color: #7aa2f7; }
+
+/* ── Copy button ─────────────────────────────────────────── */
+.copy-btn { position: absolute; top: 0.4rem; right: 0.5rem; background: none; border: none; color: #565f89; font-size: 0.7rem; font-family: inherit; cursor: pointer; opacity: 0; transition: opacity 0.15s, color 0.15s; padding: 0.2rem 0.4rem; }
+pre:hover .copy-btn { opacity: 1; }
+.copy-btn:hover { color: #a9b1d6; }
+
+/* ── Cards ───────────────────────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
+.card h3 { margin-top: 0; margin-bottom: 0.35rem; }
+.card p { margin-bottom: 0.5rem; color: var(--muted); font-size: 0.95rem; }
+.card p:last-child { margin-bottom: 0; }
+
+/* ── Badges ──────────────────────────────────────────────── */
+.badge { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 0.15em 0.55em; border-radius: 0.25rem; vertical-align: middle; margin-right: 0.25rem; letter-spacing: 0.02em; text-transform: uppercase; }
+.badge-green { background: var(--success); color: #fff; }
+.badge-yellow { background: var(--warning); color: #fff; }
+.badge-red { background: var(--error); color: #fff; }
+.badge-blue { background: var(--accent); color: #fff; }
+
+/* ── Page nav link ───────────────────────────────────────── */
+.source-link { font-size: 0.85rem; float: right; color: var(--muted); margin-top: 0.15rem; }
+.source-link a { color: var(--muted); }
+.source-link a:hover { color: var(--accent); }
+
+/* ── Try-it expandable blocks ────────────────────────────── */
+.try-it { background: var(--surface); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.85rem 1.25rem; margin-bottom: 1rem; }
+.try-it summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; color: var(--accent); }
+.try-it summary:hover { color: var(--accent-hover); }
+.try-it p { margin-top: 0.75rem; margin-bottom: 0.5rem; font-size: 0.95rem; color: var(--muted); }
+.try-it pre { margin-top: 0.75rem; margin-bottom: 0.5rem; }
+
+/* ── Footer ──────────────────────────────────────────────── */
+footer { border-top: 1px solid var(--border); padding: 1.25rem 0; margin-top: 3rem; color: var(--muted); font-size: 0.85rem; text-align: center; }
+footer a { color: var(--muted); }
+footer a:hover { color: var(--accent); }
+
+/* ── Grid ────────────────────────────────────────────────── */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
+
+/* ── Misc ────────────────────────────────────────────────── */
+blockquote { border-left: 3px solid var(--accent); padding-left: 1rem; margin-bottom: 1rem; color: var(--muted); font-style: italic; }
+hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+strong { font-weight: 600; }

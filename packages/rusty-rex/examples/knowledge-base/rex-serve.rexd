@@ -1,0 +1,151 @@
+// Rex Edge Server — Domain Type Interface
+// Provides IDE completions, hover docs, and type checking for rex-serve handlers.
+
+// ── Types ──────────────────────────────────────────────────────────────
+
+type Headers = {*: string | [string]}
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD"
+type FileMeta = {size: integer, modified: integer}
+type FetchOptions = {method: string, headers: {*: string}, body: string}
+type FetchResult = {status: integer, headers: Headers, body: string}
+type DbEntry = {key: string, value: string}
+
+// ── Request (read-only) ────────────────────────────────────────────────
+
+// HTTP request data. Read-only — populated by the server before the handler runs.
+extern req = {
+  // HTTP method (GET, POST, etc.)
+  method: HttpMethod
+  // URL path (e.g. "/api/users/123")
+  path: string | [string]
+  // Request headers as a case-insensitive map
+  headers: Headers
+  // Parsed query string parameters
+  query: {*: string | [string]}
+  // Parsed cookie values
+  cookies: {*: string}
+  // Client IP address
+  ip: string
+  // Request body as a string
+  body: string
+  // Host/domain from the Host header
+  domain: string
+  // Route parameters from [param] segments (e.g. {slug: "hello-world"})
+  params: {*: string | [string]}
+}
+
+// Short aliases for common request fields
+// HTTP method
+extern method = HttpMethod
+// URL path
+extern path = string | [string]
+// Request headers
+extern headers = Headers
+// Parsed query parameters
+extern query = {*: string | [string]}
+// Parsed cookies
+extern cookies = {*: string}
+// Request body
+extern body = string
+// Route parameters
+extern params = {*: string | [string]}
+
+// ── Response (mutable) ─────────────────────────────────────────────────
+
+// HTTP response. Mutable — set status, headers, and body to control the response.
+extern mut res = {
+  // Response status code (default: 200)
+  status: integer
+  // Response headers
+  headers: Headers
+}
+
+// Response status code (shorthand for res.status)
+extern mut status = integer
+
+// ── Edge Config (read-only) ────────────────────────────────────────────
+
+// Host-managed project configuration. Read-only, set outside of Rex.
+extern config = unknown
+
+// Host-managed secrets store. Read-only.
+extern secrets = {*: string}
+
+// ── Logging ────────────────────────────────────────────────────────────
+
+// Log an informational message
+extern log.info(message: some)
+// Log a warning
+extern log.warning(message: some)
+// Log an error
+extern log.error(message: some)
+
+// ── Response Control ───────────────────────────────────────────────────
+
+// Internal rewrite to another path. Restarts routing.
+extern res.rewrite(url: string) = never
+// HTTP redirect with status code (default 302)
+extern res.redirect(url: string, status: integer) = never
+// Proxy the request to another URL
+extern res.proxy(url: string) = some
+
+// ── JSON ───────────────────────────────────────────────────────────────
+
+// Parse a JSON string into a value
+extern json.parse(text: string) = some
+// Serialize a value to a JSON string
+extern json.stringify(value: some) = string
+
+// ── Database (KV) ──────────────────────────────────────────────────────
+
+// Get a value by key. Returns none if not found.
+extern db.get(key: string) = string
+// Set a key-value pair. Returns true.
+extern db.set(key: string, value: string) = boolean
+// Delete a key. Returns true.
+extern db.delete(key: string) = boolean
+// List entries matching a key prefix.
+extern db.list(prefix: string) = [DbEntry]
+
+// ── Filesystem (read-only, sandboxed to project root) ──────────────────
+
+// Read a file's contents as a string. Path is relative to project root.
+extern fs.read(path: string) = string
+// List files matching a glob pattern relative to project root.
+extern fs.glob(pattern: string) = [string]
+// Get file metadata (size in bytes, modified as unix timestamp ms).
+extern fs.meta(path: string) = FileMeta
+
+// ── Content Transformation ─────────────────────────────────────────────
+
+// Render markdown text to HTML
+extern markdown.render(text: string) = string
+// Render a mustache-style template with data. {{key}} escapes HTML, {{{key}}} is raw.
+extern template.render(template: string, data: some) = string
+
+// ── HTML ───────────────────────────────────────────────────────────────
+
+// Escape HTML entities in a string
+extern html.escape(text: string) = string
+// Syntax-highlight Rex source code as HTML with Tokyo Night theme
+extern html.highlight(source: string) = string
+// Syntax-highlight HTML source code as HTML with Tokyo Night theme
+extern html.highlight-html(source: string) = string
+// Tagged template: auto-escapes interpolated values, static HTML passes through
+// Usage: html`<p>${user-input}</p>`
+extern html(parts: [string], ...values: some) = string
+
+// ── Utilities ──────────────────────────────────────────────────────────
+
+// Current time as unix timestamp in milliseconds
+extern time.now() = integer
+// Generate a UUIDv7 string
+extern time.uuid() = string
+// Hash data with the given algorithm (e.g. "sha256"). Returns hex string.
+extern crypto.hash(algorithm: string, data: string) = string
+// HMAC with the given algorithm, key, and data. Returns hex string.
+extern crypto.hmac(algorithm: string, key: string, data: string) = string
+// Generate random bytes. Returns hex string.
+extern crypto.random(bytes: integer) = string
+// Make an HTTP request. Returns response with status, headers, and body.
+extern http.fetch(url: string, options: FetchOptions) = FetchResult
