@@ -35,17 +35,7 @@ res.status = 405
 {ok: false, error: "method_not_allowed"}
 ```
 
-### 3. Comprehensions + unified navigation
-
-Mapping, filtering, and reshaping data reads like a pipeline. The `.` syntax works uniformly for headers, config, JSON, arrays, and host objects:
-
-```rex
-articles = db.list("article:")
-items = [json.parse(a.value) for a in articles]
-{ok: true, articles: [{slug: a.slug, title: a.title} for a in items]}
-```
-
-### 4. Template literals with safe-by-default HTML
+### 3. Template literals with safe-by-default HTML
 
 Tagged templates let hosts define domain-specific string processing. The `html` tag auto-escapes interpolated values, while `html.raw()` marks pre-rendered HTML as safe:
 
@@ -55,15 +45,32 @@ body = html`<h1>${title}</h1>
 <footer>Generated at ${time.now()}</footer>`
 ```
 
-### 5. Domain interface files (`.rexd`)
+No more escaped quotes, no more `body = body + "..." + var + "..."`. Template literals with `${expr}` interpolation eliminated the worst ergonomic issue in the project. Nested templates work — `html` for escaping user data, untagged backticks for composing safe fragments.
 
-The `type`/`extern` declaration syntax cleanly separates the host API contract from runtime code. Per-field `mut` on extern declarations precisely controls what Rex programs can write to:
+### 4. Comprehensions + unified navigation
+
+Mapping, filtering, and reshaping data reads like a pipeline. The `.` syntax works uniformly for headers, config, JSON, arrays, and host objects:
+
+```rex
+articles = db.list("article:")
+items = [json.parse(a.value) for a in articles]
+{ok: true, articles: [{slug: a.slug, title: a.title} for a in items]}
+```
+
+### 5. The type system catches real bugs
+
+Running `rex check routes/` against the `.rexd` domain interface file caught two real bugs in the tour app:
+
+- An unused `principal` variable in the API middleware (assigned but never read downstream)
+- A missing `${hl-3}` interpolation in the DX Report page (highlighted snippet prepared but never rendered)
+
+Both were genuine issues that visual testing missed. The per-field `mut` declarations in `.rexd` are especially valuable — they precisely express which parts of the response object a handler can write to:
 
 ```rex
 extern res = {
   mut status: integer
   mut headers: {mut *: string | [string]}
-  body: string          // read-only
+  body: string          /* read-only — type checker flags res.body = "x" */
 }
 ```
 
@@ -74,24 +81,20 @@ Every original pain point was resolved during the project:
 | Issue | Resolution |
 |---|---|
 | **Lazy maps break across boundaries** | v2 bytecode: eager by default, lazy opt-in via index |
-| **No early return** | `return` keyword added — halts execution, propagates through blocks/loops |
-| **String concatenation for HTML** | Template literals with `${expr}` interpolation, tagged templates for `html` |
-| **Pointer dedup bugs** | Interpreter fixed to handle pointers in all positions (eval_block, eval_set) |
+| **No early return** | `return` keyword — halts execution, propagates through blocks/loops |
+| **String concatenation for HTML** | Template literals with `${expr}`, tagged templates for `html` |
+| **Pointer dedup bugs** | Interpreter fixed: eval_block and eval_set handle pointers in all positions |
 | **`self` keyword** | Removed — loop variables via `for v in` bindings are cleaner |
-| **Separate `unless` bytecode** | Unified into variadic `?` cond — `unless c do t end` compiles to `?(c no' t)` |
-| **Variadic `and`/`or`** | Now variadic instead of binary — `a and b and c` is a single `&(a b c)` |
+| **Separate `when`/`unless` bytecode** | Unified into variadic `?` cond — `unless c do t end` compiles to `?(c no' t)` |
+| **Binary `and`/`or`** | Now variadic — `a and b and c` is a single `&(a b c)` |
+| **No type checking** | `rex check` validates against `.rexd` declarations — caught 2 real bugs |
 
-## Remaining Issues
+## Remaining Wishes
 
-### Namespace indirection for opcodes
+### Domain-aware compilation
 
-The compiler treats `time.uuid()` as `$time.uuid` — variable navigation. Rex-serve creates `OpcodeNamespace` host objects that return `"%tu"` when navigated, which the interpreter then dispatches as an opcode call. With domain-aware compilation (reading `.rexd` declarations), the compiler could emit `%tu` directly — eliminating the runtime indirection.
+The compiler treats `time.uuid()` as `$time.uuid` — variable navigation. Rex-serve creates `OpcodeNamespace` host objects that return `"%tu"` when navigated, which the interpreter then dispatches as an opcode call. With domain-aware compilation (reading `.rexd` declarations), the compiler could emit `%tu` directly — eliminating the runtime indirection and ~8 host objects per request.
 
-## How the Type System Helps
+### `\${` escape rendering in source views
 
-The type checker (now functional via `rex check`) would catch specific bugs encountered during development:
-
-- **The "last expression wins" bug** — unused value diagnostics when `when` blocks produce values that are discarded by subsequent expressions
-- **Wrong argument types** — `template.render(layout, title)` vs `template.render(layout, {title: title})` caught by function signatures in `.rexd`
-- **Property typos** — `req.headrs` flagged as unknown property with "did you mean 'headers'?" suggestion
-- **Per-field mutability** — `res.body = "x"` caught as a write to a read-only field when `body` isn't declared `mut`
+The `\${` escape works correctly in Rex source — `\${x}` produces literal `${x}`. But the syntax highlighter doesn't render it distinctly from a real interpolation in the source view. Minor cosmetic issue.
