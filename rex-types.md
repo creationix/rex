@@ -259,6 +259,21 @@ name = "Ada"    // name: string
 items = [1 2 3] // items: [integer]
 ```
 
+#### Type annotations
+
+A variable can be annotated with an explicit type using `name: Type = value`. The type checker uses the annotation instead of inferring from the value, and checks that the value is assignable to the declared type:
+
+```rex
+lookup: {*: integer} = {a: 1, b: 2, c: 3}    // {*: integer}, not {a: integer, b: integer, c: integer}
+scores: {*: number} = {}                       // empty map typed as {*: number}
+items: [string] = []                           // empty array typed as [string]
+config: unknown = get-config()                 // widen to unknown
+```
+
+Without the annotation, `{a: 1, b: 2, c: 3}` infers as a rigid 3-field object. With `: {*: integer}`, it's a map — dynamic key access works without type errors.
+
+The annotation is optional. When omitted, the type is inferred as before. The compiler and interpreter ignore annotations — they are consumed only by the type checker.
+
 Compound assignment preserves type:
 
 ```rex
