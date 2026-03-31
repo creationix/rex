@@ -2,125 +2,100 @@
 
 rex-serve embeds Rex as the scripting layer for an HTTP server — filesystem-routed `.rex` files as edge functions with middleware, templates, markdown rendering, and a CRUD API. This document captures what stood out during development.
 
-## Three Favorite Features
+## Favorite Features
 
 ### 1. Existence semantics eliminate an entire class of bugs
 
 When handling HTTP requests, you constantly deal with optional values — headers that may not exist, query params that may be absent, database lookups that return nothing. In most languages, you need `!= null` or `?? default` checks everywhere and still get bitten by `0` or `""` being falsy. Rex's existence model makes `or` do exactly what you mean:
 
 ```rex
-/* All of these keep the left value — none of them are "absent" */
 api-key = headers.authorization     /* none if missing, string if present */
 max = query.limit or 100            /* 0 is a valid limit, won't fall through */
 name = user.nickname or user.email  /* "" is a valid nickname */
 
 unless api-key do
   res.status = 401                  /* only fires if truly absent */
+  return {ok: false, error: "unauthorized"}
 end
 ```
 
-### 2. Comprehensions make data transformation effortless
+### 2. Guard-style handlers with `return`
 
-Mapping, filtering, and reshaping data is the core job of API handlers. Rex comprehensions are more concise than `.map().filter()` chains and read naturally:
-
-```rex
-/* Fetch from DB, parse, reshape — one pipeline */
-articles = db.list("article:")
-items = [json.parse(a.value) for a in articles]
-{ok: true, articles: [{slug: a.slug, title: a.title} for a in items]}
-```
-
-The `for k, v in obj` variant for objects and `for k of obj` for keys-only means you never need `Object.entries()` or `Object.keys()` — the loop form tells you what you're iterating.
-
-### 3. Unified navigation model means one syntax for everything
-
-Reading a header, accessing a config value, navigating a JSON response, and indexing an array all use the same `.` syntax. Dynamic keys use `.(expr)`. There's no distinction between bracket access and dot access, no special map/dictionary API:
+Sequential `when` blocks with `return` let you write handlers as flat guard clauses — no nesting, no `else` chains, top-to-bottom readability:
 
 ```rex
-headers.content-type                /* static key */
-config.(env + "-timeout")           /* dynamic key */
-users.0.name                        /* array index + property */
-routes.(method + " " + path)        /* table lookup */
-```
-
-This means Rex programs read like data navigation, which is exactly what HTTP handlers are — navigate the request, transform it, produce a response.
-
-## Pain Points and Planned Fixes
-
-### Lazy maps break when passed across boundaries (fixed in v2)
-
-The v1 bytecode format emitted all object literals as lazy containers. When passed to opcodes, they arrived as opaque blobs. Comprehensions like `[{slug: a.slug} for a in items]` resolved loop variables to the final value instead of each iteration's value.
-
-The v2 bytecode migration fixed this: containers are **eager by default**, with laziness opt-in via an explicit index marker. Object literals in handler code evaluate immediately — no workarounds needed.
-
-- [x] Bytecode v2: eager by default, lazy opt-in via index marker
-- [x] `force_value()` workarounds removed from interpreter
-
-### Pointer deduplication interacts badly with skipped branches (fixed)
-
-The interpreter had two bugs triggered by pointer deduplication:
-
-1. **Object key disambiguation** — when a deduped string key (like `"ok"`) appeared as a pointer at the start of `{...}`, the interpreter misidentified it as a schema pointer instead of a regular object key. Fixed by evaluating the pointer and dispatching based on the resolved type.
-
-2. **Set-via-pointer** — when a navigation place like `(res$6,status)` was deduped to a pointer, `eval_set` didn't recognize the `^` tag and silently skipped the write. `res.status = 401` became a no-op. Fixed by following the pointer and re-dispatching the set operation.
-
-Both were interpreter bugs, not encoder bugs — the pointers were correct, the interpreter just didn't handle them in all positions. 13 regression tests added.
-
-- [x] Fixed in interpreter: eval_block resolves pointers before disambiguating
-- [x] Fixed in interpreter: eval_set follows pointer places
-- [x] `compile_no_dedup` workaround removed, rex-serve uses `compile()` with full dedup
-
-### No early return means sequential blocks override each other (fixed: `return`)
-
-This *was* the second biggest pain point. Without `return`, every handler needed `when/else` chains because the last expression's value wins. The `return` keyword now enables guard-style early exit:
-
-```rex
-/* Clean guard-style dispatch with return */
 when method == "GET" do
-  return {ok: true, data: items}
+  return {ok: true, data: db.list("items:")}
 end
 when method == "POST" do
-  return {ok: true, created: id}
+  input = json.parse(body)
+  return {ok: true, created: input.slug}
 end
 res.status = 405
 {ok: false, error: "method_not_allowed"}
 ```
 
-This is how every rex-serve handler is now written — sequential guards with early returns. The middleware especially benefits: `unless api-key do return {error: "unauthorized"} end` reads naturally and stops execution immediately.
+### 3. Comprehensions + unified navigation
 
-- [x] `return` keyword added to grammar, parser, lowering, and interpreter
-- [x] All rex-serve handlers and middleware rewritten to use `return`
-
-### String interpolation (solved: template literals)
-
-Previously, building HTML meant escaped-quote string concatenation. Template literals and tagged templates now solve this:
+Mapping, filtering, and reshaping data reads like a pipeline. The `.` syntax works uniformly for headers, config, JSON, arrays, and host objects:
 
 ```rex
-/* Before: escaped quotes everywhere */
-body = body + "<li><a href=\"/articles/" + slug + "\">" + title + "</a></li>"
-
-/* After: template literals */
-body = body + `<li><a href="/articles/${slug}">${title}</a></li>`
-
-/* Tagged template: auto-escapes interpolated values (XSS-safe) */
-html`<p>${user-input}</p>`
+articles = db.list("article:")
+items = [json.parse(a.value) for a in articles]
+{ok: true, articles: [{slug: a.slug, title: a.title} for a in items]}
 ```
 
-Tagged templates compile to calls with separated static parts and interpolated values. Hosts register tag functions as opcodes — rex-serve's `html` tag auto-escapes interpolations. Nesting is supported: use `html` for escaping user data, untagged backticks for composing safe fragments.
+### 4. Template literals with safe-by-default HTML
 
-- [x] Template literal syntax added to grammar (backtick-delimited, `${expr}` interpolation)
-- [x] Lower to string chains for untagged, calls for tagged
-- [x] Lexer: backtick token with brace-depth tracking for nested templates
-- [x] rex-serve `html` tagged template with auto-escaping
+Tagged templates let hosts define domain-specific string processing. The `html` tag auto-escapes interpolated values, while `html.raw()` marks pre-rendered HTML as safe:
 
-## How the Type System Would Have Helped
+```rex
+body = html`<h1>${title}</h1>
+<div>${html.raw(markdown.render(content))}</div>
+<footer>Generated at ${time.now()}</footer>`
+```
 
-The [type system](/rex-types.md) and [`.rexd` domain interface files](/rex-types.md#domain-interface-files-rexd) would have caught specific bugs encountered during rex-serve development:
+### 5. Domain interface files (`.rexd`)
 
-**The "last expression wins" bug** — the type checker could warn when multiple `when` blocks at the top level all produce values, since only the last one's result is used. An "unused value" diagnostic would have caught this immediately instead of requiring debugging of empty API responses.
+The `type`/`extern` declaration syntax cleanly separates the host API contract from runtime code. Per-field `mut` on extern declarations precisely controls what Rex programs can write to:
 
-**Wrong argument types to opcodes** — passing a string where an object was expected (e.g., `template.render(layout, title)` instead of `template.render(layout, {title: title})`) would be caught by the function signatures in `rex-serve.rexd`.
+```rex
+extern res = {
+  mut status: integer
+  mut headers: {mut *: string | [string]}
+  body: string          // read-only
+}
+```
 
-**Property access typos** — `req.headrs` (typo) would get "Unknown property 'headrs'. Did you mean 'headers'?" since `req` has known fields in the `.rexd` declaration.
+## Language Evolution During Development
 
-**The `{*: T}` map type producing `T | none` on lookup** is the right design. Every `headers.x-something` lookup should force a `when` check before use — the type system validates what Rex's existence semantics already encourage.
+Every original pain point was resolved during the project:
+
+| Issue | Resolution |
+|---|---|
+| **Lazy maps break across boundaries** | v2 bytecode: eager by default, lazy opt-in via index |
+| **No early return** | `return` keyword added — halts execution, propagates through blocks/loops |
+| **String concatenation for HTML** | Template literals with `${expr}` interpolation, tagged templates for `html` |
+| **Pointer dedup bugs** | Interpreter fixed to handle pointers in all positions (eval_block, eval_set) |
+| **`self` keyword** | Removed — loop variables via `for v in` bindings are cleaner |
+| **Separate `unless` bytecode** | Unified into variadic `?` cond — `unless c do t end` compiles to `?(c no' t)` |
+| **Variadic `and`/`or`** | Now variadic instead of binary — `a and b and c` is a single `&(a b c)` |
+
+## Remaining Issues
+
+### Encoder dedup delta bug (open)
+
+The `RevEncoder`'s pointer delta calculation produces invalid bytecode for complex programs with many dedup opportunities. The decoder catches it ("unexpected end of input"). Workaround: rex-serve uses `compile_no_dedup()`. A failing test exists in `tests/dedup.rs` (`dedup_complex_handler_with_multiple_branches`). See `AGENT-INSTRUCTIONS-ENCODER-DEDUP-FIX.md` for the fix plan.
+
+### Namespace indirection for opcodes
+
+The compiler treats `time.uuid()` as `$time.uuid` — variable navigation. Rex-serve creates `OpcodeNamespace` host objects that return `"%tu"` when navigated, which the interpreter then dispatches as an opcode call. With domain-aware compilation (reading `.rexd` declarations), the compiler could emit `%tu` directly — eliminating the runtime indirection.
+
+## How the Type System Helps
+
+The type checker (now functional via `rex check`) would catch specific bugs encountered during development:
+
+- **The "last expression wins" bug** — unused value diagnostics when `when` blocks produce values that are discarded by subsequent expressions
+- **Wrong argument types** — `template.render(layout, title)` vs `template.render(layout, {title: title})` caught by function signatures in `.rexd`
+- **Property typos** — `req.headrs` flagged as unknown property with "did you mean 'headers'?" suggestion
+- **Per-field mutability** — `res.body = "x"` caught as a write to a read-only field when `body` isn't declared `mut`

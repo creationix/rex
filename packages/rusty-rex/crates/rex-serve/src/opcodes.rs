@@ -574,7 +574,7 @@ fn highlight_rex_source(source: &str) -> String {
             TokenKind::KwWhen | TokenKind::KwUnless | TokenKind::KwDo
             | TokenKind::KwEnd | TokenKind::KwElse | TokenKind::KwFor
             | TokenKind::KwIn | TokenKind::KwOf | TokenKind::KwWhile
-            | TokenKind::KwAnd | TokenKind::KwOr | TokenKind::KwNor
+            | TokenKind::KwAnd | TokenKind::KwOr
             | TokenKind::KwNot | TokenKind::KwDelete
             | TokenKind::KwBreak | TokenKind::KwContinue
             | TokenKind::KwReturn => Some("kw"),
@@ -587,9 +587,6 @@ fn highlight_rex_source(source: &str) -> String {
             // Type predicates used as calls: string(), number(), etc.
             TokenKind::KwString | TokenKind::KwNumber | TokenKind::KwBoolean
             | TokenKind::KwArray | TokenKind::KwObject => Some("ty"),
-
-            // Self
-            TokenKind::KwSelf => Some("ct"),
 
             // Strings
             TokenKind::DoubleString | TokenKind::SingleString => Some("st"),
@@ -644,7 +641,7 @@ fn highlight_rex_source(source: &str) -> String {
             }
 
             // Declaration keywords
-            TokenKind::KwExtern | TokenKind::KwType => Some("kw"),
+            TokenKind::KwExtern | TokenKind::KwType | TokenKind::KwReturn => Some("kw"),
 
             // Whitespace, errors
             TokenKind::Whitespace | TokenKind::Error => None,
