@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod bytecode;
 pub mod decompile;
+pub mod interpret;
 pub mod json_fast;
 pub mod lexer;
 pub mod lower;

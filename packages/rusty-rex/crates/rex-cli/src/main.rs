@@ -69,6 +69,22 @@ enum Command {
         /// Input file (- or omit for stdin)
         input: Option<PathBuf>,
     },
+
+    /// Run a Rex program
+    Run {
+        /// Input Rex source file (- or omit for stdin)
+        input: Option<PathBuf>,
+        /// Gas limit (0 = unlimited)
+        #[arg(long, default_value = "10000000")]
+        gas: u64,
+    },
+
+    /// Interactive Rex REPL
+    Repl {
+        /// Gas limit per expression (0 = unlimited)
+        #[arg(long, default_value = "10000000")]
+        gas: u64,
+    },
 }
 
 fn main() {
@@ -79,6 +95,8 @@ fn main() {
         Command::Encode { input, output } => cmd_encode(input, output, cli.time),
         Command::Decode { input, output, pretty } => cmd_decode(input, output, pretty, cli.time),
         Command::Inspect { input } => cmd_inspect(input),
+        Command::Run { input, gas } => cmd_run(input, gas, cli.time),
+        Command::Repl { gas } => cmd_repl(gas),
     };
     if let Err(e) = result {
         eprintln!("{} {e}", red("error:"));
@@ -111,7 +129,7 @@ fn write_output(path: Option<PathBuf>, data: &str) -> io::Result<()> {
     }
 }
 
-fn report_timing(label: &str, input_len: usize, output_len: usize, elapsed: std::time::Duration) {
+fn report_timing(_label: &str, input_len: usize, output_len: usize, elapsed: std::time::Duration) {
     let ms = elapsed.as_secs_f64() * 1000.0;
     let ratio = if input_len > 0 {
         format!(" ({}%)", output_len * 100 / input_len)
@@ -226,10 +244,112 @@ fn cmd_inspect(input: Option<PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
+fn cmd_run(input: Option<PathBuf>, gas: u64, time: bool) -> io::Result<()> {
+    let source = read_input(input)?;
+    let t = Instant::now();
+
+    let bytecode = rex_core::compile(&source);
+    let mut ctx = rex_core::interpret::Context::default();
+    ctx.gas_limit = gas;
+
+    let result = rex_core::interpret::run(&bytecode, ctx).map_err(|e| {
+        io::Error::new(io::ErrorKind::Other, format!("{e}"))
+    })?;
+    let elapsed = t.elapsed();
+
+    if time {
+        report_timing("run", source.len(), 0, elapsed);
+        eprintln!("  {} gas used: {}", dim(""), result.gas);
+    }
+
+    // Print result
+    print_rex_value(&result.value);
+    println!();
+    Ok(())
+}
+
+fn cmd_repl(gas: u64) -> io::Result<()> {
+    use std::io::BufRead;
+
+    eprintln!("{} Rex REPL (type expressions, Ctrl-D to exit)", cyan("rex>"));
+    eprintln!("{}", dim("  Variables persist across lines. Gas limit per expression."));
+    eprintln!();
+
+    let stdin = io::stdin();
+    let mut vars = std::collections::HashMap::new();
+
+    loop {
+        eprint!("{} ", cyan(">>>"));
+        io::stderr().flush()?;
+
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line)? == 0 {
+            eprintln!();
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() { continue; }
+
+        let bytecode = rex_core::compile(line);
+        let mut ctx = rex_core::interpret::Context::default();
+        ctx.gas_limit = gas;
+        ctx.vars = std::mem::take(&mut vars);
+
+        match rex_core::interpret::run(&bytecode, ctx) {
+            Ok(result) => {
+                // Persist variables
+                vars = result.vars;
+                // Print result (skip undefined for assignments)
+                if result.value.is_defined() {
+                    print!("  ");
+                    print_rex_value(&result.value);
+                    println!();
+                }
+            }
+            Err(e) => {
+                eprintln!("  {}: {e}", red("error"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn print_rex_value(value: &rex_core::interpret::RexValue) {
+    use rex_core::interpret::RexValue;
+    match value {
+        RexValue::RexNone => print!("{}", dim("none")),
+        RexValue::Null => print!("{}", dim("null")),
+        RexValue::Bool(b) => print!("{}", magenta(&format!("{b}"))),
+        RexValue::Int(n) => print!("{}", yellow(&format!("{n}"))),
+        RexValue::Float(n) => print!("{}", yellow(&format!("{n}"))),
+        RexValue::Decimal { sig, exp } => print!("{}", yellow(&format!("{sig}e{exp}"))),
+        RexValue::Str(s) => print!("{}", green(&format!("{s:?}"))),
+        RexValue::Array(items) => {
+            print!("[");
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 { print!(", "); }
+                print_rex_value(item);
+            }
+            print!("]");
+        }
+        RexValue::Object(pairs) => {
+            print!("{{");
+            for (i, (k, v)) in pairs.iter().enumerate() {
+                if i > 0 { print!(", "); }
+                print!("{}: ", green(&format!("{k:?}")));
+                print_rex_value(v);
+            }
+            print!("}}");
+        }
+        RexValue::Host(idx) => print!("{}", dim(&format!("<host:{idx}>"))),
+        RexValue::Lazy(span) => print!("{}", dim(&format!("<lazy:{}..{}>", span.start, span.end))),
+    }
+}
+
 // ── Value → JSON ────────────────────────────────────────────────────────
 
 fn value_to_json(value: &rex_core::bytecode::Value, pretty: bool) -> String {
-    use rex_core::bytecode::Value;
     let mut out = String::new();
     write_json(value, &mut out, pretty, 0);
     if pretty {
@@ -284,7 +404,7 @@ fn write_json(value: &rex_core::bytecode::Value, out: &mut String, pretty: bool,
             "t" => out.push_str("true"),
             "f" => out.push_str("false"),
             "n" => out.push_str("null"),
-            "u" => out.push_str("null"),
+            "no" => out.push_str("null"),
             "nan" => out.push_str("null"),
             "inf" => out.push_str("null"),
             "nif" => out.push_str("null"),
@@ -350,7 +470,7 @@ fn print_value(value: &rex_core::bytecode::Value, indent: usize) {
         Value::Decimal { sig, exp } => println!("{pad}{}", yellow(&format!("{sig}e{exp}"))),
         Value::String(s) => println!("{pad}{}", green(&format!("{s:?}"))),
         Value::Ref(name) => println!("{pad}{}", magenta(match name.as_str() {
-            "t" => "true", "f" => "false", "n" => "null", "u" => "undefined",
+            "t" => "true", "f" => "false", "n" => "null", "no" => "none",
             "nan" => "NaN", "inf" => "Infinity", "nif" => "-Infinity",
             other => other,
         })),
@@ -419,7 +539,7 @@ fn print_value_inline(value: &rex_core::bytecode::Value) {
         Value::Decimal { sig, exp } => print!("{}", yellow(&format!("{sig}e{exp}"))),
         Value::String(s) => print!("{}", green(&format!("{s:?}"))),
         Value::Ref(name) => print!("{}", magenta(match name.as_str() {
-            "t" => "true", "f" => "false", "n" => "null", "u" => "undefined",
+            "t" => "true", "f" => "false", "n" => "null", "no" => "none",
             other => other,
         })),
         Value::Variable(name) => print!("{}", cyan(&format!("${name}"))),
@@ -435,5 +555,5 @@ fn print_compound(pad: &str, name: &str, items: &[rex_core::bytecode::Value], in
 }
 
 fn atty() -> bool {
-    unsafe { color::isatty_fd(1) }
+    color::isatty_fd(1)
 }

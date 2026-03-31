@@ -57,8 +57,8 @@ pub enum TokenKind {
     KwString,
     #[token("true", word_boundary)]
     KwTrue,
-    #[token("undefined", word_boundary)]
-    KwUndefined,
+    #[token("none", word_boundary)]
+    KwNone,
     #[token("unless", word_boundary)]
     KwUnless,
     #[token("when", word_boundary)]

@@ -69,7 +69,7 @@ unsafe fn lua_to_value(l: LuaState, idx: c_int) -> Value {
             Value::String(s.to_string())
         }
         LUA_TTABLE => unsafe { lua_table_to_value(l, idx) },
-        _ => Value::Ref("u".into()), // unsupported types → undefined
+        _ => Value::Ref("no".into()), // unsupported types → none
     }
 }
 

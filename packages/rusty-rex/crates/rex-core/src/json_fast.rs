@@ -42,10 +42,6 @@ impl<'s> JsonParser<'s> {
         self.tokens.get(self.pos).map(|t| t.kind)
     }
 
-    fn text(&self) -> &'s str {
-        &self.source[self.tokens[self.pos].span.clone()]
-    }
-
     fn bump(&mut self) -> &'s str {
         self.skip_trivia();
         let t = &self.tokens[self.pos];
@@ -74,7 +70,7 @@ impl<'s> JsonParser<'s> {
             TokenKind::KwTrue => { self.bump(); Some(Value::Ref("t".into())) }
             TokenKind::KwFalse => { self.bump(); Some(Value::Ref("f".into())) }
             TokenKind::KwNull => { self.bump(); Some(Value::Ref("n".into())) }
-            TokenKind::KwUndefined => { self.bump(); Some(Value::Ref("u".into())) }
+            TokenKind::KwNone => { self.bump(); Some(Value::Ref("no".into())) }
             TokenKind::KwNan => { self.bump(); Some(Value::Ref("nan".into())) }
             TokenKind::KwInf => { self.bump(); Some(Value::Ref("inf".into())) }
             // Bare identifiers as keys in Rex objects (no quotes)
@@ -161,7 +157,7 @@ impl<'s> JsonParser<'s> {
                     | Some(TokenKind::DecimalNumber) | Some(TokenKind::HexNumber)
                     | Some(TokenKind::BinaryNumber)
                     | Some(TokenKind::KwTrue) | Some(TokenKind::KwFalse)
-                    | Some(TokenKind::KwNull) | Some(TokenKind::KwUndefined) => {
+                    | Some(TokenKind::KwNull) | Some(TokenKind::KwNone) => {
                         continue; // next value without comma
                     }
                     _ => break,

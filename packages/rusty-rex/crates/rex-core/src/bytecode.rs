@@ -52,21 +52,6 @@ pub fn encode_varint(n: u64) -> String {
     unsafe { String::from_utf8_unchecked(buf[..len].to_vec()) }
 }
 
-/// Decode a varint from `input` starting at `pos`. Consumes all leading
-/// b64 digits. Returns 0 for an empty varint.
-fn decode_varint(input: &[u8], pos: &mut usize) -> u64 {
-    let mut n: u64 = 0;
-    while *pos < input.len() {
-        if let Some(v) = b64_val(input[*pos]) {
-            n = n * 64 + v as u64;
-            *pos += 1;
-        } else {
-            break;
-        }
-    }
-    n
-}
-
 /// Decode a varint, also returning the raw b64 bytes (for name-based tags).
 fn decode_varint_raw<'a>(input: &'a [u8], pos: &mut usize) -> &'a [u8] {
     let start = *pos;
@@ -135,23 +120,6 @@ pub enum Value {
 }
 
 // ── Encoder ─────────────────────────────────────────────────────────────
-
-impl Value {
-    fn is_scalar(&self) -> bool {
-        matches!(
-            self,
-            Value::Integer(_)
-                | Value::Decimal { .. }
-                | Value::String(_)
-                | Value::Ref(_)
-                | Value::Variable(_)
-                | Value::Opcode(_)
-                | Value::SelfRef(_)
-                | Value::BreakCont(_)
-                | Value::Pointer(_)
-        )
-    }
-}
 
 pub fn encode(value: &Value) -> String {
     let mut out = String::new();
@@ -1088,7 +1056,8 @@ mod tests {
     #[test]
     fn varint_decoding() {
         let mut pos = 0;
-        assert_eq!(decode_varint(b"1k+", &mut pos), 84);
+        let raw = decode_varint_raw(b"1k+", &mut pos);
+        assert_eq!(varint_from_raw(raw), 84);
         assert_eq!(pos, 2); // consumed "1k", stopped at "+"
     }
 
@@ -1163,7 +1132,7 @@ mod tests {
 
     #[test]
     fn ref_roundtrip() {
-        for name in ["t", "f", "n", "u", "nan", "inf", "nif"] {
+        for name in ["t", "f", "n", "no", "nan", "inf", "nif"] {
             let v = Value::Ref(name.into());
             assert_eq!(roundtrip(&v), v);
         }

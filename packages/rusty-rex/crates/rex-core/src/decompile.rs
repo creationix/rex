@@ -157,7 +157,7 @@ impl Ctx {
         out.push('}');
     }
 
-    fn write_block(&mut self, items: &[Value], out: &mut String, parent_prec: Prec) {
+    fn write_block(&mut self, items: &[Value], out: &mut String, _parent_prec: Prec) {
         // A block at top level just emits statements
         for (i, item) in items.iter().enumerate() {
             if i > 0 {
@@ -448,7 +448,7 @@ impl Ctx {
         out.push_str("end");
     }
 
-    fn write_assign(&mut self, op: &str, place: &Value, val: &Value, out: &mut String, parent_prec: Prec) {
+    fn write_assign(&mut self, op: &str, place: &Value, val: &Value, out: &mut String, _parent_prec: Prec) {
         self.write(place, out, Prec::Postfix);
         out.push(' ');
         // Detect compound assignment: x = add(x, expr) → x += expr
@@ -640,7 +640,7 @@ fn write_ref(name: &str, out: &mut String) {
         "t" => out.push_str("true"),
         "f" => out.push_str("false"),
         "n" => out.push_str("null"),
-        "u" => out.push_str("undefined"),
+        "no" => out.push_str("none"),
         "nan" => out.push_str("nan"),
         "inf" => out.push_str("inf"),
         "nif" => out.push_str("-inf"),
@@ -742,7 +742,7 @@ mod tests {
         assert_eq!(decompile(&Value::Ref("t".into())), "true");
         assert_eq!(decompile(&Value::Ref("f".into())), "false");
         assert_eq!(decompile(&Value::Ref("n".into())), "null");
-        assert_eq!(decompile(&Value::Ref("u".into())), "undefined");
+        assert_eq!(decompile(&Value::Ref("no".into())), "none");
     }
 
     #[test]

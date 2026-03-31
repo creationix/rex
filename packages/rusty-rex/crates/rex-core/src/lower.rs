@@ -20,7 +20,7 @@ pub fn lower(root: &SyntaxNode) -> Value {
         .collect();
 
     match exprs.len() {
-        0 => Value::Ref("u".into()), // empty program → undefined
+        0 => Value::Ref("no".into()), // empty program → undefined
         1 => exprs.into_iter().next().unwrap(),
         _ => Value::Block(exprs),
     }
@@ -93,7 +93,7 @@ fn lower_token(token: &crate::syntax::SyntaxToken) -> Option<Value> {
         SyntaxKind::KwTrue => Some(Value::Ref("t".into())),
         SyntaxKind::KwFalse => Some(Value::Ref("f".into())),
         SyntaxKind::KwNull => Some(Value::Ref("n".into())),
-        SyntaxKind::KwUndefined => Some(Value::Ref("u".into())),
+        SyntaxKind::KwNone => Some(Value::Ref("no".into())),
         SyntaxKind::KwNan => Some(Value::Ref("nan".into())),
         SyntaxKind::KwInf => Some(Value::Ref("inf".into())),
         SyntaxKind::KwSelf => Some(Value::SelfRef(0)),
@@ -203,7 +203,7 @@ fn lower_block_body(node: &SyntaxNode) -> Value {
         .filter_map(|c| lower_child(c))
         .collect();
     match items.len() {
-        0 => Value::Ref("u".into()),
+        0 => Value::Ref("no".into()),
         1 => items.into_iter().next().unwrap(),
         _ => Value::Block(items),
     }
@@ -215,7 +215,7 @@ fn lower_binary(node: &SyntaxNode) -> Value {
     let lhs = children
         .next()
         .and_then(|c| lower_child(c))
-        .unwrap_or(Value::Ref("u".into()));
+        .unwrap_or(Value::Ref("no".into()));
 
     let op_token = children.next();
     let op = op_token
@@ -226,7 +226,7 @@ fn lower_binary(node: &SyntaxNode) -> Value {
     let rhs = children
         .next()
         .and_then(|c| lower_child(c))
-        .unwrap_or(Value::Ref("u".into()));
+        .unwrap_or(Value::Ref("no".into()));
 
     let opcode = match op {
         Some(SyntaxKind::Plus) => "ad",
@@ -264,7 +264,7 @@ fn lower_unary(node: &SyntaxNode) -> Value {
     let operand = children
         .next()
         .and_then(|c| lower_child(c))
-        .unwrap_or(Value::Ref("u".into()));
+        .unwrap_or(Value::Ref("no".into()));
 
     match op {
         Some(SyntaxKind::Minus) => {
@@ -287,7 +287,7 @@ fn lower_assign(node: &SyntaxNode) -> Value {
     let place = children
         .next()
         .and_then(|c| lower_child(c))
-        .unwrap_or(Value::Ref("u".into()));
+        .unwrap_or(Value::Ref("no".into()));
 
     let op_token = children.next();
     let op = op_token
@@ -298,7 +298,7 @@ fn lower_assign(node: &SyntaxNode) -> Value {
     let value = children
         .next()
         .and_then(|c| lower_child(c))
-        .unwrap_or(Value::Ref("u".into()));
+        .unwrap_or(Value::Ref("no".into()));
 
     // Compound assignments desugar: x += e → x = add(x, e)
     let value = match op {
@@ -527,7 +527,7 @@ fn lower_else_branch(node: &SyntaxNode) -> Value {
     } else {
         // Plain else block
         match items.len() {
-            0 => Value::Ref("u".into()),
+            0 => Value::Ref("no".into()),
             1 => items.into_iter().next().unwrap(),
             _ => Value::Block(items),
         }
@@ -735,8 +735,8 @@ fn lower_object(node: &SyntaxNode) -> Value {
 }
 
 fn lower_pair(node: &SyntaxNode) -> (Value, Value) {
-    let mut key = Value::Ref("u".into());
-    let mut val = Value::Ref("u".into());
+    let mut key = Value::Ref("no".into());
+    let mut val = Value::Ref("no".into());
     let mut seen_colon = false;
 
     for child in non_trivia_children(node) {

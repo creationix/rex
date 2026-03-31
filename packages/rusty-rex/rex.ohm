@@ -76,7 +76,7 @@ Rex {
     | TrueKw                         -- true
     | FalseKw                        -- false
     | NullKw                         -- null
-    | UndefinedKw                    -- undefined
+    | NoneKw                    -- none
     | SelfExpr                       -- self
     | identifier                     -- identifier
     | "(" Expr ")"                  -- group
@@ -200,7 +200,7 @@ Rex {
     = trueTok
     | falseTok
     | nullTok
-    | undefinedTok
+    | noneTok
     | nanTok
     | infTok
     | selfTok
@@ -235,8 +235,8 @@ Rex {
   NullKw
     = nullTok
 
-  UndefinedKw
-    = undefinedTok
+  NoneKw
+    = noneTok
 
   SelfKw
     = selfTok
@@ -308,8 +308,8 @@ Rex {
   nullTok
     = "null" ~nameTail
 
-  undefinedTok
-    = "undefined" ~nameTail
+  noneTok
+    = "none" ~nameTail
 
   nanTok
     = "nan" ~nameTail
