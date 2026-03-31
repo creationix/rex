@@ -1,0 +1,31 @@
+[package]
+name = "rex-serve"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "rex-serve"
+path = "src/main.rs"
+
+[dependencies]
+rex-core.workspace = true
+clap.workspace = true
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+notify = "7"
+rusqlite = { version = "0.34", features = ["bundled"] }
+pulldown-cmark = "0.13"
+glob = "0.3"
+mime_guess = "2"
+uuid = { version = "1", features = ["v7"] }
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+rand = "0.9"
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+http = "1"
