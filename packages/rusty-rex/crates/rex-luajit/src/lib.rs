@@ -86,7 +86,7 @@ unsafe fn lua_table_to_value(l: LuaState, idx: c_int) -> Value {
             items.push(unsafe { lua_to_value(l, -1) });
             unsafe { lua_settop(l, -2) }; // pop
         }
-        Value::List(items)
+        Value::Array(items)
     } else {
         // Could be empty array or a map — iterate with lua_next
         let mut pairs = Vec::new();
@@ -111,9 +111,9 @@ unsafe fn lua_table_to_value(l: LuaState, idx: c_int) -> Value {
             unsafe { lua_settop(l, -2) }; // pop value, keep key for next iteration
         }
         if pairs.is_empty() {
-            Value::List(vec![]) // empty table → empty array
+            Value::Array(vec![]) // empty table → empty array
         } else {
-            Value::Map(pairs)
+            Value::Object(pairs)
         }
     }
 }

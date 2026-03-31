@@ -64,7 +64,7 @@ fn js_to_value(env: &Env, raw: sys::napi_value) -> Result<bytecode::Value> {
                     unsafe { sys::napi_get_element(env.raw(), raw, i, &mut elem) };
                     items.push(js_to_value(env, elem)?);
                 }
-                Ok(bytecode::Value::List(items))
+                Ok(bytecode::Value::Array(items))
             } else {
                 let mut names_val = std::ptr::null_mut();
                 unsafe { sys::napi_get_property_names(env.raw(), raw, &mut names_val) };
@@ -80,7 +80,7 @@ fn js_to_value(env: &Env, raw: sys::napi_value) -> Result<bytecode::Value> {
                     let val = js_to_value(env, prop_val)?;
                     pairs.push((bytecode::Value::String(key), val));
                 }
-                Ok(bytecode::Value::Map(pairs))
+                Ok(bytecode::Value::Object(pairs))
             }
         }
         _ => Ok(bytecode::Value::Ref("no".into())),

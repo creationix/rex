@@ -343,7 +343,6 @@ fn print_rex_value(value: &rex_core::interpret::RexValue) {
             print!("}}");
         }
         RexValue::Host(idx) => print!("{}", dim(&format!("<host:{idx}>"))),
-        RexValue::Lazy(span) => print!("{}", dim(&format!("<lazy:{}..{}>", span.start, span.end))),
     }
 }
 
@@ -410,7 +409,7 @@ fn write_json(value: &rex_core::bytecode::Value, out: &mut String, pretty: bool,
             "nif" => out.push_str("null"),
             other => write!(out, "\"'{other}\"").unwrap(),
         },
-        Value::List(items) | Value::Array(items) => {
+        Value::Array(items) => {
             out.push('[');
             for (i, item) in items.iter().enumerate() {
                 if i > 0 { out.push(','); }
@@ -420,7 +419,7 @@ fn write_json(value: &rex_core::bytecode::Value, out: &mut String, pretty: bool,
             if pretty && !items.is_empty() { out.push('\n'); write_indent(out, indent); }
             out.push(']');
         }
-        Value::Map(pairs) => {
+        Value::Object(pairs) => {
             out.push('{');
             for (i, (key, val)) in pairs.iter().enumerate() {
                 if i > 0 { out.push(','); }
@@ -447,14 +446,14 @@ fn write_indent(out: &mut String, level: usize) {
 fn count_values(value: &rex_core::bytecode::Value) -> usize {
     use rex_core::bytecode::Value;
     match value {
-        Value::List(items) | Value::Array(items) | Value::Block(items) | Value::Call(items)
+        Value::Array(items) | Value::Block(items) | Value::Call(items)
         | Value::When(items) | Value::Unless(items) | Value::Or(items) | Value::And(items)
         | Value::ForIn(items) | Value::ForOf(items) | Value::While(items)
         | Value::ListCompIn(items) | Value::ListCompOf(items) | Value::ListCompWhile(items)
         | Value::MapCompIn(items) | Value::MapCompOf(items) | Value::MapCompWhile(items) => {
             1 + items.iter().map(count_values).sum::<usize>()
         }
-        Value::Map(pairs) => 1 + pairs.iter().map(|(k, v)| count_values(k) + count_values(v)).sum::<usize>(),
+        Value::Object(pairs) => 1 + pairs.iter().map(|(k, v)| count_values(k) + count_values(v)).sum::<usize>(),
         Value::Set(a, b) | Value::Swap(a, b) => 1 + count_values(a) + count_values(b),
         Value::Delete(a) => 1 + count_values(a),
         _ => 1,
@@ -480,12 +479,12 @@ fn print_value(value: &rex_core::bytecode::Value, indent: usize) {
         Value::BreakCont(v) => println!("{pad}{}", magenta(if v % 2 == 0 { "break" } else { "continue" })),
         Value::Pointer(d) => println!("{pad}{}", dim(&format!("^{d}"))),
 
-        Value::List(items) => {
-            println!("{pad}{} {} items", dim(";"), dim(&format!("[{}]", items.len())));
+        Value::Array(items) => {
+            println!("{pad}{} {} items", dim("[]"), dim(&format!("[{}]", items.len())));
             for item in items { print_value(item, indent + 1); }
         }
-        Value::Map(pairs) => {
-            println!("{pad}{} {} pairs", dim(":"), dim(&format!("[{}]", pairs.len())));
+        Value::Object(pairs) => {
+            println!("{pad}{} {} pairs", dim("{}"), dim(&format!("[{}]", pairs.len())));
             for (k, v) in pairs {
                 print!("{pad}  ");
                 print_value_inline(k);
