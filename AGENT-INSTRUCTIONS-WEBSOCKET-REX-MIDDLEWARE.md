@@ -98,19 +98,91 @@ The server stores the state object (a `RexValue`) per connection. On each event,
 
 State shared between all connections — subscriber counts, rate limiting, feature flags. This is harder because Rex programs can't share mutable state.
 
-**Proposed mechanism**: The database. `db.get`/`db.set` already provides shared persistent state. For in-memory shared state, add a `cache` namespace with `cache.get(key)` and `cache.set(key, value, ttl)` opcodes backed by a simple in-memory HashMap with optional TTL.
+**Proposed mechanism**: A new `kv` namespace — an in-memory key-value store with pub/sub, designed for ephemeral shared state. This is distinct from `db` (SQLite, persistent, disk-backed). Think of it as an embedded Redis.
 
 ```rex
-/* Rate limiting via shared cache */
-rate-key = "rate:" + state.user
-count = cache.get(rate-key) or 0
+/* Rate limiting */
+rate-key = `rate:${state.user}`
+count = kv.get(rate-key) or 0
 when count > 100 do
   return {reject: true, reason: "rate_limited"}
 end
-cache.set(rate-key, count + 1, 60)  /* TTL: 60 seconds */
+kv.set(rate-key, count + 1, 60)  /* TTL: 60 seconds */
+
+/* Pub/sub: publish an event to a channel */
+kv.publish("articles", {action: "created", slug: input.slug})
+
+/* Track online users */
+kv.set(`online:${state.user}`, true, 300)  /* 5-min heartbeat TTL */
+online = kv.keys("online:*")
 ```
 
-This avoids the need for shared mutable variables — all sharing goes through explicit key-value operations.
+### `kv` vs `db` — two tiers of state
+
+| | `kv` (in-memory) | `db` (SQLite) |
+|---|---|---|
+| **Persistence** | Ephemeral — lost on restart | Persistent — survives restarts |
+| **Speed** | Microseconds (HashMap) | Milliseconds (disk I/O) |
+| **Use cases** | Sessions, rate limits, pub/sub, online presence, locks | Articles, users, API keys, audit logs |
+| **Pub/sub** | Yes — `kv.publish`/`kv.subscribe` | No |
+| **TTL** | Yes — auto-expire keys | No |
+| **Capacity** | Bounded by memory | Bounded by disk |
+
+### `kv` opcodes
+
+```
+kv.get(key)                     → value or none
+kv.set(key, value)              → true
+kv.set(key, value, ttl)         → true          (TTL in seconds)
+kv.delete(key)                  → true
+kv.keys(prefix)                 → [string]      (list keys matching prefix)
+kv.incr(key)                    → integer       (atomic increment, returns new value)
+kv.publish(channel, data)       → integer       (number of subscribers notified)
+```
+
+### `kv.subscribe` and WebSocket integration
+
+The `kv.subscribe` opcode is unique — it's used in the WebSocket `connect` handler to register interest in channels. When a message is published to a subscribed channel, the WebSocket middleware receives it as an event:
+
+```rex
+/* _ws/connect.rex */
+kv.subscribe("articles")
+kv.subscribe(`user:${state.user}`)
+return {accept: true, state: {user: principal}}
+
+/* _ws/publish.rex — triggered when a subscribed channel receives data */
+/* event.channel = "articles", event.data = {action: "created", ...} */
+return {reply: json.stringify(event.data)}
+```
+
+The publish side happens from any Rex program — an HTTP handler, middleware, or another WebSocket handler:
+
+```rex
+/* routes/api/articles.rex — POST handler */
+db.set("article:" + input.slug, json.stringify(record))
+kv.publish("articles", {action: "created", slug: input.slug, title: input.title})
+return {ok: true, slug: input.slug}
+```
+
+This naturally connects HTTP writes to WebSocket subscribers without shared mutable state — `kv.publish` is a fire-and-forget event, and `kv.subscribe` registers the connection for future events.
+
+### Implementation
+
+The `kv` store is a single `Arc<Mutex<KvStore>>` in `AppState`:
+
+```rust
+struct KvStore {
+    data: HashMap<String, KvEntry>,
+    channels: HashMap<String, Vec<broadcast::Sender<String>>>,
+}
+
+struct KvEntry {
+    value: String,  // JSON-serialized
+    expires_at: Option<Instant>,
+}
+```
+
+A background task runs every ~1 second to evict expired keys. The `publish` opcode sends on all matching channel senders. The WebSocket handler holds receivers for subscribed channels.
 
 ### 3. The case for user-defined functions
 
@@ -214,16 +286,25 @@ Extend the current `/__reload` WebSocket to run Rex middleware on file changes:
 3. If the script returns `{broadcast: true, data: ...}`, send `data` to all clients
 4. If it returns `none`, suppress the event (current behavior: always broadcast)
 
-### Phase 2: Database event emission
+### Phase 2: In-memory KV store with pub/sub
 
-Modify `op_db_set` and `op_db_delete` to emit events on a channel:
+Add the `kv` opcode namespace:
 
-1. Add a `db_events: broadcast::Sender<DbEvent>` to `AppState`
-2. After each `db.set`/`db.delete`, send `DbEvent { kind, key, value }` on the channel
-3. The WebSocket watcher subscribes to both file events and db events
-4. Run Rex middleware for each db event
+1. Create `KvStore` struct with `HashMap<String, KvEntry>` + `HashMap<String, Vec<Sender>>`
+2. Add `kv.*` opcodes: get, set (with optional TTL), delete, keys, incr, publish
+3. Register in `AppState` as `Arc<Mutex<KvStore>>`
+4. Background tokio task for TTL eviction (every 1s, sweep expired keys)
+5. Wire `kv.publish` to broadcast channels
 
-### Phase 3: Client messages and per-connection state
+### Phase 3: Database event emission + KV pub/sub integration
+
+Connect database writes to the pub/sub system:
+
+1. After each `db.set`/`db.delete`, optionally `kv.publish("db", {key, value})`
+2. Or let Rex programs explicitly publish — more flexible, less magic
+3. WebSocket handler subscribes to channels via `kv.subscribe` in the connect script
+
+### Phase 4: Client messages and per-connection state
 
 1. Upgrade the WebSocket handler to receive client messages
 2. Maintain per-connection state in a `HashMap<ConnectionId, RexValue>`
@@ -242,7 +323,8 @@ If the single-file approach gets unwieldy:
 | File | Change |
 |---|---|
 | `crates/rex-serve/src/server.rs` | Extend WebSocket handler with Rex middleware execution |
-| `crates/rex-serve/src/opcodes.rs` | Add db event emission to `op_db_set`/`op_db_delete` |
+| `crates/rex-serve/src/kv.rs` | New: in-memory KV store with TTL + pub/sub channels |
+| `crates/rex-serve/src/opcodes.rs` | Add `kv.*` opcodes, optionally emit db events |
 | `crates/rex-serve/src/handler.rs` | Extract `run_rex_program` for reuse by WebSocket handler |
 | `crates/rex-serve/src/config.rs` | Optional: `[websocket]` config section |
 | `examples/knowledge-base/routes/_ws.rex` | Example WebSocket middleware |
