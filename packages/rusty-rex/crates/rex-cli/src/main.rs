@@ -485,7 +485,6 @@ fn print_value(value: &rex_core::bytecode::Value, indent: usize) {
         })),
         Value::Variable(name) => println!("{pad}{}", cyan(&format!("${name}"))),
         Value::Opcode(name) => println!("{pad}{}", red(&format!("%{name}"))),
-        Value::SelfRef(d) => println!("{pad}{}", magenta(&if *d == 0 { "self".into() } else { format!("self@{d}") })),
         Value::BreakCont(v) => println!("{pad}{}", magenta(if v % 2 == 0 { "break" } else { "continue" })),
         Value::Pointer(d) => println!("{pad}{}", dim(&format!("^{d}"))),
 
@@ -552,7 +551,6 @@ fn print_value_inline(value: &rex_core::bytecode::Value) {
         })),
         Value::Variable(name) => print!("{}", cyan(&format!("${name}"))),
         Value::Opcode(name) => print!("{}", red(&format!("%{name}"))),
-        Value::SelfRef(d) => print!("{}", magenta(&if *d == 0 { "self".into() } else { format!("self@{d}") })),
         other => print!("{other:?}"),
     }
 }
@@ -635,10 +633,11 @@ fn cmd_check(input: PathBuf, domain: Option<PathBuf>) -> io::Result<()> {
 
 /// Search upward from a path for any .rexd file.
 fn find_rexd(start: &std::path::Path) -> Option<PathBuf> {
-    let mut dir = if start.is_file() {
-        start.parent()?
+    let abs = start.canonicalize().ok()?;
+    let mut dir = if abs.is_file() {
+        abs.parent()?
     } else {
-        start
+        abs.as_path()
     };
     loop {
         if let Ok(entries) = std::fs::read_dir(dir) {

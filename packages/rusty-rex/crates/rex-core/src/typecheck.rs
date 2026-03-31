@@ -965,6 +965,10 @@ enum Narrowing {
 /// Type environment — tracks variable scopes and diagnostics.
 struct TypeEnv<'a> {
     schema: &'a DomainSchema,
+    /// Inline type aliases from `type` declarations in user code.
+    inline_aliases: HashMap<String, Type>,
+    /// Inline function signatures from `extern` declarations in user code.
+    inline_functions: HashMap<String, FunctionSig>,
     scopes: Vec<HashMap<String, Type>>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -978,6 +982,8 @@ impl<'a> TypeEnv<'a> {
         }
         Self {
             schema,
+            inline_aliases: HashMap::new(),
+            inline_functions: HashMap::new(),
             scopes: vec![globals],
             diagnostics: Vec::new(),
         }
@@ -1012,6 +1018,7 @@ impl<'a> TypeEnv<'a> {
         match ty {
             Type::Ref(name) => {
                 self.schema.type_aliases.get(name)
+                    .or_else(|| self.inline_aliases.get(name))
                     .map(|t| self.resolve_type(t))
                     .unwrap_or_else(|| ty.clone())
             }
@@ -1092,7 +1099,8 @@ impl<'a> TypeEnv<'a> {
             SyntaxKind::ObjectComprehension => self.infer_object_comp(node),
             SyntaxKind::TemplateExpr => self.infer_template(node),
             SyntaxKind::ReturnExpr => self.infer_return(node),
-            SyntaxKind::TypeDecl | SyntaxKind::ExternDecl => Type::None, // skip declarations
+            SyntaxKind::TypeDecl => { self.process_type_decl(node); Type::None }
+            SyntaxKind::ExternDecl => { self.process_extern_decl(node); Type::None }
             SyntaxKind::Block => self.infer_block(node),
             SyntaxKind::SelfExpr => Type::Some, // TODO: track self type through scopes
             _ => Type::unknown(),
@@ -1359,6 +1367,25 @@ impl<'a> TypeEnv<'a> {
         }
     }
 
+    /// Process a `type Name = T` declaration in user code.
+    fn process_type_decl(&mut self, node: &SyntaxNode) {
+        if let Some((name, ty)) = extract_type_decl(node) {
+            self.inline_aliases.insert(name, ty);
+        }
+    }
+
+    /// Process an `extern name = T` declaration in user code.
+    fn process_extern_decl(&mut self, node: &SyntaxNode) {
+        let mut temp_schema = DomainSchema::default();
+        extract_extern_decl(node, &mut temp_schema, None);
+        for (name, entry) in temp_schema.globals {
+            self.set_var(&name, entry.ty);
+        }
+        for (name, sig) in temp_schema.functions {
+            self.inline_functions.insert(name, sig);
+        }
+    }
+
     fn check_mutability(&mut self, _dotted_name: &str, _span: std::ops::Range<usize>) {
         // TODO: implement per-field mutability checks
         // Need to walk the type tree checking `mut` annotations on fields
@@ -1432,9 +1459,12 @@ impl<'a> TypeEnv<'a> {
             }
         }
 
-        // Check schema for function signature
+        // Check schema for function signature (schema + inline)
         if let Some(name) = &func_name {
-            if let Some(sig) = self.schema.functions.get(name.as_str()) {
+            let sig = self.schema.functions.get(name.as_str())
+                .or_else(|| self.inline_functions.get(name.as_str()))
+                .cloned();
+            if let Some(sig) = &sig {
                 // Check arg count
                 if arg_types.len() != sig.args.len() && sig.rest.is_none() {
                     self.error(Self::span_of(node), format!(
@@ -1907,19 +1937,84 @@ impl<'a> TypeEnv<'a> {
     }
 
     fn infer_array_comp(&mut self, node: &SyntaxNode) -> Type {
-        // First child is the body expression, rest is the iteration
-        let mut body_type = Type::Some;
-        for child in node.children_with_tokens() {
-            match &child {
+        // ArrayComprehension: [body_expr for binding in iterable]
+        // Children: LBracket, body_expr, (KwFor), IterBinding, RBracket
+        // Or: [body_expr for name in iterable]
+        let children: Vec<_> = non_trivia_children(node).collect();
+
+        // Skip brackets, find the body (first non-bracket child) and IterBinding
+        let mut body_child = None;
+        let mut iterable_type = Type::unknown();
+        let mut binding_names: Vec<String> = Vec::new();
+        let mut is_of = false;
+
+        for child in &children {
+            match child {
                 rowan::NodeOrToken::Token(t) if matches!(t.kind(),
-                    SyntaxKind::LBracket | SyntaxKind::RBracket | SyntaxKind::Comma
-                    | SyntaxKind::KwFor | SyntaxKind::KwWhile | SyntaxKind::KwIn | SyntaxKind::KwOf) => continue,
-                rowan::NodeOrToken::Token(t) if t.kind().is_trivia() => continue,
+                    SyntaxKind::LBracket | SyntaxKind::RBracket) => continue,
+                rowan::NodeOrToken::Token(t) if matches!(t.kind(),
+                    SyntaxKind::KwFor | SyntaxKind::KwWhile) => continue,
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::IterBinding => {
+                    let mut past_keyword = false;
+                    for bc in non_trivia_children(n) {
+                        match &bc {
+                            rowan::NodeOrToken::Token(t) if matches!(t.kind(),
+                                SyntaxKind::KwIn | SyntaxKind::KwOf) => {
+                                if t.kind() == SyntaxKind::KwOf { is_of = true; }
+                                past_keyword = true;
+                            }
+                            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Comma => {}
+                            _ if !past_keyword => {
+                                if let rowan::NodeOrToken::Token(t) = &bc {
+                                    if t.kind() == SyntaxKind::Ident {
+                                        binding_names.push(t.text().to_string());
+                                    }
+                                }
+                            }
+                            _ => {
+                                iterable_type = self.infer_child(&bc);
+                            }
+                        }
+                    }
+                }
                 _ => {
-                    body_type = self.infer_child(&child);
+                    if body_child.is_none() {
+                        body_child = Some(child);
+                    }
                 }
             }
         }
+
+        // Set up scope with iteration variables
+        self.push_scope();
+        let iterable = self.resolve_type(&iterable_type);
+        let elem_type = match &iterable {
+            Type::Array(elem) => (**elem).clone(),
+            _ => Type::Some,
+        };
+        match binding_names.len() {
+            1 => {
+                if is_of {
+                    self.set_var(&binding_names[0], Type::Str);
+                } else {
+                    self.set_var(&binding_names[0], elem_type);
+                }
+            }
+            2 => {
+                self.set_var(&binding_names[0], Type::Int);
+                self.set_var(&binding_names[1], elem_type);
+            }
+            _ => {}
+        }
+
+        // Infer body expression
+        let body_type = if let Some(child) = body_child {
+            self.infer_child(child)
+        } else {
+            Type::Some
+        };
+        self.pop_scope();
+
         Type::Array(Box::new(body_type))
     }
 
