@@ -283,7 +283,9 @@ impl<'a> Interpreter<'a> {
         while !self.at_end() {
             last = self.eval()?;
         }
-        Ok(last)
+        // Eagerly materialize the final return value so lazy maps/lists
+        // that reference variables are resolved before the context is dropped.
+        self.force_value(last)
     }
 
     // ── Main eval dispatch ──────────────────────────────────────────
@@ -352,15 +354,36 @@ impl<'a> Interpreter<'a> {
                 Ok(val)
             }
 
-            // String chain
+            // String chain (also used for template literals)
             b'.' => {
                 let size = parse_uint(raw) as usize;
                 let end = self.pos + size;
                 let mut result = String::new();
                 while self.pos < end {
                     let seg = self.eval()?;
-                    if let RexValue::Str(s) = seg {
-                        result.push_str(&s);
+                    match seg {
+                        RexValue::Str(s) => result.push_str(&s),
+                        RexValue::Int(n) => result.push_str(&n.to_string()),
+                        RexValue::Float(f) => {
+                            if f.is_infinite() {
+                                result.push('\u{221E}'); // ∞
+                            } else if f.is_nan() {
+                                result.push_str("NaN");
+                            } else {
+                                result.push_str(&f.to_string());
+                            }
+                        }
+                        RexValue::Decimal { sig, exp } => {
+                            if exp >= 0 {
+                                result.push_str(&format!("{}e{}", sig, exp));
+                            } else {
+                                result.push_str(&format!("{}e{}", sig, exp));
+                            }
+                        }
+                        RexValue::Bool(b) => result.push(if b { '\u{2713}' } else { '\u{2717}' }),
+                        RexValue::Null => result.push('\u{2400}'), // ␀
+                        RexValue::RexNone => result.push('\u{2205}'), // ∅
+                        _ => {} // arrays, objects — skip
                     }
                 }
                 Ok(RexValue::Str(result))
@@ -569,7 +592,17 @@ impl<'a> Interpreter<'a> {
 
             self.pos = body_start;
             match self.eval_until(closer) {
-                Ok(val) => results.push(val),
+                Ok(val) => {
+                    // Force-evaluate during iteration so lazy values that
+                    // reference the loop variable are resolved immediately,
+                    // before the variable is overwritten by the next iteration.
+                    let forced = if opener != b'(' {
+                        self.force_value(val)?
+                    } else {
+                        val
+                    };
+                    results.push(forced);
+                }
                 Err(RexError::BreakSignal(0)) => { self.self_stack.pop(); break; }
                 Err(RexError::ContinueSignal(0)) => { self.self_stack.pop(); continue; }
                 Err(e) => { self.self_stack.pop(); return Err(e); }
@@ -624,7 +657,14 @@ impl<'a> Interpreter<'a> {
 
             self.pos = body_start;
             match self.eval_until(closer) {
-                Ok(val) => results.push(val),
+                Ok(val) => {
+                    let forced = if opener != b'(' {
+                        self.force_value(val)?
+                    } else {
+                        val
+                    };
+                    results.push(forced);
+                }
                 Err(RexError::BreakSignal(0)) => { self.self_stack.pop(); break; }
                 Err(RexError::ContinueSignal(0)) => { self.self_stack.pop(); continue; }
                 Err(e) => { self.self_stack.pop(); return Err(e); }
@@ -667,7 +707,14 @@ impl<'a> Interpreter<'a> {
             self.self_stack.push(cond);
             self.pos = body_start;
             match self.eval_until(closer) {
-                Ok(val) => results.push(val),
+                Ok(val) => {
+                    let forced = if opener != b'(' {
+                        self.force_value(val)?
+                    } else {
+                        val
+                    };
+                    results.push(forced);
+                }
                 Err(RexError::BreakSignal(0)) => { self.self_stack.pop(); break; }
                 Err(RexError::ContinueSignal(0)) => { self.self_stack.pop(); continue; }
                 Err(e) => { self.self_stack.pop(); return Err(e); }
@@ -698,7 +745,21 @@ impl<'a> Interpreter<'a> {
         match &callee {
             // Opcode call: %ad, %lt, etc.
             RexValue::Str(s) if s.starts_with('%') => {
-                self.apply_opcode(&s[1..], &args)
+                // Force-materialize lazy args for opcodes since they can't
+                // access the interpreter to resolve lazy spans themselves.
+                let eager_args: Vec<RexValue> = args.into_iter()
+                    .map(|a| self.force_value(a))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.apply_opcode(&s[1..], &eager_args)
+            }
+            // Host object call: if the callee is a Host and the first arg
+            // isn't a string key, invoke the Host's call method directly.
+            // This allows hosts to register callable objects (e.g., tagged templates).
+            RexValue::Host(idx) if !args.is_empty() && args[0].as_str().is_none() => {
+                let eager_args: Vec<RexValue> = args.into_iter()
+                    .map(|a| self.force_value(a))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.host_objects[*idx].call("", &eager_args)
             }
             // Navigation from variable or host
             _ => {
@@ -937,6 +998,55 @@ impl<'a> Interpreter<'a> {
                 Ok(keys)
             }
             _ => Ok(vec![]),
+        }
+    }
+
+    // ── Force evaluation ────────────────────────────────────────────
+
+    /// Eagerly evaluate a value, materializing lazy containers.
+    fn force_value(&mut self, value: RexValue) -> Result<RexValue, RexError> {
+        match value {
+            RexValue::Lazy(span) => {
+                let save = self.pos;
+                self.pos = span.start;
+                if span.is_map {
+                    let mut pairs = Vec::new();
+                    while self.pos < span.end {
+                        let key = self.eval()?;
+                        let val = self.eval()?;
+                        let key_str = match key {
+                            RexValue::Str(s) => s,
+                            _ => format!("{key:?}"),
+                        };
+                        let val = self.force_value(val)?;
+                        pairs.push((key_str, val));
+                    }
+                    self.pos = save;
+                    Ok(RexValue::Object(pairs))
+                } else {
+                    let mut items = Vec::new();
+                    while self.pos < span.end {
+                        let val = self.eval()?;
+                        let val = self.force_value(val)?;
+                        items.push(val);
+                    }
+                    self.pos = save;
+                    Ok(RexValue::Array(items))
+                }
+            }
+            RexValue::Array(items) => {
+                let forced: Result<Vec<_>, _> = items.into_iter()
+                    .map(|v| self.force_value(v))
+                    .collect();
+                Ok(RexValue::Array(forced?))
+            }
+            RexValue::Object(pairs) => {
+                let forced: Result<Vec<_>, _> = pairs.into_iter()
+                    .map(|(k, v)| self.force_value(v).map(|fv| (k, fv)))
+                    .collect();
+                Ok(RexValue::Object(forced?))
+            }
+            other => Ok(other),
         }
     }
 
@@ -1204,8 +1314,13 @@ mod tests {
 
     #[test]
     fn eval_data_array() {
-        // Pure data arrays compile to lazy lists (`;`)
-        assert_eq!(eval("[1, 2, 3]").type_name(), "lazy");
+        // Pure data arrays compile to lazy lists (`;`) but are
+        // force-evaluated at the top level to produce concrete values.
+        let v = eval("[1, 2, 3]");
+        assert_eq!(v.type_name(), "array");
+        if let RexValue::Array(items) = v {
+            assert_eq!(items.len(), 3);
+        }
     }
 
     #[test]
@@ -1215,6 +1330,61 @@ mod tests {
             assert_eq!(items.len(), 3);
         } else {
             panic!("expected array");
+        }
+    }
+
+    #[test]
+    fn eval_template_no_interpolation() {
+        let v = eval("`hello`");
+        if let RexValue::Str(s) = v {
+            assert_eq!(s, "hello");
+        } else {
+            panic!("expected string, got {:?}", v);
+        }
+    }
+
+    #[test]
+    fn eval_template_with_variable() {
+        let bc = crate::compile("name = `world`\n`hello ${name}`");
+        let result = run(&bc, Context::default()).unwrap();
+        if let RexValue::Str(s) = result.value {
+            assert_eq!(s, "hello world");
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    #[test]
+    fn eval_template_with_integer() {
+        let bc = crate::compile("x = 42\n`the answer is ${x}`");
+        let result = run(&bc, Context::default()).unwrap();
+        if let RexValue::Str(s) = result.value {
+            assert_eq!(s, "the answer is 42");
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    #[test]
+    fn eval_template_with_bool() {
+        let bc = crate::compile("`value: ${true}`");
+        let result = run(&bc, Context::default()).unwrap();
+        if let RexValue::Str(s) = result.value {
+            assert_eq!(s, "value: \u{2713}");
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    #[test]
+    fn eval_template_with_none() {
+        let bc = crate::compile("`got: ${name}`");
+        let result = run(&bc, Context::default()).unwrap();
+        if let RexValue::Str(s) = result.value {
+            // name is undefined → none → ∅
+            assert_eq!(s, "got: \u{2205}");
+        } else {
+            panic!("expected string");
         }
     }
 

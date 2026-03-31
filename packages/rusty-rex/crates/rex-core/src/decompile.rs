@@ -91,6 +91,32 @@ impl Ctx {
                 out.push_str("delete ");
                 self.write(place, out, Prec::Unary);
             }
+
+            Value::Chain(segments) => {
+                // Decompile chain back to template literal syntax
+                out.push('`');
+                for seg in segments {
+                    match seg {
+                        Value::String(s) => {
+                            // Escape backticks and ${
+                            for c in s.chars() {
+                                match c {
+                                    '`' => out.push_str("\\`"),
+                                    '\\' => out.push_str("\\\\"),
+                                    '$' => out.push_str("\\$"),
+                                    _ => out.push(c),
+                                }
+                            }
+                        }
+                        _ => {
+                            out.push_str("${");
+                            self.write(seg, out, Prec::Top);
+                            out.push('}');
+                        }
+                    }
+                }
+                out.push('`');
+            }
         }
     }
 
