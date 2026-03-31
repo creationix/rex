@@ -26,6 +26,7 @@
   <footer>
     <div class="container">{{{footer}}}</div>
   </footer>
-  <script>document.querySelectorAll('pre').forEach(p=>{p.style.position='relative';const b=document.createElement('button');b.className='copy-btn';b.textContent='copy';p.appendChild(b);b.onclick=e=>{e.stopPropagation();const t=document.createElement('textarea');t.value=p.textContent.replace(/copy$/,'').trim();t.style.cssText='position:fixed;opacity:0';document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);b.textContent='copied!';setTimeout(()=>b.textContent='copy',1500)}})</script>
+  <script>document.querySelectorAll('pre').forEach(p=>{p.style.position='relative';const b=document.createElement('button');b.className='copy-btn';b.textContent='copy';p.appendChild(b);b.onclick=e=>{e.stopPropagation();const t=document.createElement('textarea');t.value=p.textContent.replace(/copy$/,'').trim();t.style.cssText='position:fixed;opacity:0';document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);b.textContent='copied!';setTimeout(()=>b.textContent='copy',1500)}});(function(){var w,t;function c(){w=new WebSocket('ws://'+location.host+'/__reload');w.onmessage=function(e){console.log('[rex-serve] changed:',e.data);location.reload()};w.onclose=function(){t=setTimeout(c,1000)};w.onerror=function(){w.close()}}c()})()
+  </script>
 </body>
 </html>

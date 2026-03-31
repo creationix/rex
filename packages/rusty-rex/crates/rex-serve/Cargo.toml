@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 rex-core.workspace = true
 clap.workspace = true
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,7 +1,8 @@
 use axum::Router;
+use axum::routing::get;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 
 use crate::config::Config;
 use crate::router::RouteTable;
@@ -11,6 +12,8 @@ pub struct AppState {
     pub route_table: RwLock<RouteTable>,
     pub db: Arc<std::sync::Mutex<rusqlite::Connection>>,
     pub project_root: PathBuf,
+    /// Broadcast channel for file change notifications (for WebSocket clients)
+    pub reload_tx: broadcast::Sender<String>,
 }
 
 pub async fn run(config: Config, project_root: PathBuf) {
@@ -49,11 +52,15 @@ pub async fn run(config: Config, project_root: PathBuf) {
         tracing::info!("  static: {} ← {}", sf.url_path, sf.fs_path.display());
     }
 
+    // Broadcast channel for live reload notifications
+    let (reload_tx, _) = broadcast::channel::<String>(16);
+
     let state = Arc::new(AppState {
         config,
         route_table: RwLock::new(table),
         db,
         project_root,
+        reload_tx,
     });
 
     // Start file watcher for hot reload
@@ -64,11 +71,13 @@ pub async fn run(config: Config, project_root: PathBuf) {
     });
 
     let app = Router::new()
+        .route("/__reload", get(ws_reload_handler))
         .fallback(crate::handler::handle_request)
         .with_state(state.clone());
 
     let addr = format!("{}:{}", state.config.server.host, state.config.server.port);
     tracing::info!("listening on http://{addr}");
+    tracing::info!("live reload WebSocket at ws://{addr}/__reload");
 
     let listener = tokio::net::TcpListener::bind(&addr).await
         .expect("failed to bind");
@@ -79,16 +88,58 @@ pub async fn run(config: Config, project_root: PathBuf) {
         .expect("server error");
 }
 
+/// WebSocket handler for live reload notifications.
+/// Clients connect and receive file paths as they change.
+async fn ws_reload_handler(
+    ws: axum::extract::WebSocketUpgrade,
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::response::Response {
+    ws.on_upgrade(move |socket| ws_reload_connection(socket, state))
+}
+
+async fn ws_reload_connection(
+    mut socket: axum::extract::ws::WebSocket,
+    state: Arc<AppState>,
+) {
+    use axum::extract::ws::Message;
+
+    let mut rx = state.reload_tx.subscribe();
+    tracing::debug!("live reload client connected");
+
+    loop {
+        tokio::select! {
+            msg = rx.recv() => {
+                match msg {
+                    Ok(path) => {
+                        if socket.send(Message::Text(path.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            msg = socket.recv() => {
+                // Client closed or sent a message (ignore messages)
+                match msg {
+                    Some(Ok(_)) => {}
+                    _ => break,
+                }
+            }
+        }
+    }
+    tracing::debug!("live reload client disconnected");
+}
+
 async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
     use notify::{Watcher, RecursiveMode, Event, EventKind};
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<PathBuf>>(8);
 
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
         if let Ok(event) = res {
             match event.kind {
                 EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-                    let _ = tx.try_send(());
+                    let _ = tx.try_send(event.paths);
                 }
                 _ => {}
             }
@@ -100,11 +151,13 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
 
     tracing::info!("watching {} for changes", routes_dir.display());
 
-    // Keep the watcher alive and debounce rebuild events
     while rx.recv().await.is_some() {
-        // Drain any queued events (debounce rapid saves)
+        // Debounce: wait briefly then drain queued events
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        while rx.try_recv().is_ok() {}
+        let mut changed_paths: Vec<PathBuf> = Vec::new();
+        while let Ok(paths) = rx.try_recv() {
+            changed_paths.extend(paths);
+        }
 
         tracing::info!("change detected, reloading routes...");
         let new_table = RouteTable::build(&routes_dir);
@@ -115,6 +168,15 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
             new_table.static_files.len(),
         );
         *state.route_table.write().await = new_table;
+
+        // Notify WebSocket clients of changed files
+        for path in &changed_paths {
+            let rel = path.strip_prefix(&routes_dir)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string();
+            let _ = state.reload_tx.send(rel);
+        }
     }
 }
 
