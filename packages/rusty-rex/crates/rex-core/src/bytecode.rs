@@ -439,9 +439,8 @@ pub fn encode_dedup(value: &Value) -> String {
         prefixes: std::collections::HashSet::new(),
         node_counts,
         value_hashes: std::collections::HashMap::new(),
-        scope_depth: 0,
     };
-    enc.write(value);
+    enc.write(value, false);
     enc.buf.reverse();
     unsafe { String::from_utf8_unchecked(enc.buf) }
 }
@@ -495,17 +494,14 @@ const CHAIN_THRESHOLD: usize = 8;
 pub struct RevEncoder {
     buf: Vec<u8>,
     pos: usize,
-    /// hash → (rev_left, encoded_len, scope_depth)
-    seen: std::collections::HashMap<u64, (usize, usize, u32)>,
-    /// schema hash → (rev_start, len) of the first object with that key layout
+    /// hash → (doc_size_after_write, encoded_len)
+    seen: std::collections::HashMap<u64, (usize, usize)>,
+    /// schema hash → (doc_size_after_write, len) of the first object with that key layout
     schemas: std::collections::HashMap<u64, (usize, usize)>,
     /// known string prefixes (delimiter-split) for chain dedup
     prefixes: std::collections::HashSet<String>,
     node_counts: std::collections::HashMap<*const Value, usize>,
     value_hashes: std::collections::HashMap<*const Value, u64>,
-    /// Current conditional nesting depth. Pointers may only reference
-    /// targets recorded at the same or lower (ancestor) depth.
-    scope_depth: u32,
 }
 
 impl RevEncoder {
@@ -519,7 +515,6 @@ impl RevEncoder {
             prefixes: std::collections::HashSet::new(),
             node_counts: std::collections::HashMap::new(),
             value_hashes: std::collections::HashMap::new(),
-            scope_depth: 0,
         }
     }
 
@@ -599,33 +594,37 @@ impl RevEncoder {
         self.pos += s.len();
     }
 
-    pub fn write(&mut self, value: &Value) {
-        // Strings have their own fast path with integrated dedup + chaining
+    /// Write a value with dedup. When `skippable` is true, containers add
+    /// a size prefix so the interpreter can skip in O(1). Each type handles
+    /// the prefix internally — no naked b64 digits are ever emitted adjacent
+    /// to another value's b64 digits.
+    pub fn write(&mut self, value: &Value, skippable: bool) {
+        // Strings have their own fast path with integrated dedup + chaining.
+        // Strings already carry a length prefix, so skip hint is irrelevant.
         if let Value::String(s) = value {
             self.write_string(s);
             return;
         }
 
         if let Some(key) = self.dedup_key(value) {
-            if let Some(&(target_left, target_len, target_depth)) = self.seen.get(&key) {
-                // Only deduplicate if the target is at the same or ancestor scope.
-                // Cross-branch pointers cause bugs when the target branch is skipped.
-                if target_depth <= self.scope_depth {
-                    let delta = (self.pos - target_left) as u64;
-                    let ptr_size = varint_len(delta) + 1;
-                    if ptr_size < target_len {
-                        self.push(b'^');
-                        self.push_varint(delta);
-                        return;
-                    }
+            // Check if we've seen this value before
+            if let Some(&(target_pos, target_len)) = self.seen.get(&key) {
+                let delta = (self.pos - target_pos) as u64;
+                let ptr_size = varint_len(delta) + 1;
+                if ptr_size < target_len {
+                    // Pointers are fixed-size — no skip prefix needed
+                    self.push(b'^');
+                    self.push_varint(delta);
+                    return;
                 }
             }
+            // Write the value and record its position
             let start = self.pos;
-            self.emit(value);
+            self.emit(value, skippable);
             let len = self.pos - start;
-            self.seen.entry(key).or_insert((self.pos, len, self.scope_depth));
+            self.seen.entry(key).or_insert((self.pos, len));
         } else {
-            self.emit(value);
+            self.emit(value, skippable);
         }
     }
 
@@ -649,15 +648,14 @@ impl RevEncoder {
         }
     }
 
-
-    fn emit(&mut self, value: &Value) {
+    fn emit(&mut self, value: &Value, skippable: bool) {
         match value {
             Value::Integer(n) => { self.push(b'+'); self.push_varint(zigzag_encode(*n)); }
             Value::Decimal { sig, exp } => {
                 self.push(b'+'); self.push_varint(zigzag_encode(*sig));
                 self.push(b'*'); self.push_varint(zigzag_encode(*exp));
             }
-            Value::String(s) => self.write_string(s),
+            Value::String(s) => { self.write_string(s); }
             Value::Ref(n) => { self.push(b'\''); self.push_str_rev(n.as_bytes()); }
             Value::Variable(n) => { self.push(b'$'); self.push_str_rev(n.as_bytes()); }
             Value::Opcode(n) => { self.push(b'%'); self.push_str_rev(n.as_bytes()); }
@@ -665,48 +663,54 @@ impl RevEncoder {
             Value::BreakCont(v) => { self.push(b'\\'); self.push_varint(*v as u64); }
             Value::Pointer(d) => { self.push(b'^'); self.push_varint(*d as u64); }
 
-            // Paired: closer, children reversed, opener
-            Value::Array(items) => { self.push(b']'); for i in items.iter().rev() { self.write(i); } self.push(b'['); }
-            Value::Object(pairs) => self.emit_object(pairs),
-            Value::Block(items) => { self.push(b'}'); for i in items.iter().rev() { self.write(i); } self.push(b'{'); }
-            Value::Call(items) => { self.push(b')'); for i in items.iter().rev() { self.write(i); } self.push(b'('); }
+            // Paired containers: closer, children, opener, [skip prefix]
+            Value::Array(items) => self.emit_paired(b'[', b']', skippable, |s| {
+                for i in items.iter().rev() { s.write(i, false); }
+            }),
+            Value::Object(pairs) => self.emit_object(pairs, skippable),
+            Value::Block(items) => self.emit_paired(b'{', b'}', skippable, |s| {
+                for i in items.iter().rev() { s.write(i, false); }
+            }),
+            Value::Call(items) => self.emit_paired(b'(', b')', skippable, |s| {
+                for i in items.iter().rev() { s.write(i, false); }
+            }),
 
-            // Compound: closer, children reversed, opener, modifier
-            Value::When(items) => self.emit_compound(b'?', b'(', b')', items),
-            Value::Unless(items) => self.emit_compound(b'!', b'(', b')', items),
-            Value::Or(items) => self.emit_compound(b'|', b'(', b')', items),
-            Value::And(items) => self.emit_compound(b'&', b'(', b')', items),
-            Value::ForIn(items) => self.emit_compound(b'>', b'(', b')', items),
-            Value::ForOf(items) => self.emit_compound(b'<', b'(', b')', items),
-            Value::While(items) => self.emit_compound(b'#', b'(', b')', items),
-            Value::ListCompIn(items) => self.emit_compound(b'>', b'[', b']', items),
-            Value::ListCompOf(items) => self.emit_compound(b'<', b'[', b']', items),
-            Value::ListCompWhile(items) => self.emit_compound(b'#', b'[', b']', items),
-            Value::MapCompIn(items) => self.emit_compound(b'>', b'{', b'}', items),
-            Value::MapCompOf(items) => self.emit_compound(b'<', b'{', b'}', items),
-            Value::MapCompWhile(items) => self.emit_compound(b'#', b'{', b'}', items),
+            // Compound: closer, children, opener, modifier, [skip prefix]
+            Value::When(items) => self.emit_compound(b'?', b'(', b')', items, skippable),
+            Value::Unless(items) => self.emit_compound(b'!', b'(', b')', items, skippable),
+            Value::Or(items) => self.emit_compound(b'|', b'(', b')', items, skippable),
+            Value::And(items) => self.emit_compound(b'&', b'(', b')', items, skippable),
+            Value::ForIn(items) => self.emit_compound(b'>', b'(', b')', items, skippable),
+            Value::ForOf(items) => self.emit_compound(b'<', b'(', b')', items, skippable),
+            Value::While(items) => self.emit_compound(b'#', b'(', b')', items, skippable),
+            Value::ListCompIn(items) => self.emit_compound(b'>', b'[', b']', items, skippable),
+            Value::ListCompOf(items) => self.emit_compound(b'<', b'[', b']', items, skippable),
+            Value::ListCompWhile(items) => self.emit_compound(b'#', b'[', b']', items, skippable),
+            Value::MapCompIn(items) => self.emit_compound(b'>', b'{', b'}', items, skippable),
+            Value::MapCompOf(items) => self.emit_compound(b'<', b'{', b'}', items, skippable),
+            Value::MapCompWhile(items) => self.emit_compound(b'#', b'{', b'}', items, skippable),
 
-            // Chain (template literal string concatenation)
+            // Chain (template literal string concatenation) — already has size tag
             Value::Chain(items) => {
                 let before = self.pos;
-                for item in items.iter().rev() { self.write(item); }
+                for item in items.iter().rev() { self.write(item, false); }
                 let body_len = self.pos - before;
                 self.push(b'.'); self.push_varint(body_len as u64);
             }
 
-            // Mutation: reversed order
-            Value::Set(p, v) => { self.write(v); self.write(p); self.push(b'='); }
-            Value::Swap(p, v) => { self.write(v); self.write(p); self.push(b'/'); }
-            Value::Delete(p) => { self.write(p); self.push(b'~'); }
+            // Mutation
+            Value::Set(p, v) => { self.write(v, false); self.write(p, false); self.push(b'='); }
+            Value::Swap(p, v) => { self.write(v, false); self.write(p, false); self.push(b'/'); }
+            Value::Delete(p) => { self.write(p, false); self.push(b'~'); }
             Value::Return(v) => {
-                self.write(v);
+                // Return is transparent — pass skip hint through to child
+                self.write(v, skippable);
                 self.push(b';');
             }
         }
     }
 
-    /// Emit a string, with dedup and chaining. Accepts `&str` to avoid
-    /// allocating `Value::String` temporaries for chain segments.
+    /// Write a string with dedup and chaining.
     pub fn write_string(&mut self, s: &str) {
         let sb = s.as_bytes();
 
@@ -718,15 +722,14 @@ impl RevEncoder {
             s.hash(&mut h);
             let key = h.finish();
 
-            if let Some(&(target_left, target_len, target_depth)) = self.seen.get(&key) {
-                if target_depth <= self.scope_depth {
-                    let delta = (self.pos - target_left) as u64;
-                    let ptr_size = varint_len(delta) + 1;
-                    if ptr_size < target_len {
-                        self.push(b'^');
-                        self.push_varint(delta);
-                        return;
-                    }
+            // Check if we've seen this string before
+            if let Some(&(target_pos, target_len)) = self.seen.get(&key) {
+                let delta = (self.pos - target_pos) as u64;
+                let ptr_size = varint_len(delta) + 1;
+                if ptr_size < target_len {
+                    self.push(b'^');
+                    self.push_varint(delta);
+                    return;
                 }
             }
 
@@ -750,7 +753,7 @@ impl RevEncoder {
                         self.push_varint(body_len as u64);
                         self.register_chain_prefixes(s);
                         let len = self.pos - start;
-                        self.seen.entry(key).or_insert((self.pos, len, self.scope_depth));
+                        self.seen.entry(key).or_insert((self.pos, len));
                         return;
                     }
                 }
@@ -763,7 +766,7 @@ impl RevEncoder {
             self.push_varint(sb.len() as u64);
 
             let len = self.pos - start;
-            self.seen.entry(key).or_insert((self.pos, len, self.scope_depth));
+            self.seen.entry(key).or_insert((self.pos, len));
         } else {
             // Tiny string — no dedup
             self.push_str_rev(sb);
@@ -786,7 +789,20 @@ impl RevEncoder {
         }
     }
 
-    fn emit_object(&mut self, pairs: &[(Value, Value)]) {
+    /// Emit a paired container: closer, body, opener, [skip prefix].
+    /// The skip prefix (body size) is added before the opener when skippable.
+    fn emit_paired(&mut self, open: u8, close: u8, skippable: bool, body: impl FnOnce(&mut Self)) {
+        let before = self.pos;
+        self.push(close);
+        body(self);
+        self.push(open);
+        if skippable {
+            let body_size = self.pos - before - 2; // exclude opener + closer
+            self.push_varint(body_size as u64);
+        }
+    }
+
+    fn emit_object(&mut self, pairs: &[(Value, Value)], skippable: bool) {
         if pairs.is_empty() {
             self.push(b'}');
             self.push(b'{');
@@ -797,23 +813,23 @@ impl RevEncoder {
 
         if let Some(&(schema_left, _schema_len)) = self.schemas.get(&schema) {
             // Schema match: emit values + pointer to schema, wrapped in {}
-            self.push(b'}');
-            for (_k, v) in pairs.iter().rev() {
-                self.write(v);
-            }
-            let delta = (self.pos - schema_left) as u64;
-            self.push(b'^');
-            self.push_varint(delta);
-            self.push(b'{');
+            self.emit_paired(b'{', b'}', skippable, |s| {
+                for (_k, v) in pairs.iter().rev() {
+                    s.write(v, false);
+                }
+                let delta = (s.pos - schema_left) as u64;
+                s.push(b'^');
+                s.push_varint(delta);
+            });
         } else {
             // First occurrence: encode all key-value pairs
             let before = self.pos;
-            self.push(b'}');
-            for (k, v) in pairs.iter().rev() {
-                self.write(v);
-                self.write(k);
-            }
-            self.push(b'{');
+            self.emit_paired(b'{', b'}', skippable, |s| {
+                for (k, v) in pairs.iter().rev() {
+                    s.write(v, false);
+                    s.write(k, false);
+                }
+            });
             let obj_len = self.pos - before;
             self.schemas.insert(schema, (self.pos, obj_len));
         }
@@ -831,43 +847,19 @@ impl RevEncoder {
         h.finish()
     }
 
-    fn emit_compound(&mut self, modifier: u8, open: u8, close: u8, items: &[Value]) {
-        // Conditional branches (when/unless/or/and) may be skipped at runtime,
-        // so values inside them must not be dedup targets for outer scopes.
+    fn emit_compound(&mut self, modifier: u8, open: u8, close: u8, items: &[Value], skippable: bool) {
         let is_conditional = matches!(modifier, b'?' | b'!' | b'|' | b'&');
-        if is_conditional { self.scope_depth += 1; }
+        let before = self.pos;
         self.push(close);
         for (i, item) in items.iter().enumerate().rev() {
-            if i > 0 && is_conditional {
-                self.write_skippable(item);
-            } else {
-                self.write(item);
-            }
+            // In conditionals, branches (index > 0) are skippable
+            self.write(item, i > 0 && is_conditional);
         }
         self.push(open);
         self.push(modifier);
-        if is_conditional { self.scope_depth -= 1; }
-    }
-
-    /// Write a value in a skip position. Containers get a length prefix.
-    /// Return is transparent — passes skip through to its child.
-    fn write_skippable(&mut self, value: &Value) {
-        match value {
-            Value::Return(child) => {
-                self.write_skippable(child);
-                self.push(b';');
-            }
-            v if is_container(v) => {
-                let before = self.pos;
-                self.write(v);
-                let full_len = self.pos - before;
-                let size = match v {
-                    Value::Block(_) | Value::Array(_) | Value::Object(_) | Value::Call(_) => full_len - 2,
-                    _ => full_len.saturating_sub(3),
-                };
-                self.push_varint(size as u64);
-            }
-            _ => self.write(value),
+        if skippable {
+            let body_size = self.pos - before - 3; // exclude modifier + opener + closer
+            self.push_varint(body_size as u64);
         }
     }
 }
