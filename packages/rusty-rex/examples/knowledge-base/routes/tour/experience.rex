@@ -68,6 +68,7 @@ instead of hanging the server. This is critical for running user-provided code s
 literals as lazy containers — bytecode spans only evaluated on access. When passed
 to opcodes, they arrived as opaque blobs the host couldn't read. The fix required
 adding <code>force_value()</code> to the interpreter at multiple points.</p>
+<pre>${hl-3}</pre>
 <p>The v2 bytecode migration solved this properly: containers are now <strong>eager by
 default</strong>. Laziness is opt-in via an explicit index marker. Object literals in
 handler code evaluate immediately — no workarounds needed. This was the single
