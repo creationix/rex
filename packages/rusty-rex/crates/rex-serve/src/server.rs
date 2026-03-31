@@ -150,18 +150,25 @@ async fn ws_reload_connection(
 
 /// WebSocket handler for pub/sub channels.
 /// Clients connect to /__ws/{channel} and send/receive JSON messages.
+/// If `routes/_ws/{channel}.rex` exists, each message is transformed through it.
 async fn ws_pubsub_handler(
     ws: axum::extract::WebSocketUpgrade,
     axum::extract::Path(channel): axum::extract::Path<String>,
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::response::Response {
-    ws.on_upgrade(move |socket| ws_pubsub_connection(socket, channel, state))
+    // Check for a channel-specific Rex transform script
+    let transform = {
+        let table = state.route_table.read().await;
+        table.ws_transforms.get(&channel).cloned()
+    };
+    ws.on_upgrade(move |socket| ws_pubsub_connection(socket, channel, state, transform))
 }
 
 async fn ws_pubsub_connection(
     mut socket: axum::extract::ws::WebSocket,
     channel: String,
     state: Arc<AppState>,
+    transform: Option<String>,
 ) {
     use axum::extract::ws::Message;
 
@@ -189,12 +196,18 @@ async fn ws_pubsub_connection(
                     Err(_) => break,
                 }
             }
-            // Client message → publish to channel
+            // Client message → transform via Rex (if script exists) → publish
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        let store = state.kv.lock().unwrap();
-                        store.publish(&channel, &text);
+                        let output = match &transform {
+                            Some(bytecode) => run_ws_transform(bytecode, &text, &state),
+                            None => Some(text.to_string()),
+                        };
+                        if let Some(data) = output {
+                            let store = state.kv.lock().unwrap();
+                            store.publish(&channel, &data);
+                        }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
@@ -203,6 +216,52 @@ async fn ws_pubsub_connection(
         }
     }
     tracing::debug!("pub/sub client disconnected from channel: {channel}");
+}
+
+/// Run a Rex transform script on a WebSocket message.
+/// The script receives `event.data` (the raw message string).
+/// Returns the transformed message string, or None to suppress.
+fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<String> {
+    use rex_core::interpret::{Context, RexValue};
+    use std::collections::HashMap;
+
+    let mut vars = HashMap::new();
+    vars.insert("event".into(), RexValue::Object(vec![
+        ("data".into(), RexValue::Str(data.to_string())),
+    ]));
+
+    let opcodes = crate::opcodes::build_opcodes(
+        state.db.clone(),
+        state.project_root.clone(),
+        state.kv.clone(),
+    );
+
+    let ctx = Context {
+        refs: HashMap::new(),
+        vars,
+        host_objects: vec![],
+        opcodes,
+        gas_limit: state.config.server.gas_limit,
+    };
+
+    match rex_core::interpret::run(bytecode, ctx) {
+        Ok(result) => {
+            match &result.value {
+                RexValue::RexNone => None, // suppress message
+                RexValue::Str(s) => Some(s.clone()),
+                RexValue::Object(_) | RexValue::Array(_) => {
+                    // Auto-serialize objects/arrays to JSON
+                    let json = crate::refs::rex_value_to_json(&result.value);
+                    Some(json.to_string())
+                }
+                other => Some(crate::refs::rex_value_to_string(other)),
+            }
+        }
+        Err(e) => {
+            tracing::error!("ws transform error: {e}");
+            Some(data.to_string()) // pass through on error
+        }
+    }
 }
 
 async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {

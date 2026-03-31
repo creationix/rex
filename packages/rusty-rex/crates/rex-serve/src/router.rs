@@ -54,6 +54,9 @@ pub struct RouteTable {
     pub routes: Vec<CompiledRoute>,
     pub middlewares: Vec<CompiledMiddleware>,
     pub static_files: Vec<StaticFile>,
+    /// WebSocket transform scripts: channel name → compiled bytecode.
+    /// Loaded from `_ws/{channel}.rex` files.
+    pub ws_transforms: std::collections::HashMap<String, String>,
 }
 
 /// Result of matching a request path against the route table.
@@ -68,6 +71,25 @@ impl RouteTable {
         let mut routes = Vec::new();
         let mut middlewares = Vec::new();
         let mut static_files = Vec::new();
+        let mut ws_transforms = std::collections::HashMap::new();
+
+        // Scan _ws/ directory for WebSocket transform scripts
+        let ws_dir = routes_dir.join("_ws");
+        if ws_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&ws_dir) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let path = entry.path();
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.ends_with(".rex") && path.is_file() {
+                        let channel = name.trim_end_matches(".rex").to_string();
+                        let source = std::fs::read_to_string(&path).unwrap_or_default();
+                        let bytecode = rex_core::compile(&source);
+                        tracing::info!("  ws transform: {channel} ← {}", path.display());
+                        ws_transforms.insert(channel, bytecode);
+                    }
+                }
+            }
+        }
 
         scan_directory(routes_dir, routes_dir, &mut routes, &mut middlewares, &mut static_files);
 
@@ -77,7 +99,7 @@ impl RouteTable {
         // Sort middlewares by depth (root first)
         middlewares.sort_by_key(|m| m.depth);
 
-        RouteTable { routes, middlewares, static_files }
+        RouteTable { routes, middlewares, static_files, ws_transforms }
     }
 
     /// Match a request path against the route table.
