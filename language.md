@@ -166,6 +166,15 @@ obj.key = "value"
 headers.x-handler = handler
 ```
 
+An optional type annotation can follow the name, using `: Type`:
+
+```rex
+lookup: {*: integer} = {a: 1, b: 2, c: 3}
+items: [string] = []
+```
+
+Type annotations are consumed by the type checker only — the compiler and interpreter ignore them.
+
 `:=` is swap assignment: it writes the new value and returns the previous value.
 
 ```rex

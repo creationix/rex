@@ -262,7 +262,17 @@ impl<'s, 'c> Parser<'s, 'c> {
         let cp = self.checkpoint();
         self.parse_pratt_expr(0);
 
-        if is_assign_op(self.current()) {
+        if self.current() == SyntaxKind::Colon {
+            // Type-annotated assignment: name: Type = value
+            self.start_node_at(cp, SyntaxKind::AssignExpr);
+            self.bump(); // :
+            self.parse_expr(); // type expression
+            if self.eat(SyntaxKind::Eq) {
+                self.parse_assign_expr(); // value (right-assoc)
+            }
+            // If no `=` follows, this is a bare type annotation (e.g., function args)
+            self.finish_node();
+        } else if is_assign_op(self.current()) {
             self.start_node_at(cp, SyntaxKind::AssignExpr);
             self.bump(); // operator
             self.parse_assign_expr(); // right-assoc

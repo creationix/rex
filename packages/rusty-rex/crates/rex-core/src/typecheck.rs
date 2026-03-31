@@ -336,29 +336,15 @@ fn extract_extern_function(
 /// Extract function arguments from the raw tokens between ( and ).
 /// Handles `name: Type` pairs separated by commas, and `...name: Type` rest params.
 ///
-/// The parser produces Error nodes for `:` tokens inside call args (since `:` isn't
-/// an expression operator). We flatten Error nodes to find the Colon inside.
+/// The parser now parses `name: Type` as an AssignExpr (type annotation without `= value`).
+/// Each arg is either an AssignExpr node containing [name, Colon, type] or flat tokens.
 fn extract_function_args(
     tokens: &[rowan::NodeOrToken<SyntaxNode, SyntaxToken>],
 ) -> (Vec<(String, Type)>, Option<(String, Type)>) {
-    // Flatten: expand Error nodes into their child tokens
-    let flat: Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>> = tokens.iter()
-        .flat_map(|t| {
-            if let Some(n) = as_node(t) {
-                if n.kind() == SyntaxKind::Error {
-                    return n.children_with_tokens()
-                        .filter(|c| c.as_token().map_or(true, |t| !t.kind().is_trivia()))
-                        .collect::<Vec<_>>();
-                }
-            }
-            vec![t.clone()]
-        })
-        .collect();
-
     let mut args = Vec::new();
     let mut rest = Option::None;
 
-    let groups = split_by_comma(&flat);
+    let groups = split_by_comma(tokens);
 
     for group in groups {
         if group.is_empty() { continue; }
@@ -368,24 +354,65 @@ fn extract_function_args(
             && as_token_kind(&group[0]) == Some(SyntaxKind::DotDot)
             && as_token_kind(&group[1]) == Some(SyntaxKind::Dot);
 
-        let param_tokens = if is_rest { &group[2..] } else { &group[..] };
+        let param_start = if is_rest { 2 } else { 0 };
+        if param_start >= group.len() { continue; }
 
-        // Find colon to split name and type
-        let colon_idx = param_tokens.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::Colon));
-        if let Some(ci) = colon_idx {
-            let name_parts: Vec<_> = param_tokens[..ci].to_vec();
-            let name = extract_dotted_name(&name_parts).unwrap_or_default();
-            let type_parts: Vec<_> = param_tokens[ci + 1..].to_vec();
-            let ty = interpret_type_expr_from_children(&type_parts);
-            if is_rest {
-                rest = Some((name, ty));
+        // Try to extract name: Type from the group
+        let (name, ty) = if let Some(n) = as_node(&group[param_start]) {
+            if n.kind() == SyntaxKind::AssignExpr {
+                // AssignExpr contains: [name, Colon, type-expr, ...]
+                extract_typed_param(n)
             } else {
-                args.push((name, ty));
+                continue;
             }
+        } else {
+            // Flat tokens — flatten Error nodes and find Colon
+            let flat: Vec<_> = group[param_start..].iter()
+                .flat_map(|t| {
+                    if let Some(n) = as_node(t) {
+                        if n.kind() == SyntaxKind::Error {
+                            return n.children_with_tokens()
+                                .filter(|c| c.as_token().map_or(true, |t| !t.kind().is_trivia()))
+                                .collect::<Vec<_>>();
+                        }
+                    }
+                    vec![t.clone()]
+                })
+                .collect();
+            let colon_idx = flat.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::Colon));
+            if let Some(ci) = colon_idx {
+                let name = extract_dotted_name(&flat[..ci]).unwrap_or_default();
+                let ty = interpret_type_expr_from_children(&flat[ci + 1..]);
+                (name, ty)
+            } else {
+                continue;
+            }
+        };
+
+        if is_rest {
+            rest = Some((name, ty));
+        } else {
+            args.push((name, ty));
         }
     }
 
     (args, rest)
+}
+
+/// Extract name and type from an AssignExpr node that represents `name: Type`.
+fn extract_typed_param(node: &SyntaxNode) -> (String, Type) {
+    let children: Vec<_> = non_trivia_children(node).collect();
+    let colon_idx = children.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::Colon));
+    if let Some(ci) = colon_idx {
+        let name = extract_dotted_name(&children[..ci]).unwrap_or_default();
+        // Type is after colon, but before `=` if present (it won't be for function args)
+        let eq_idx = children[ci + 1..].iter().position(|c| as_token_kind(c) == Some(SyntaxKind::Eq));
+        let type_end = eq_idx.map_or(children.len(), |ei| ci + 1 + ei);
+        let ty = interpret_type_expr_from_children(&children[ci + 1..type_end]);
+        (name, ty)
+    } else {
+        (String::new(), Type::unknown())
+    }
 }
 
 /// Split a token slice by Comma tokens into owned groups.
