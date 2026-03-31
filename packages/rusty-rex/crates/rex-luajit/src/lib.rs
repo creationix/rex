@@ -9,6 +9,7 @@
 
 use std::os::raw::{c_char, c_int, c_double};
 mod ffi;
+pub mod eval;
 
 use rex_core::bytecode::{self, Value};
 
