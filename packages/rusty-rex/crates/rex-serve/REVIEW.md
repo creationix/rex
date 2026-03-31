@@ -56,12 +56,19 @@ The v2 bytecode migration fixed this: containers are **eager by default**, with 
 - [x] Bytecode v2: eager by default, lazy opt-in via index marker
 - [x] `force_value()` workarounds removed from interpreter
 
-### Pointer deduplication interacts badly with skipped branches (open bug)
+### Pointer deduplication interacts badly with skipped branches (fixed)
 
-The bytecode encoder's pointer deduplication creates references across conditional branches. When a pointer's target is inside a skipped `when`/`unless` branch, the interpreter misreads the bytecode. This persists after the v2 migration — the issue is in the encoder, not the format. Workaround: rex-serve uses `compile_no_dedup()`.
+The interpreter had two bugs triggered by pointer deduplication:
 
-- [ ] Restrict deduplication to same-scope values (never cross conditional boundaries)
-- [ ] Remove `compile_no_dedup` workaround from rex-serve
+1. **Object key disambiguation** — when a deduped string key (like `"ok"`) appeared as a pointer at the start of `{...}`, the interpreter misidentified it as a schema pointer instead of a regular object key. Fixed by evaluating the pointer and dispatching based on the resolved type.
+
+2. **Set-via-pointer** — when a navigation place like `(res$6,status)` was deduped to a pointer, `eval_set` didn't recognize the `^` tag and silently skipped the write. `res.status = 401` became a no-op. Fixed by following the pointer and re-dispatching the set operation.
+
+Both were interpreter bugs, not encoder bugs — the pointers were correct, the interpreter just didn't handle them in all positions. 13 regression tests added.
+
+- [x] Fixed in interpreter: eval_block resolves pointers before disambiguating
+- [x] Fixed in interpreter: eval_set follows pointer places
+- [x] `compile_no_dedup` workaround removed, rex-serve uses `compile()` with full dedup
 
 ### No early return means sequential blocks override each other (fixed: `return`)
 
