@@ -641,7 +641,7 @@ fn highlight_rex_source(source: &str) -> String {
             }
 
             // Declaration keywords
-            TokenKind::KwExtern | TokenKind::KwType | TokenKind::KwReturn => Some("kw"),
+            TokenKind::KwExtern | TokenKind::KwType => Some("kw"),
 
             // Whitespace, errors
             TokenKind::Whitespace | TokenKind::Error => None,
