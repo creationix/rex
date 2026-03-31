@@ -74,6 +74,48 @@ In object syntax, bare identifier-like keys are always literal strings. Use pare
 {(name): "Rex"}               // key is value of variable name
 ```
 
+### Template Literals
+
+Backtick-delimited strings with `${expr}` interpolation. No quote escaping needed:
+
+```rex
+`hello ${name}, you have ${count} items`
+`he said "hello" and she said 'goodbye'`
+```
+
+Template literals support nesting — backticks inside `${}` are tracked correctly:
+
+```rex
+`outer ${`inner ${x}`} end`
+```
+
+A template with no interpolations is just a convenient string syntax:
+
+```rex
+`no escaping "needed" here`    // equivalent to "no escaping \"needed\" here"
+```
+
+### Tagged Template Literals
+
+An identifier immediately before the backtick creates a tagged template. The tag receives the static string parts as an array and the interpolated values as separate arguments:
+
+```rex
+html`<p>${user-input}</p>`     // tag function receives (["<p>", "</p>"], user-input)
+sql`SELECT * FROM ${table}`    // tag function receives (["SELECT * FROM ", ""], table)
+```
+
+Tags enable safe-by-construction patterns: the tag function can escape interpolated values while leaving static parts unchanged. For example, an `html` tag could auto-escape to prevent XSS.
+
+When composing tagged results, use untagged backticks for the outer template to avoid double-escaping:
+
+```rex
+list = ""
+for name in items do
+  list = list + html`<li>${name}</li>`    // escapes user data
+end
+`<ul>${list}</ul>`                         // list is already safe HTML
+```
+
 ## Comments
 
 ```rex
@@ -768,15 +810,38 @@ end
 
 **Literals:** `true`, `false`, `null`, `undefined`, `self`
 
-**Control flow:** `when`, `unless`, `for`, `in`, `of`, `do`, `else`, `end`, `break`, `continue`, `and`, `or`, `nor`
+**Control flow:** `when`, `unless`, `for`, `in`, `of`, `do`, `else`, `end`, `break`, `continue`, `and`, `or`, `nor`, `return`
 
 **Place operations:** `delete`
 
 **Type predicates:** `string`, `number`, `object`, `array`, `boolean`
 
+**Declarations:** `type`, `extern`
+
+### `type` — define a named type alias
+
+```rex
+type Headers = {*: string | [string]}
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE"
+```
+
+`type` followed by an identifier, `=`, and a type expression. Used in `.rexd` domain interface files. The compiler and interpreter ignore type declarations — they are consumed by the type checker.
+
+### `extern` — declare a host-provided binding
+
+```rex
+extern config = unknown
+extern req = {method: HttpMethod, path: string, headers: Headers}
+extern mut res = {status: integer, headers: Headers}
+extern json.parse(text: string) = some
+extern log.info(message: some)
+```
+
+`extern` followed by an optional `mut`, then either a name + `=` + type expression (global declaration) or a dotted call expression (function signature) optionally followed by `=` + return type. `mut` is contextual — only recognized after `extern`, otherwise it is a regular identifier.
+
 ## Extension Points
 
-Domain extensions are defined in `.config.rex` and expose navigable places/opcodes that the compiler recognizes as keywords. For example, an HTTP routing domain might add:
+Domain extensions are defined in `.rexd` files and expose navigable places/opcodes that the compiler recognizes as keywords. For example, an HTTP routing domain might add:
 
 ```rex
 // Domain places — navigable with dot and .()
@@ -812,7 +877,7 @@ Rex resolves unqualified names in a strict order:
 
 1. **Reserved words** (language keywords/literals)
 2. **Local bindings** created in the current lexical scope
-3. **Domain symbols** provided by `.config.rex`
+3. **Domain symbols** provided by `.rexd`
 4. **Error** if no match exists
 
 Local bindings intentionally shadow domain symbols with the same name.

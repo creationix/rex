@@ -17,6 +17,7 @@ pub enum SyntaxKind {
     KwDo,
     KwElse,
     KwEnd,
+    KwExtern,
     KwFalse,
     KwFor,
     KwIn,
@@ -32,6 +33,7 @@ pub enum SyntaxKind {
     KwSelf,
     KwString,
     KwTrue,
+    KwType,
     KwNone,
     KwUnless,
     KwWhen,
@@ -42,6 +44,7 @@ pub enum SyntaxKind {
     DecimalNumber,
     DoubleString,
     SingleString,
+    TemplateLiteral,
     ColonEq,
     EqEq,
     BangEq,
@@ -105,6 +108,9 @@ pub enum SyntaxKind {
     ObjectComprehension,
     Pair,
     IterBinding,
+    TemplateExpr,
+    TypeDecl,
+    ExternDecl,
 
     /// Rowan requires a dedicated root kind.
     Root,
@@ -164,6 +170,12 @@ mod tests {
             SyntaxKind::from(TokenKind::Whitespace),
             SyntaxKind::Whitespace
         );
+    }
+
+    #[test]
+    fn new_keywords_convert() {
+        assert_eq!(SyntaxKind::from(TokenKind::KwType), SyntaxKind::KwType);
+        assert_eq!(SyntaxKind::from(TokenKind::KwExtern), SyntaxKind::KwExtern);
     }
 
     #[test]
