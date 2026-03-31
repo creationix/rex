@@ -843,7 +843,7 @@ mod tests {
         assert!(schema.globals.contains_key("req"));
         assert!(!schema.globals.get("req").unwrap().mutable);
         assert!(schema.globals.contains_key("res"));
-        assert!(schema.globals.get("res").unwrap().mutable);
+        assert!(!schema.globals.get("res").unwrap().mutable); // binding is not mut; fields are
         assert!(schema.globals.contains_key("config"));
 
         // Functions

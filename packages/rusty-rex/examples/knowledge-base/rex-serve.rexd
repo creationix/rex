@@ -52,12 +52,12 @@ extern params = {*: string | [string]}
 
 // ── Response (mutable) ─────────────────────────────────────────────────
 
-// HTTP response. Mutable — set status, headers, and body to control the response.
-extern mut res = {
+// HTTP response. Per-field mutability — set status and headers to control the response.
+extern res = {
   // Response status code (default: 200)
-  status: integer
+  mut status: integer
   // Response headers
-  headers: Headers
+  mut headers: {mut *: string | [string]}
 }
 
 // Response status code (shorthand for res.status)

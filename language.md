@@ -789,12 +789,13 @@ type HttpMethod = "GET" | "POST" | "PUT" | "DELETE"
 ```rex
 extern config = unknown
 extern req = {method: HttpMethod, path: string, headers: Headers}
-extern mut res = {status: integer, headers: Headers}
+extern res = {mut status: integer, mut headers: {mut *: string}}
+extern mut status = integer
 extern json.parse(text: string) = some
 extern log.info(message: some)
 ```
 
-`extern` followed by an optional `mut`, then either a name + `=` + type expression (global declaration) or a dotted call expression (function signature) optionally followed by `=` + return type. `mut` is contextual — only recognized after `extern`, otherwise it is a regular identifier.
+`extern` declares a host-provided binding with a type. Everything is read-only by default. `mut` controls writability — on the binding (`extern mut name`) for reassignment, or on individual fields (`mut field: T`) and map wildcards (`mut *: T`) for property writes. `mut` is contextual — only recognized in declaration positions, otherwise it is a regular identifier.
 
 ## Extension Points
 
