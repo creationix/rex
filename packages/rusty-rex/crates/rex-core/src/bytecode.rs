@@ -282,6 +282,7 @@ pub fn encode_dedup(value: &Value) -> String {
         prefixes: std::collections::HashSet::new(),
         node_counts,
         value_hashes: std::collections::HashMap::new(),
+        scope_depth: 0,
     };
     enc.write(value);
     enc.buf.reverse();
@@ -337,13 +338,17 @@ const CHAIN_THRESHOLD: usize = 8;
 pub struct RevEncoder {
     buf: Vec<u8>,
     pos: usize,
-    seen: std::collections::HashMap<u64, (usize, usize)>,
+    /// hash → (rev_left, encoded_len, scope_depth)
+    seen: std::collections::HashMap<u64, (usize, usize, u32)>,
     /// schema hash → (rev_start, len) of the first object with that key layout
     schemas: std::collections::HashMap<u64, (usize, usize)>,
     /// known string prefixes (delimiter-split) for chain dedup
     prefixes: std::collections::HashSet<String>,
     node_counts: std::collections::HashMap<*const Value, usize>,
     value_hashes: std::collections::HashMap<*const Value, u64>,
+    /// Current conditional nesting depth. Pointers may only reference
+    /// targets recorded at the same or lower (ancestor) depth.
+    scope_depth: u32,
 }
 
 impl RevEncoder {
@@ -355,8 +360,9 @@ impl RevEncoder {
             seen: std::collections::HashMap::new(),
             schemas: std::collections::HashMap::new(),
             prefixes: std::collections::HashSet::new(),
-                node_counts: std::collections::HashMap::new(),
+            node_counts: std::collections::HashMap::new(),
             value_hashes: std::collections::HashMap::new(),
+            scope_depth: 0,
         }
     }
 
@@ -444,26 +450,23 @@ impl RevEncoder {
         }
 
         if let Some(key) = self.dedup_key(value) {
-            if let Some(&(target_left, target_len)) = self.seen.get(&key) {
-                // In rev coords: target_left = self.pos after writing target.
-                // Current self.pos = where pointer starts.
-                // In fwd coords after reversal:
-                //   pointer_right = total - self.pos
-                //   target_left = total - target_left
-                //   delta = pointer_right - target_left_fwd
-                let delta = (self.pos - target_left) as u64;
-                let ptr_size = varint_len(delta) + 1;
-                if ptr_size < target_len {
-                    self.push(b'^');
-                    self.push_varint(delta);
-                    return;
+            if let Some(&(target_left, target_len, target_depth)) = self.seen.get(&key) {
+                // Only deduplicate if the target is at the same or ancestor scope.
+                // Cross-branch pointers cause bugs when the target branch is skipped.
+                if target_depth <= self.scope_depth {
+                    let delta = (self.pos - target_left) as u64;
+                    let ptr_size = varint_len(delta) + 1;
+                    if ptr_size < target_len {
+                        self.push(b'^');
+                        self.push_varint(delta);
+                        return;
+                    }
                 }
             }
             let start = self.pos;
             self.emit(value);
             let len = self.pos - start;
-            // Record left edge (self.pos after writing) and length
-            self.seen.entry(key).or_insert((self.pos, len));
+            self.seen.entry(key).or_insert((self.pos, len, self.scope_depth));
         } else {
             self.emit(value);
         }
@@ -554,13 +557,15 @@ impl RevEncoder {
             s.hash(&mut h);
             let key = h.finish();
 
-            if let Some(&(target_left, target_len)) = self.seen.get(&key) {
-                let delta = (self.pos - target_left) as u64;
-                let ptr_size = varint_len(delta) + 1;
-                if ptr_size < target_len {
-                    self.push(b'^');
-                    self.push_varint(delta);
-                    return;
+            if let Some(&(target_left, target_len, target_depth)) = self.seen.get(&key) {
+                if target_depth <= self.scope_depth {
+                    let delta = (self.pos - target_left) as u64;
+                    let ptr_size = varint_len(delta) + 1;
+                    if ptr_size < target_len {
+                        self.push(b'^');
+                        self.push_varint(delta);
+                        return;
+                    }
                 }
             }
 
@@ -576,7 +581,6 @@ impl RevEncoder {
                     };
                     if offset == 0 { break; }
                     if self.prefixes.contains(&s[..offset]) {
-                        // Chain: [suffix][prefix] then `.` tag
                         let before = self.pos;
                         self.write_string(&s[offset..]);
                         self.write_string(&s[..offset]);
@@ -585,7 +589,7 @@ impl RevEncoder {
                         self.push_varint(body_len as u64);
                         self.register_chain_prefixes(s);
                         let len = self.pos - start;
-                        self.seen.entry(key).or_insert((self.pos, len));
+                        self.seen.entry(key).or_insert((self.pos, len, self.scope_depth));
                         return;
                     }
                 }
@@ -598,7 +602,7 @@ impl RevEncoder {
             self.push_varint(sb.len() as u64);
 
             let len = self.pos - start;
-            self.seen.entry(key).or_insert((self.pos, len));
+            self.seen.entry(key).or_insert((self.pos, len, self.scope_depth));
         } else {
             // Tiny string — no dedup
             self.push_str_rev(sb);
@@ -667,10 +671,15 @@ impl RevEncoder {
     }
 
     fn emit_compound(&mut self, modifier: u8, open: u8, close: u8, items: &[Value]) {
+        // Conditional branches (when/unless/or/and) may be skipped at runtime,
+        // so values inside them must not be dedup targets for outer scopes.
+        let is_conditional = matches!(modifier, b'?' | b'!' | b'|' | b'&');
+        if is_conditional { self.scope_depth += 1; }
         self.push(close);
         for item in items.iter().rev() { self.write(item); }
         self.push(open);
         self.push(modifier);
+        if is_conditional { self.scope_depth -= 1; }
     }
 }
 
@@ -1546,6 +1555,36 @@ mod tests {
             deduped.len(),
             normal.len()
         );
+    }
+
+    #[test]
+    fn dedup_no_cross_branch_pointers() {
+        // Duplicate values in different conditional branches must not be
+        // deduplicated — the pointer target may be in a skipped branch.
+        let shared = Value::String("shared-value".into());
+        let v = Value::Block(vec![
+            Value::Unless(vec![
+                Value::Variable("x".into()),
+                shared.clone(),
+            ]),
+            Value::When(vec![
+                Value::Variable("x".into()),
+                shared.clone(),
+            ]),
+        ]);
+        let deduped = encode_dedup(&v);
+        // Both branches should contain the full string, not a pointer
+        let decoded = decode(&deduped).unwrap();
+        if let Value::Block(items) = &decoded {
+            if let Value::Unless(u_items) = &items[0] {
+                assert_eq!(u_items[1], Value::String("shared-value".into()));
+            }
+            if let Value::When(w_items) = &items[1] {
+                assert_eq!(w_items[1], Value::String("shared-value".into()));
+            }
+        } else {
+            panic!("expected Block");
+        }
     }
 
     #[test]
