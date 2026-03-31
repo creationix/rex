@@ -428,3 +428,84 @@ fn roundtrip_fibonacci_simplified() {
         ]),
     ]));
 }
+
+// ── Length-prefixed conditional branches ───────────────────────────────
+
+#[test]
+fn roundtrip_when_with_block_branches() {
+    // Multi-expression blocks survive full roundtrip
+    roundtrip(Value::When(vec![
+        Value::Variable("x".into()),
+        Value::Block(vec![Value::Integer(1), Value::Integer(2)]),
+        Value::Block(vec![Value::Integer(3), Value::Integer(4)]),
+    ]));
+}
+
+#[test]
+fn roundtrip_unless_with_block_branch() {
+    roundtrip(Value::Unless(vec![
+        Value::Variable("x".into()),
+        Value::Block(vec![
+            Value::Set(
+                Box::new(Value::Variable("y".into())),
+                Box::new(Value::Integer(42)),
+            ),
+            Value::Variable("y".into()),
+        ]),
+    ]));
+}
+
+#[test]
+fn roundtrip_or_with_array_branch() {
+    roundtrip(Value::Or(vec![
+        Value::Variable("a".into()),
+        Value::Array(vec![Value::Integer(1), Value::Integer(2)]),
+    ]));
+}
+
+#[test]
+fn roundtrip_and_with_call_branch() {
+    roundtrip(Value::And(vec![
+        Value::Variable("a".into()),
+        Value::Call(vec![
+            Value::Opcode("ad".into()),
+            Value::Variable("a".into()),
+            Value::Integer(1),
+        ]),
+    ]));
+}
+
+#[test]
+fn roundtrip_nested_conditionals_with_blocks() {
+    roundtrip(Value::When(vec![
+        Value::Variable("x".into()),
+        Value::Unless(vec![
+            Value::Variable("y".into()),
+            Value::Integer(99),
+        ]),
+        Value::Integer(0),
+    ]));
+}
+
+// ── Return ─────────────────────────────────────────────────────────────
+
+#[test]
+fn roundtrip_return() {
+    roundtrip(Value::Return(Box::new(Value::Integer(42))));
+}
+
+#[test]
+fn roundtrip_bare_return() {
+    roundtrip(Value::Return(Box::new(Value::Ref("no".into()))));
+}
+
+#[test]
+fn roundtrip_return_in_block() {
+    roundtrip(Value::Block(vec![
+        Value::When(vec![
+            Value::Variable("x".into()),
+            Value::Return(Box::new(Value::Integer(1))),
+        ]),
+        Value::Integer(2),
+    ]));
+}

@@ -118,6 +118,7 @@ pub enum Value {
     Set(Box<Value>, Box<Value>),
     Swap(Box<Value>, Box<Value>),
     Delete(Box<Value>),
+    Return(Box<Value>),
 }
 
 // ── Encoder ─────────────────────────────────────────────────────────────
@@ -217,6 +218,10 @@ fn encode_into(value: &Value, out: &mut String) {
             out.push('~');
             encode_into(place, out);
         }
+        Value::Return(val) => {
+            out.push(';');
+            encode_into(val, out);
+        }
     }
 }
 
@@ -240,15 +245,167 @@ fn encode_paired(open: char, close: char, items: &[Value], out: &mut String) {
     out.push(close);
 }
 
-fn encode_compound(modifier: char, open: char, close: char, items: &[Value], out: &mut String) {
+// ── Indexed container encoding ─────────────────────────────────────────
+
+/// Minimum b64 digits needed to represent `n`. Always at least 1.
+fn b64_width(n: u64) -> usize {
+    varint_len(n).max(1)
+}
+
+/// Encode `n` as exactly `width` b64 digits (zero-padded on the left).
+fn encode_fixed_b64(n: u64, width: usize, out: &mut String) {
+    let mut digits = [b'0'; 8];
+    let mut val = n;
+    for i in (0..width).rev() {
+        digits[i] = B64[(val % 64) as usize];
+        val /= 64;
+    }
+    for &d in &digits[..width] {
+        out.push(d as char);
+    }
+}
+
+/// Decode a fixed-width b64 number from `width` bytes at `pos`.
+fn decode_fixed_b64(input: &[u8], pos: &mut usize, width: usize) -> u64 {
+    let mut n: u64 = 0;
+    for _ in 0..width {
+        if *pos < input.len() {
+            n = n * 64 + b64_val(input[*pos]).unwrap_or(0) as u64;
+            *pos += 1;
+        }
+    }
+    n
+}
+
+/// Encode an array with an index for random access.
+/// Format: `[ <packed># <pointers> <elements> ]`
+pub fn encode_indexed_array(items: &[Value]) -> String {
+    let mut out = String::new();
+    encode_indexed_array_into(items, &mut out);
+    out
+}
+
+fn encode_indexed_array_into(items: &[Value], out: &mut String) {
+    if items.is_empty() {
+        out.push_str("[]");
+        return;
+    }
+
+    // Encode all elements, tracking start offsets
     let mut body = String::new();
+    let mut offsets = Vec::with_capacity(items.len());
     for item in items {
+        offsets.push(body.len());
         encode_into(item, &mut body);
     }
+
+    // Pointer width = min b64 digits for the largest offset
+    let max_offset = *offsets.last().unwrap();
+    let width = b64_width(max_offset as u64);
+
+    // packed = (count << 3) | (width - 1)
+    let packed = ((items.len() as u64) << 3) | ((width as u64) - 1);
+
+    out.push('[');
+    out.push_str(&encode_varint(packed));
+    out.push('#');
+    for &offset in &offsets {
+        encode_fixed_b64(offset as u64, width, out);
+    }
+    out.push_str(&body);
+    out.push(']');
+}
+
+/// Encode an object with an index for random access.
+/// Pointers are sorted by encoded key for O(log n) binary search.
+/// Format: `{ <packed># <sorted-pointers> <key0><val0>... }`
+pub fn encode_indexed_object(pairs: &[(Value, Value)]) -> String {
+    let mut out = String::new();
+    encode_indexed_object_into(pairs, &mut out);
+    out
+}
+
+fn encode_indexed_object_into(pairs: &[(Value, Value)], out: &mut String) {
+    if pairs.is_empty() {
+        out.push_str("{}");
+        return;
+    }
+
+    // Encode all key-value pairs in original order, tracking offsets and keys
+    let mut body = String::new();
+    let mut offsets = Vec::with_capacity(pairs.len());
+    let mut encoded_keys: Vec<String> = Vec::with_capacity(pairs.len());
+    for (k, v) in pairs {
+        let pair_start = body.len();
+        let key_start = body.len();
+        encode_into(k, &mut body);
+        encoded_keys.push(body[key_start..].to_string());
+        encode_into(v, &mut body);
+        offsets.push(pair_start);
+    }
+
+    // Sort indices by encoded key bytes
+    let mut sorted: Vec<usize> = (0..pairs.len()).collect();
+    sorted.sort_by(|&a, &b| encoded_keys[a].as_bytes().cmp(encoded_keys[b].as_bytes()));
+
+    let max_offset = *offsets.iter().max().unwrap();
+    let width = b64_width(max_offset as u64);
+    let packed = ((pairs.len() as u64) << 3) | ((width as u64) - 1);
+
+    out.push('{');
+    out.push_str(&encode_varint(packed));
+    out.push('#');
+    for &idx in &sorted {
+        encode_fixed_b64(offsets[idx] as u64, width, out);
+    }
+    out.push_str(&body);
+    out.push('}');
+}
+
+fn encode_compound(modifier: char, open: char, close: char, items: &[Value], out: &mut String) {
     out.push(modifier);
     out.push(open);
-    out.push_str(&body);
+    let is_cond = is_conditional_modifier(modifier);
+    for (i, item) in items.iter().enumerate() {
+        encode_skippable(item, is_cond && i > 0, out);
+    }
     out.push(close);
+}
+
+fn is_conditional_modifier(modifier: char) -> bool {
+    matches!(modifier, '?' | '!' | '|' | '&')
+}
+
+/// Containers that lack a built-in size prefix and need one for O(1) skipping.
+fn is_container(value: &Value) -> bool {
+    matches!(value, Value::Block(_) | Value::Array(_) | Value::Object(_) | Value::Call(_)
+        | Value::When(_) | Value::Unless(_) | Value::Or(_) | Value::And(_)
+        | Value::ForIn(_) | Value::ForOf(_) | Value::While(_)
+        | Value::ListCompIn(_) | Value::ListCompOf(_) | Value::ListCompWhile(_)
+        | Value::MapCompIn(_) | Value::MapCompOf(_) | Value::MapCompWhile(_))
+}
+
+/// Encode a value. When `skip` is true, containers get a length prefix
+/// for O(1) skipping. Return is transparent — it passes `skip` through
+/// to its child (`;` itself never gets a size prefix).
+fn encode_skippable(value: &Value, skip: bool, out: &mut String) {
+    match value {
+        Value::Return(child) if skip => {
+            out.push(';');
+            encode_skippable(child, true, out);
+        }
+        v if skip && is_container(v) => {
+            let mut body = String::new();
+            encode_into(v, &mut body);
+            let size = match v {
+                Value::Block(_) | Value::Array(_) | Value::Object(_) | Value::Call(_) => body.len() - 2,
+                _ => body.len().saturating_sub(3),
+            };
+            out.push_str(&encode_varint(size as u64));
+            out.push_str(&body);
+        }
+        _ => encode_into(value, out),
+    }
 }
 
 // ── Deduplicating encoder ────────────────────────────────────────────────
@@ -318,7 +475,7 @@ fn prescan_counts(
             counts.insert(value as *const Value, c);
             c
         }
-        Value::Delete(a) => {
+        Value::Delete(a) | Value::Return(a) => {
             let c = 1 + prescan_counts(a, counts);
             counts.insert(value as *const Value, c);
             c
@@ -541,6 +698,10 @@ impl RevEncoder {
             Value::Set(p, v) => { self.write(v); self.write(p); self.push(b'='); }
             Value::Swap(p, v) => { self.write(v); self.write(p); self.push(b'/'); }
             Value::Delete(p) => { self.write(p); self.push(b'~'); }
+            Value::Return(v) => {
+                self.write(v);
+                self.push(b';');
+            }
         }
     }
 
@@ -676,10 +837,38 @@ impl RevEncoder {
         let is_conditional = matches!(modifier, b'?' | b'!' | b'|' | b'&');
         if is_conditional { self.scope_depth += 1; }
         self.push(close);
-        for item in items.iter().rev() { self.write(item); }
+        for (i, item) in items.iter().enumerate().rev() {
+            if i > 0 && is_conditional {
+                self.write_skippable(item);
+            } else {
+                self.write(item);
+            }
+        }
         self.push(open);
         self.push(modifier);
         if is_conditional { self.scope_depth -= 1; }
+    }
+
+    /// Write a value in a skip position. Containers get a length prefix.
+    /// Return is transparent — passes skip through to its child.
+    fn write_skippable(&mut self, value: &Value) {
+        match value {
+            Value::Return(child) => {
+                self.write_skippable(child);
+                self.push(b';');
+            }
+            v if is_container(v) => {
+                let before = self.pos;
+                self.write(v);
+                let full_len = self.pos - before;
+                let size = match v {
+                    Value::Block(_) | Value::Array(_) | Value::Object(_) | Value::Call(_) => full_len - 2,
+                    _ => full_len.saturating_sub(3),
+                };
+                self.push_varint(size as u64);
+            }
+            _ => self.write(value),
+        }
     }
 }
 
@@ -822,8 +1011,20 @@ fn decode_one(input: &[u8], pos: &mut usize, resolve: bool) -> Result<Value, Dec
 
         // Paired containers
         b'(' => decode_paired_body(input, pos, b')', resolve, |items| Value::Call(items)),
-        b'[' => decode_paired_body(input, pos, b']', resolve, |items| Value::Array(items)),
+        b'[' => {
+            // Check for index: at least one b64 digit followed by '#'
+            if peek_is_index(input, *pos) {
+                decode_indexed_array(input, pos, resolve)
+            } else {
+                decode_paired_body(input, pos, b']', resolve, |items| Value::Array(items))
+            }
+        }
         b'{' => {
+            // Check for indexed object
+            if peek_is_index(input, *pos) {
+                return decode_indexed_object(input, pos, resolve);
+            }
+
             let mut children = Vec::new();
             while *pos < input.len() && input[*pos] != b'}' {
                 children.push(read_value(input, pos, resolve)?);
@@ -905,11 +1106,85 @@ fn decode_one(input: &[u8], pos: &mut usize, resolve: bool) -> Result<Value, Dec
             }
         }
 
+        // Return: ;[value]
+        b';' => {
+            let val = read_value(input, pos, resolve)?;
+            Ok(Value::Return(Box::new(val)))
+        }
+
         _ => Err(DecodeError {
             pos: *pos - 1,
             message: format!("unexpected tag byte: {:?}", tag as char),
         }),
     }
+}
+
+/// Peek (without consuming) for an index header: at least one b64 digit followed by '#'.
+/// An empty varint + '#' is While, not an index.
+fn peek_is_index(input: &[u8], pos: usize) -> bool {
+    let mut i = pos;
+    while i < input.len() && is_b64(input[i]) { i += 1; }
+    i > pos && i < input.len() && input[i] == b'#'
+}
+
+/// Decode an indexed array: `<packed>#<pointers><elements>]`
+/// The `[` has already been consumed. Reads through `]`.
+fn decode_indexed_array(input: &[u8], pos: &mut usize, resolve: bool) -> Result<Value, DecodeError> {
+    let raw = decode_varint_raw(input, pos);
+    let packed = varint_from_raw(raw);
+    if *pos >= input.len() || input[*pos] != b'#' {
+        return Err(DecodeError { pos: *pos, message: "expected '#' in indexed array".into() });
+    }
+    *pos += 1; // consume '#'
+
+    let count = (packed >> 3) as usize;
+    let width = ((packed & 7) + 1) as usize;
+
+    // Skip pointer table (we decode eagerly — pointers not needed)
+    *pos += count * width;
+
+    // Read elements until ']'
+    let mut items = Vec::with_capacity(count);
+    while *pos < input.len() && input[*pos] != b']' {
+        items.push(read_value(input, pos, resolve)?);
+    }
+    if *pos < input.len() && input[*pos] == b']' {
+        *pos += 1;
+    } else {
+        return Err(DecodeError { pos: *pos, message: "expected closing ']' in indexed array".into() });
+    }
+    Ok(Value::Array(items))
+}
+
+/// Decode an indexed object: `<packed>#<pointers><key-value-pairs>}`
+/// The `{` has already been consumed. Reads through `}`.
+fn decode_indexed_object(input: &[u8], pos: &mut usize, resolve: bool) -> Result<Value, DecodeError> {
+    let raw = decode_varint_raw(input, pos);
+    let packed = varint_from_raw(raw);
+    if *pos >= input.len() || input[*pos] != b'#' {
+        return Err(DecodeError { pos: *pos, message: "expected '#' in indexed object".into() });
+    }
+    *pos += 1; // consume '#'
+
+    let count = (packed >> 3) as usize;
+    let width = ((packed & 7) + 1) as usize;
+
+    // Skip pointer table (eager decode — pointers not needed)
+    *pos += count * width;
+
+    // Read key-value pairs until '}'
+    let mut pairs = Vec::with_capacity(count);
+    while *pos < input.len() && input[*pos] != b'}' {
+        let k = read_value(input, pos, resolve)?;
+        let v = read_value(input, pos, resolve)?;
+        pairs.push((k, v));
+    }
+    if *pos < input.len() && input[*pos] == b'}' {
+        *pos += 1;
+    } else {
+        return Err(DecodeError { pos: *pos, message: "expected closing '}' in indexed object".into() });
+    }
+    Ok(Value::Object(pairs))
 }
 
 fn decode_paired_body(
@@ -1588,6 +1863,25 @@ mod tests {
     }
 
     #[test]
+    fn return_roundtrip() {
+        let v = Value::Return(Box::new(Value::Integer(42)));
+        assert_eq!(roundtrip(&v), v);
+    }
+
+    #[test]
+    fn return_encoding() {
+        // Return has no size prefix by default: just ;child
+        let v = Value::Return(Box::new(Value::Integer(42)));
+        assert_eq!(encode(&v), ";1k+");
+    }
+
+    #[test]
+    fn bare_return_roundtrip() {
+        let v = Value::Return(Box::new(Value::Ref("no".into())));
+        assert_eq!(roundtrip(&v), v);
+    }
+
+    #[test]
     fn varint_len_correctness() {
         assert_eq!(varint_len(0), 0);
         assert_eq!(varint_len(1), 1);
@@ -1595,5 +1889,237 @@ mod tests {
         assert_eq!(varint_len(64), 2);
         assert_eq!(varint_len(4095), 2);
         assert_eq!(varint_len(4096), 3);
+    }
+
+    // ── Length prefix tests ────────────────────────────────────────────
+
+    #[test]
+    fn conditional_block_branch_is_length_prefixed() {
+        // when x do {1} end → ?(x$ 2{2+})
+        let v = Value::When(vec![
+            Value::Variable("x".into()),
+            Value::Block(vec![Value::Integer(1)]),
+        ]);
+        let encoded = encode(&v);
+        assert_eq!(encoded, "?(x$2{2+})");
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, v);
+    }
+
+    #[test]
+    fn conditional_both_branches_length_prefixed() {
+        // when x do {1, 2} else {3} end
+        let v = Value::When(vec![
+            Value::Variable("x".into()),
+            Value::Block(vec![Value::Integer(1), Value::Integer(2)]),
+            Value::Block(vec![Value::Integer(3)]),
+        ]);
+        let encoded = encode(&v);
+        assert_eq!(encoded, "?(x$4{2+4+}2{6+})");
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, v);
+    }
+
+    #[test]
+    fn or_branch_length_prefixed() {
+        let v = Value::Or(vec![
+            Value::Variable("a".into()),
+            Value::Block(vec![Value::Integer(1), Value::Integer(2)]),
+        ]);
+        let encoded = encode(&v);
+        assert_eq!(encoded, "|(a$4{2+4+})");
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, v);
+    }
+
+    #[test]
+    fn scalar_branch_not_prefixed() {
+        // Scalar branches should NOT be length-prefixed
+        let v = Value::When(vec![
+            Value::Variable("x".into()),
+            Value::Integer(42),
+            Value::Integer(99),
+        ]);
+        let encoded = encode(&v);
+        // No length prefix before integers
+        assert_eq!(encoded, "?(x$1k+36+)");
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, v);
+    }
+
+    #[test]
+    fn non_conditional_compound_not_prefixed() {
+        // for-in is not conditional, no length prefix
+        let v = Value::ForIn(vec![
+            Value::Variable("items".into()),
+            Value::Variable("x".into()),
+            Value::Block(vec![Value::Variable("x".into())]),
+        ]);
+        let encoded = encode(&v);
+        // No length prefix — '>' is not conditional
+        assert_eq!(encoded, ">(items$x${x$})");
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, v);
+    }
+
+    #[test]
+    fn dedup_with_length_prefixed_branches() {
+        let v = Value::When(vec![
+            Value::Variable("x".into()),
+            Value::Block(vec![Value::Integer(1), Value::Integer(2)]),
+            Value::Block(vec![Value::Integer(3)]),
+        ]);
+        let deduped = encode_dedup(&v);
+        let decoded = decode(&deduped).unwrap();
+        assert_eq!(decoded, v);
+    }
+
+    #[test]
+    fn return_scalar_in_branch_no_prefix() {
+        // return 42 in a branch — scalar child, no prefix needed
+        let v = Value::When(vec![
+            Value::Variable("x".into()),
+            Value::Return(Box::new(Value::Integer(42))),
+        ]);
+        let encoded = encode(&v);
+        assert_eq!(encoded, "?(x$;1k+)");
+        assert_eq!(decode(&encoded).unwrap(), v);
+    }
+
+    #[test]
+    fn return_container_in_branch_child_gets_prefix() {
+        // return [1] in a branch — container child gets length prefix
+        let v = Value::When(vec![
+            Value::Variable("x".into()),
+            Value::Return(Box::new(Value::Array(vec![Value::Integer(1)]))),
+        ]);
+        let encoded = encode(&v);
+        // ;2[2+] — return passes skip to child, child [2+] gets prefix 2
+        assert_eq!(encoded, "?(x$;2[2+])");
+        assert_eq!(decode(&encoded).unwrap(), v);
+    }
+
+    // ── Indexed container tests ────────────────────────────────────────
+
+    #[test]
+    fn indexed_array_single_element() {
+        let items = vec![Value::Integer(1)];
+        let encoded = encode_indexed_array(&items);
+        // count=1, width=1, packed=(1<<3)|0=8 → "8"
+        // ptr0=0 → "0", element=2+ → "8#02+"
+        assert_eq!(encoded, "[8#02+]");
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, Value::Array(items));
+    }
+
+    #[test]
+    fn indexed_array_two_elements() {
+        let items = vec![Value::Integer(1), Value::Integer(2)];
+        let encoded = encode_indexed_array(&items);
+        // count=2, width=1, packed=(2<<3)|0=16 → "g" (b64 val 16)
+        // ptr0=0 → "0", ptr1=2 → "2", elements=2+4+
+        assert_eq!(encoded, "[g#022+4+]");
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, Value::Array(items));
+    }
+
+    #[test]
+    fn indexed_array_empty() {
+        let items: Vec<Value> = vec![];
+        let encoded = encode_indexed_array(&items);
+        assert_eq!(encoded, "[]");
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, Value::Array(items));
+    }
+
+    #[test]
+    fn indexed_array_with_strings() {
+        let items = vec![
+            Value::String("hello".into()),
+            Value::String("world".into()),
+        ];
+        let encoded = encode_indexed_array(&items);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, Value::Array(items));
+    }
+
+    #[test]
+    fn indexed_array_large_offsets() {
+        // Elements with enough size to need width > 1
+        let long = "a]b".repeat(30); // 90 chars → offset > 63 → width 2
+        let items = vec![
+            Value::String(long.clone()),
+            Value::Integer(42),
+        ];
+        let encoded = encode_indexed_array(&items);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, Value::Array(items));
+        // Verify width is 2 (offset 92 needs 2 b64 digits)
+        // packed = (2<<3) | (2-1) = 17 → varint "h"
+        assert!(encoded.starts_with("[h#"));
+    }
+
+    #[test]
+    fn indexed_array_nested() {
+        let items = vec![
+            Value::Array(vec![Value::Integer(1), Value::Integer(2)]),
+            Value::Array(vec![Value::Integer(3)]),
+        ];
+        let encoded = encode_indexed_array(&items);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, Value::Array(items));
+    }
+
+    #[test]
+    fn b64_width_values() {
+        assert_eq!(b64_width(0), 1);
+        assert_eq!(b64_width(1), 1);
+        assert_eq!(b64_width(63), 1);
+        assert_eq!(b64_width(64), 2);
+        assert_eq!(b64_width(4095), 2);
+        assert_eq!(b64_width(4096), 3);
+    }
+
+    #[test]
+    fn indexed_object_roundtrip() {
+        let pairs = vec![
+            (Value::String("name".into()), Value::String("Ada".into())),
+            (Value::String("score".into()), Value::Integer(95)),
+        ];
+        let encoded = encode_indexed_object(&pairs);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, Value::Object(pairs));
+    }
+
+    #[test]
+    fn indexed_object_empty() {
+        let pairs: Vec<(Value, Value)> = vec![];
+        let encoded = encode_indexed_object(&pairs);
+        assert_eq!(encoded, "{}");
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, Value::Object(pairs));
+    }
+
+    #[test]
+    fn indexed_object_pointers_sorted_by_key() {
+        // Keys "b" and "a" — pointers should be sorted so "a" comes first in index
+        let pairs = vec![
+            (Value::String("b".into()), Value::Integer(2)),
+            (Value::String("a".into()), Value::Integer(1)),
+        ];
+        let encoded = encode_indexed_object(&pairs);
+        let decoded = decode(&encoded).unwrap();
+        // Decoded in original order (body order), not sorted
+        assert_eq!(decoded, Value::Object(pairs));
+    }
+
+    #[test]
+    fn indexed_object_single_entry() {
+        let pairs = vec![
+            (Value::String("key".into()), Value::Integer(42)),
+        ];
+        let encoded = encode_indexed_object(&pairs);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, Value::Object(pairs));
     }
 }

@@ -1,5 +1,7 @@
 # Instructions: Fix Pointer Deduplication in Skipped Branches
 
+> **Status: COMPLETE.** Scope-aware deduplication added to RevEncoder. `compile_no_dedup()` workaround removed. rex-serve switched back to `compile()`.
+
 ## Problem
 
 The bytecode encoder's pointer deduplication (`encode_dedup` in `crates/rex-core/src/bytecode.rs`) causes incorrect execution when duplicate patterns appear in conditional branches that get skipped.

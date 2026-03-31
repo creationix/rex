@@ -44,6 +44,7 @@ fn lower_node(node: &SyntaxNode) -> Option<Value> {
         SyntaxKind::ObjectExpr => Some(lower_object(node)),
         SyntaxKind::ObjectComprehension => Some(lower_object_comprehension(node)),
         SyntaxKind::TemplateExpr => Some(lower_template_expr(node)),
+        SyntaxKind::ReturnExpr => Some(lower_return(node)),
         SyntaxKind::Error => None, // skip error nodes
         _ => None,
     }
@@ -969,6 +970,14 @@ fn lower_tagged_template(tag: &str, parts: &[TemplatePart]) -> Value {
     call_items.extend(exprs);
 
     Value::Call(call_items)
+}
+
+fn lower_return(node: &SyntaxNode) -> Value {
+    let value = non_trivia_children(node)
+        .filter_map(|c| lower_child(c))
+        .next()
+        .unwrap_or(Value::Ref("no".into())); // bare return → none
+    Value::Return(Box::new(value))
 }
 
 /// Returns true if the value is pure data (no computation needed).

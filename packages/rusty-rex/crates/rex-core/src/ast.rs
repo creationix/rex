@@ -200,6 +200,7 @@ impl Pair {
 }
 
 ast_node!(IterBinding, IterBinding);
+ast_node!(ReturnExpr, ReturnExpr);
 
 #[cfg(test)]
 mod tests {
