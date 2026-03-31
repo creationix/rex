@@ -56,31 +56,19 @@ The v2 bytecode migration fixed this: containers are **eager by default**, with 
 - [x] Bytecode v2: eager by default, lazy opt-in via index marker
 - [x] `force_value()` workarounds removed from interpreter
 
-### Pointer deduplication interacts badly with skipped branches (fixed in v2)
+### Pointer deduplication interacts badly with skipped branches (open bug)
 
-The v1 bytecode encoder's pointer deduplication created references across conditional branches. When a pointer's target was inside a skipped `when`/`unless` branch, the interpreter misread the bytecode. This required using `compile_no_dedup()` as a workaround.
+The bytecode encoder's pointer deduplication creates references across conditional branches. When a pointer's target is inside a skipped `when`/`unless` branch, the interpreter misreads the bytecode. This persists after the v2 migration — the issue is in the encoder, not the format. Workaround: rex-serve uses `compile_no_dedup()`.
 
-The v2 bytecode migration fixed this — `compile()` with dedup now works correctly for all handler patterns including nested `unless` blocks inside `when` branches.
+- [ ] Restrict deduplication to same-scope values (never cross conditional boundaries)
+- [ ] Remove `compile_no_dedup` workaround from rex-serve
 
-- [x] Fixed by v2 bytecode migration
-- [x] `compile_no_dedup` workaround removed
+### No early return means sequential blocks override each other (fixed: `return`)
 
-### No early return means sequential blocks override each other
-
-Rex programs are expression sequences where the last expression's value wins. This forces `when/else` chains for HTTP method dispatch instead of the more natural guard-style pattern:
+This *was* the second biggest pain point. Without `return`, every handler needed `when/else` chains because the last expression's value wins. The `return` keyword now enables guard-style early exit:
 
 ```rex
-/* Current: must use when/else chain so only one branch produces the final value */
-when method == "GET" do
-  {ok: true, data: items}
-else when method == "POST" do
-  {ok: true, created: id}
-else
-  res.status = 405
-  {ok: false, error: "method_not_allowed"}
-end
-
-/* With return: guard-style, top-to-bottom, early exit */
+/* Clean guard-style dispatch with return */
 when method == "GET" do
   return {ok: true, data: items}
 end
@@ -91,9 +79,10 @@ res.status = 405
 {ok: false, error: "method_not_allowed"}
 ```
 
-The `return` keyword is designed in bytecode-v2 as a postfix `value;` — the `;` tag follows the return value and halts execution.
+This is how every rex-serve handler is now written — sequential guards with early returns. The middleware especially benefits: `unless api-key do return {error: "unauthorized"} end` reads naturally and stops execution immediately.
 
-- [ ] Add `return` keyword to grammar, parser, lowering, and interpreter
+- [x] `return` keyword added to grammar, parser, lowering, and interpreter
+- [x] All rex-serve handlers and middleware rewritten to use `return`
 
 ### String interpolation (solved: template literals)
 

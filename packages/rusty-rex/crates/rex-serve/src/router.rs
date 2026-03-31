@@ -159,7 +159,7 @@ fn scan_directory(
         if name == "_middleware.rex" {
             // Middleware
             let source = std::fs::read_to_string(&path).unwrap_or_default();
-            let bytecode = rex_core::compile(&source);
+            let bytecode = rex_core::compile_no_dedup(&source);
             let rel = dir.strip_prefix(base).unwrap_or(Path::new(""));
             let prefix = if rel.as_os_str().is_empty() {
                 "/".to_string()
@@ -184,7 +184,7 @@ fn scan_directory(
         if name.ends_with(".rex") {
             // Route handler
             let source = std::fs::read_to_string(&path).unwrap_or_default();
-            let bytecode = rex_core::compile(&source);
+            let bytecode = rex_core::compile_no_dedup(&source);
             let segments = path_to_segments(base, &path);
             let specificity = compute_specificity(&segments);
             routes.push(CompiledRoute {
