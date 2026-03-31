@@ -4,9 +4,12 @@
 
 use rex_core::interpret::{self, Context, RexValue};
 
-/// Compile source with dedup, run, return the value.
+/// Compile source with dedup, verify decode roundtrip, run, return the value.
 fn eval_dedup(source: &str) -> RexValue {
     let bytecode = rex_core::compile(source);
+    // Verify the bytecode is valid by decoding it
+    rex_core::bytecode::decode(&bytecode)
+        .unwrap_or_else(|e| panic!("decode failed (dedup): {e}\n  source: {source}\n  bytecode: {bytecode}"));
     let ctx = Context::default();
     interpret::run(&bytecode, ctx)
         .unwrap_or_else(|e| panic!("runtime error (dedup): {e}\n  source: {source}\n  bytecode: {bytecode}"))
@@ -177,6 +180,27 @@ fn dedup_set_navigation_via_pointer() {
             return {ok: false, error: "second"}
         end
         {ok: true}
+    "#);
+}
+
+#[test]
+fn dedup_complex_handler_with_multiple_branches() {
+    // The full articles handler pattern: GET/POST branches with shared keys,
+    // validation, db ops, and a fallback.
+    assert_dedup_matches(r#"
+        when method == "GET" do
+            items = [json.parse(a.value) for a in db.list("article:")]
+            return {ok: true, articles: [{slug: a.slug, title: a.title} for a in items]}
+        end
+        when method == "POST" do
+            input = json.parse(body)
+            unless input and input.slug and input.title and input.body do
+                return {ok: false, error: "missing_fields"}
+            end
+            record = {slug: input.slug, title: input.title, body: input.body}
+            return {ok: true, slug: input.slug}
+        end
+        {ok: false, error: "method_not_allowed"}
     "#);
 }
 
