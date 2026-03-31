@@ -56,12 +56,14 @@ The v2 bytecode migration fixed this: containers are **eager by default**, with 
 - [x] Bytecode v2: eager by default, lazy opt-in via index marker
 - [x] `force_value()` workarounds removed from interpreter
 
-### Pointer deduplication interacts badly with skipped branches (open bug)
+### Pointer deduplication interacts badly with skipped branches (fixed in v2)
 
-The bytecode encoder's pointer deduplication creates references across conditional branches. When a pointer's target is inside a skipped `when`/`unless` branch, the interpreter misreads the bytecode. Workaround: rex-serve uses `compile_no_dedup()`. See [AGENT-INSTRUCTIONS-POINTER-DEDUP-FIX.md](/AGENT-INSTRUCTIONS-POINTER-DEDUP-FIX.md) for the fix plan.
+The v1 bytecode encoder's pointer deduplication created references across conditional branches. When a pointer's target was inside a skipped `when`/`unless` branch, the interpreter misread the bytecode. This required using `compile_no_dedup()` as a workaround.
 
-- [ ] Restrict deduplication to same-scope values (never cross conditional boundaries)
-- [ ] Remove `compile_no_dedup` workaround from rex-serve
+The v2 bytecode migration fixed this — `compile()` with dedup now works correctly for all handler patterns including nested `unless` blocks inside `when` branches.
+
+- [x] Fixed by v2 bytecode migration
+- [x] `compile_no_dedup` workaround removed
 
 ### No early return means sequential blocks override each other
 
