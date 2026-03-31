@@ -85,6 +85,15 @@ enum Command {
         #[arg(long, default_value = "10000000")]
         gas: u64,
     },
+
+    /// Type-check Rex files against a domain interface
+    Check {
+        /// Input file or directory
+        input: PathBuf,
+        /// Domain interface file (.rexd). Auto-discovered if not specified.
+        #[arg(long)]
+        domain: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -97,6 +106,7 @@ fn main() {
         Command::Inspect { input } => cmd_inspect(input),
         Command::Run { input, gas } => cmd_run(input, gas, cli.time),
         Command::Repl { gas } => cmd_repl(gas),
+        Command::Check { input, domain } => cmd_check(input, domain),
     };
     if let Err(e) = result {
         eprintln!("{} {e}", red("error:"));
@@ -447,7 +457,7 @@ fn count_values(value: &rex_core::bytecode::Value) -> usize {
     use rex_core::bytecode::Value;
     match value {
         Value::Array(items) | Value::Block(items) | Value::Call(items)
-        | Value::When(items) | Value::Unless(items) | Value::Or(items) | Value::And(items)
+        | Value::When(items) | Value::Or(items) | Value::And(items)
         | Value::ForIn(items) | Value::ForOf(items) | Value::While(items)
         | Value::ListCompIn(items) | Value::ListCompOf(items) | Value::ListCompWhile(items)
         | Value::MapCompIn(items) | Value::MapCompOf(items) | Value::MapCompWhile(items) => {
@@ -500,7 +510,6 @@ fn print_value(value: &rex_core::bytecode::Value, indent: usize) {
             for item in items.iter().skip(1) { print_value(item, indent + 1); }
         }
         Value::When(items) => { print_compound(&pad, "when", items, indent); }
-        Value::Unless(items) => { print_compound(&pad, "unless", items, indent); }
         Value::Or(items) => { print_compound(&pad, "or", items, indent); }
         Value::And(items) => { print_compound(&pad, "and", items, indent); }
         Value::ForIn(items) => { print_compound(&pad, "for-in", items, indent); }
@@ -551,6 +560,125 @@ fn print_value_inline(value: &rex_core::bytecode::Value) {
 fn print_compound(pad: &str, name: &str, items: &[rex_core::bytecode::Value], indent: usize) {
     println!("{pad}{}", magenta(name));
     for item in items { print_value(item, indent + 1); }
+}
+
+fn cmd_check(input: PathBuf, domain: Option<PathBuf>) -> io::Result<()> {
+    use rex_core::typecheck::{self, DiagnosticKind, DomainSchema};
+
+    // Find the .rexd file
+    let schema = match domain {
+        Some(path) => {
+            let source = std::fs::read_to_string(&path)?;
+            typecheck::parse_rexd(&source)
+        }
+        None => {
+            match find_rexd(&input) {
+                Some(path) => {
+                    let source = std::fs::read_to_string(&path)?;
+                    typecheck::parse_rexd(&source)
+                }
+                None => DomainSchema::default(),
+            }
+        }
+    };
+
+    // Collect all .rex files
+    let files = if input.is_dir() {
+        collect_rex_files(&input)
+    } else {
+        vec![input]
+    };
+
+    if files.is_empty() {
+        eprintln!("{} no .rex files found", yellow("warning:"));
+        return Ok(());
+    }
+
+    let mut total_errors = 0;
+    let mut total_warnings = 0;
+
+    for file in &files {
+        let source = std::fs::read_to_string(file)?;
+        let diags = typecheck::check_source(&source, &schema);
+
+        for d in &diags {
+            let (line, col) = offset_to_line_col(&source, d.span.start);
+            let kind_str = match d.kind {
+                DiagnosticKind::Error => red("error:"),
+                DiagnosticKind::Warning => yellow("warning:"),
+            };
+            eprintln!("{}:{}:{}: {} {}", file.display(), line, col, kind_str, d.message);
+        }
+
+        total_errors += diags.iter().filter(|d| d.kind == DiagnosticKind::Error).count();
+        total_warnings += diags.iter().filter(|d| d.kind == DiagnosticKind::Warning).count();
+    }
+
+    if total_errors > 0 || total_warnings > 0 {
+        eprintln!();
+        let mut parts = Vec::new();
+        if total_errors > 0 {
+            parts.push(red(&format!("{} error{}", total_errors, if total_errors == 1 { "" } else { "s" })));
+        }
+        if total_warnings > 0 {
+            parts.push(yellow(&format!("{} warning{}", total_warnings, if total_warnings == 1 { "" } else { "s" })));
+        }
+        eprintln!("{}", parts.join(", "));
+    }
+
+    if total_errors > 0 {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// Search upward from a path for any .rexd file.
+fn find_rexd(start: &std::path::Path) -> Option<PathBuf> {
+    let mut dir = if start.is_file() {
+        start.parent()?
+    } else {
+        start
+    };
+    loop {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map_or(false, |e| e == "rexd") {
+                    return Some(path);
+                }
+            }
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// Recursively collect all .rex files in a directory.
+fn collect_rex_files(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(collect_rex_files(&path));
+            } else if path.extension().map_or(false, |e| e == "rex") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Convert a byte offset to a (line, col) pair (1-indexed).
+fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+    for (i, ch) in source.char_indices() {
+        if i >= offset { break; }
+        if ch == '\n' { line += 1; col = 1; } else { col += 1; }
+    }
+    (line, col)
 }
 
 fn atty() -> bool {

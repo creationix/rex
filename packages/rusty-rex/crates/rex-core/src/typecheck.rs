@@ -1039,7 +1039,7 @@ impl<'a> TypeEnv<'a> {
             SyntaxKind::KwNull => Type::Null,
             SyntaxKind::KwNone => Type::None,
             SyntaxKind::KwNan | SyntaxKind::KwInf => Type::Number,
-            SyntaxKind::KwSelf => Type::Some, // TODO: track self type
+            // self was removed as a keyword — it's now just an identifier
             SyntaxKind::Ident => {
                 let name = token.text();
                 self.lookup_var(name).unwrap_or(Type::None)
