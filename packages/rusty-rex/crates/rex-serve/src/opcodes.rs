@@ -576,7 +576,8 @@ fn highlight_rex_source(source: &str) -> String {
             | TokenKind::KwIn | TokenKind::KwOf | TokenKind::KwWhile
             | TokenKind::KwAnd | TokenKind::KwOr | TokenKind::KwNor
             | TokenKind::KwNot | TokenKind::KwDelete
-            | TokenKind::KwBreak | TokenKind::KwContinue => Some("kw"),
+            | TokenKind::KwBreak | TokenKind::KwContinue
+            | TokenKind::KwReturn => Some("kw"),
 
             // Literals: true/false/null/none/nan/inf
             TokenKind::KwTrue | TokenKind::KwFalse => Some("bl"),
