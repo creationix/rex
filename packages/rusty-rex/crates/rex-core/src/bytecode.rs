@@ -114,6 +114,8 @@ pub enum Value {
     MapCompOf(Vec<Value>),
     MapCompWhile(Vec<Value>),
 
+    Chain(Vec<Value>),
+
     Set(Box<Value>, Box<Value>),
     Swap(Box<Value>, Box<Value>),
     Delete(Box<Value>),
@@ -202,6 +204,9 @@ fn encode_into(value: &Value, out: &mut String) {
         Value::MapCompIn(items) => encode_compound('>', '{', '}', items, out),
         Value::MapCompOf(items) => encode_compound('<', '{', '}', items, out),
         Value::MapCompWhile(items) => encode_compound('#', '{', '}', items, out),
+
+        // String chain (template literals)
+        Value::Chain(items) => encode_sized_body('.', items, out),
 
         // Mutation (fixed arity, no size)
         Value::Set(place, val) => {
@@ -302,7 +307,8 @@ fn prescan_counts(
         | Value::When(items) | Value::Unless(items) | Value::Or(items) | Value::And(items)
         | Value::ForIn(items) | Value::ForOf(items) | Value::While(items)
         | Value::ListCompIn(items) | Value::ListCompOf(items) | Value::ListCompWhile(items)
-        | Value::MapCompIn(items) | Value::MapCompOf(items) | Value::MapCompWhile(items) => {
+        | Value::MapCompIn(items) | Value::MapCompOf(items) | Value::MapCompWhile(items)
+        | Value::Chain(items) => {
             let c: usize = 1 + items.iter().map(|i| prescan_counts(i, counts)).sum::<usize>();
             counts.insert(value as *const Value, c);
             c
@@ -477,7 +483,7 @@ impl RevEncoder {
         }
         // Small containers only (strings handled by write_string)
         match value {
-            Value::List(_) | Value::Map(_) | Value::Array(_) | Value::Block(_) | Value::Call(_) => {
+            Value::List(_) | Value::Map(_) | Value::Array(_) | Value::Block(_) | Value::Call(_) | Value::Chain(_) => {
                 let c = self.node_counts.get(&(value as *const Value)).copied().unwrap_or(1);
                 if c >= 2 && c <= DEDUP_COMPLEXITY_LIMIT {
                     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -533,6 +539,14 @@ impl RevEncoder {
             Value::MapCompIn(items) => self.emit_compound(b'>', b'{', b'}', items),
             Value::MapCompOf(items) => self.emit_compound(b'<', b'{', b'}', items),
             Value::MapCompWhile(items) => self.emit_compound(b'#', b'{', b'}', items),
+
+            // Chain (template literal string concatenation)
+            Value::Chain(items) => {
+                let before = self.pos;
+                for item in items.iter().rev() { self.write(item); }
+                let body_len = self.pos - before;
+                self.push(b'.'); self.push_varint(body_len as u64);
+            }
 
             // Mutation: reversed order
             Value::Set(p, v) => { self.write(v); self.write(p); self.push(b'='); }
@@ -917,10 +931,7 @@ fn decode_one(input: &[u8], pos: &mut usize, resolve: bool) -> Result<Value, Dec
                 }
                 Ok(Value::String(s))
             } else {
-                // Raw mode: preserve chain structure as a Call with opcode "chain"
-                let mut items = vec![Value::Opcode("chain".into())];
-                items.extend(segments);
-                Ok(Value::Call(items))
+                Ok(Value::Chain(segments))
             }
         }
 

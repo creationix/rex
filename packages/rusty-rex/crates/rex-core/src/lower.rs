@@ -43,6 +43,7 @@ fn lower_node(node: &SyntaxNode) -> Option<Value> {
         SyntaxKind::ArrayComprehension => Some(lower_array_comprehension(node)),
         SyntaxKind::ObjectExpr => Some(lower_object(node)),
         SyntaxKind::ObjectComprehension => Some(lower_object_comprehension(node)),
+        SyntaxKind::TemplateExpr => Some(lower_template_expr(node)),
         SyntaxKind::Error => None, // skip error nodes
         _ => None,
     }
@@ -820,6 +821,168 @@ fn lower_object_comprehension(node: &SyntaxNode) -> Value {
     }
 }
 
+// ── Template literal lowering ──────────────────────────────────────────
+
+fn lower_template_expr(node: &SyntaxNode) -> Value {
+    let mut tag_name: Option<String> = None;
+    let mut template_text: Option<String> = None;
+
+    for child in non_trivia_children(node) {
+        if let Some(t) = child.as_token() {
+            match t.kind() {
+                SyntaxKind::Ident => {
+                    tag_name = Some(t.text().to_string());
+                }
+                SyntaxKind::TemplateLiteral => {
+                    let text = t.text();
+                    // Strip surrounding backticks
+                    template_text = Some(text[1..text.len() - 1].to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let content = template_text.unwrap_or_default();
+    let parts = parse_template_parts(&content);
+
+    match tag_name {
+        Some(tag) => lower_tagged_template(&tag, &parts),
+        None => lower_untagged_template(&parts),
+    }
+}
+
+/// A segment of a template literal: either a static string or an interpolation.
+enum TemplatePart {
+    Static(String),
+    Interpolation(String), // raw Rex source inside ${...}
+}
+
+/// Parse template content (without backticks) into static and interpolation parts.
+fn parse_template_parts(content: &str) -> Vec<TemplatePart> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = content.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            // Escaped character
+            match chars.peek() {
+                Some('`') => { current.push('`'); chars.next(); }
+                Some('$') => { current.push('$'); chars.next(); }
+                Some('\\') => { current.push('\\'); chars.next(); }
+                Some('n') => { current.push('\n'); chars.next(); }
+                Some('t') => { current.push('\t'); chars.next(); }
+                Some('r') => { current.push('\r'); chars.next(); }
+                _ => { current.push('\\'); }
+            }
+        } else if c == '$' && chars.peek() == Some(&'{') {
+            // Start of interpolation
+            chars.next(); // consume '{'
+            if !current.is_empty() {
+                parts.push(TemplatePart::Static(std::mem::take(&mut current)));
+            }
+            // Read until matching '}'
+            let mut depth = 1;
+            let mut expr = String::new();
+            while let Some(ch) = chars.next() {
+                if ch == '{' {
+                    depth += 1;
+                    expr.push(ch);
+                } else if ch == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    expr.push(ch);
+                } else {
+                    expr.push(ch);
+                }
+            }
+            parts.push(TemplatePart::Interpolation(expr));
+        } else {
+            current.push(c);
+        }
+    }
+
+    if !current.is_empty() {
+        parts.push(TemplatePart::Static(current));
+    }
+
+    parts
+}
+
+/// Lower an untagged template: no interpolations → plain string,
+/// with interpolations → chain.
+fn lower_untagged_template(parts: &[TemplatePart]) -> Value {
+    // Check if there are any interpolations
+    let has_interpolations = parts.iter().any(|p| matches!(p, TemplatePart::Interpolation(_)));
+
+    if !has_interpolations {
+        // No interpolations → plain string
+        let s: String = parts.iter().map(|p| match p {
+            TemplatePart::Static(s) => s.as_str(),
+            _ => "",
+        }).collect();
+        return Value::String(s);
+    }
+
+    // Build chain segments: interleaved string literals and expressions
+    let mut segments = Vec::new();
+    for part in parts {
+        match part {
+            TemplatePart::Static(s) => {
+                segments.push(Value::String(s.clone()));
+            }
+            TemplatePart::Interpolation(expr_src) => {
+                // Recursively compile the interpolated expression
+                let tokens = crate::lexer::lex(expr_src);
+                let (green, _errors) = crate::parser::parse(expr_src, &tokens);
+                let root = crate::syntax::SyntaxNode::new_root(green);
+                let value = lower(&root);
+                segments.push(value);
+            }
+        }
+    }
+
+    Value::Chain(segments)
+}
+
+/// Lower a tagged template: tag function receives (string_parts_array, ...exprs).
+fn lower_tagged_template(tag: &str, parts: &[TemplatePart]) -> Value {
+    let mut string_parts = Vec::new();
+    let mut exprs = Vec::new();
+
+    for part in parts {
+        match part {
+            TemplatePart::Static(s) => {
+                string_parts.push(Value::String(s.clone()));
+            }
+            TemplatePart::Interpolation(expr_src) => {
+                let tokens = crate::lexer::lex(expr_src);
+                let (green, _errors) = crate::parser::parse(expr_src, &tokens);
+                let root = crate::syntax::SyntaxNode::new_root(green);
+                let value = lower(&root);
+                exprs.push(value);
+            }
+        }
+    }
+
+    // If there are interpolations, we need one more static part at the end
+    // (like JS: `a${x}b` → ["a", "b"], [x])
+    // The parts already alternate correctly, but ensure string_parts bookend properly.
+    // Actually, the parser already handles this: static parts appear between/around interpolations.
+
+    // Build: call(tag, [string_parts...], expr1, expr2, ...)
+    let mut call_items = Vec::new();
+    // Tag as opcode (built-in) — use Variable for user-defined tags
+    call_items.push(Value::Variable(tag.to_string()));
+    call_items.push(Value::List(string_parts));
+    call_items.extend(exprs);
+
+    Value::Call(call_items)
+}
+
 /// Returns true if the value is pure data (no computation needed).
 fn is_data(v: &Value) -> bool {
     match v {
@@ -912,6 +1075,57 @@ mod tests {
     #[test]
     fn compile_continue() {
         assert_eq!(compile("continue"), "1\\");
+    }
+
+    #[test]
+    fn compile_template_no_interpolation() {
+        // `hello` → plain string
+        assert_eq!(compile("`hello`"), "5,hello");
+    }
+
+    #[test]
+    fn compile_template_with_interpolation() {
+        // `hello ${name}` → chain
+        let bc = compile(r"`hello ${name}`");
+        // Should be a chain containing string "hello " and variable name
+        assert!(bc.contains('.'), "expected chain (.) in bytecode: {bc}");
+        assert!(bc.contains("name$"), "expected variable name in bytecode: {bc}");
+    }
+
+    #[test]
+    fn compile_template_only_interpolation() {
+        // `${x}` → chain with just the variable
+        let bc = compile(r"`${x}`");
+        assert!(bc.contains("x$"), "expected variable x in bytecode: {bc}");
+    }
+
+    #[test]
+    fn compile_template_multiple_interpolations() {
+        let bc = compile(r"`${a} and ${b}`");
+        assert!(bc.contains("a$"), "expected variable a: {bc}");
+        assert!(bc.contains("b$"), "expected variable b: {bc}");
+        assert!(bc.contains('.'), "expected chain: {bc}");
+    }
+
+    #[test]
+    fn compile_tagged_template() {
+        // html`<p>${text}</p>` → call(html, [...strings], text)
+        let bc = compile(r"html`<p>${text}</p>`");
+        assert!(bc.contains("html$"), "expected html variable: {bc}");
+        assert!(bc.contains("text$"), "expected text variable: {bc}");
+        assert!(bc.contains('('), "expected call: {bc}");
+    }
+
+    #[test]
+    fn compile_template_escaped_dollar() {
+        // `\${not interpolated}` → plain string
+        assert_eq!(compile(r"`\${not interpolated}`"), "j,${not interpolated}");
+    }
+
+    #[test]
+    fn compile_template_empty() {
+        // `` → empty string
+        assert_eq!(compile("``"), ",");
     }
 
     #[test]

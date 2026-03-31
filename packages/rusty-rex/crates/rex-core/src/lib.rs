@@ -18,6 +18,16 @@ pub fn compile(source: &str) -> String {
     bytecode::encode_dedup(&value)
 }
 
+/// Compile Rex source to REXC bytecode without pointer deduplication.
+/// Use this when the bytecode will be partially evaluated (e.g. skipped branches).
+pub fn compile_no_dedup(source: &str) -> String {
+    let tokens = lexer::lex(source);
+    let (green, _errors) = parser::parse(source, &tokens);
+    let root = syntax::SyntaxNode::new_root(green);
+    let value = lower::lower(&root);
+    bytecode::encode(&value)
+}
+
 /// Encode a JSON/data value to RX bytecode with deduplication.
 /// Uses the fast path (tokens → Value, no CST).
 pub fn encode_value(value: &bytecode::Value) -> String {
