@@ -18,4 +18,5 @@ while n * n <= max do
 end
 
 // Collect primes with an array comprehension
-[composites.(n) != true and n for n in 2..max]
+// Note: uses `and none or n` pattern for existence-based filtering
+[composites.(n) and none or n for n in 2..max]
