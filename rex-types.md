@@ -203,6 +203,26 @@ x = 0       // x: integer
 x += 1      // still integer (integer + integer = integer)
 ```
 
+### String coercion
+
+When a non-string value appears in a string context (template literals, `+` with a string operand), it is coerced to a string representation:
+
+| Value | String form | Notes |
+|-------|-------------|-------|
+| `string` | as-is | |
+| `integer` | decimal digits | `42` → `"42"` |
+| `number` | decimal | `3.14` → `"3.14"` |
+| `boolean` | `✓` or `✗` | U+2713 / U+2717 |
+| `null` | `␀` | U+2400 |
+| `none` | `∅` | U+2205 |
+| `NaN` | `NaN` | |
+| `Infinity` | `∞` | U+221E |
+| `-Infinity` | `-∞` | |
+| `array` | JSON-like | `"[1, 2, 3]"` |
+| `object` | JSON-like | `"{a: 1}"` |
+
+This only applies to string coercion contexts. JSON serialization, comparison, and type checking use the actual values.
+
 ### Arithmetic operators
 
 | Expression                         | Type                                                                         |

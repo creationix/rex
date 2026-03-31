@@ -256,6 +256,47 @@ Fixed-arity operators. No delimiters — children are self-delimiting.
 
 The interpreter distinguishes objects from blocks by context: inside data position → object. Inside code position → block.
 
+### Return
+
+`;value` — evaluates the child value and halts execution of the current program, producing that value as the final result. Propagates through all enclosing blocks, loops, and conditionals.
+
+```
+;1k+             → return 42
+;(ad%x$2+)       → return x + 1
+```
+
+Rex source:
+```rex
+when method == "GET" do
+  return {ok: true, data: items}
+end
+when method == "POST" do
+  return {ok: true, created: id}
+end
+res.status = 405
+{ok: false, error: "method_not_allowed"}
+```
+
+### Tagged Template Literals
+
+Template literals compile to string chains (`.`) for untagged, or to calls for tagged. No new bytecode tag needed.
+
+**Untagged** — `` `hello ${name}` `` compiles to a string chain:
+
+```
+.[5,hello name$]     → chain("hello ", name) → "hello Ada"
+```
+
+The chain segments are string literals and expressions interleaved. The interpreter concatenates them.
+
+**Tagged** — `` html`<a>${title}</a>` `` compiles to a call where the first argument is an array of the static string parts:
+
+```
+(html%[4,<a >5,</a>]title$)     → html(["<a>", "</a>"], title)
+```
+
+The tag function (domain opcode) receives the constant string parts array and the interpolated values as separate arguments. This enables safe-by-construction patterns: SQL parameterization, HTML escaping, URL encoding.
+
 ---
 
 ## Semantics
@@ -319,7 +360,4 @@ Gas is charged per loop/comprehension iteration. The host sets the limit; 0 = un
 | `=`     | fixed    | Set (2 children)                 |
 | `/`     | fixed    | Swap-set (2 children)            |
 | `~`     | fixed    | Delete (1 child)                 |
-
-### Freed tags
-
-`;` and `:` are no longer used by the format and are available for future Rex language features.
+| `;`     | fixed    | Return (1 child)                 |
