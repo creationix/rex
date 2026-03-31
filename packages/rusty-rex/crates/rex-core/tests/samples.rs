@@ -72,7 +72,7 @@ fn keyword_literals() {
     assert_parses("true");
     assert_parses("false");
     assert_parses("null");
-    assert_parses("undefined");
+    assert_parses("none");
 }
 
 #[test]

@@ -62,7 +62,7 @@ fn roundtrip_strings() {
 
 #[test]
 fn roundtrip_refs() {
-    for name in ["t", "f", "n", "u"] {
+    for name in ["t", "f", "n", "no"] {
         roundtrip(Value::Ref(name.into()));
     }
 }

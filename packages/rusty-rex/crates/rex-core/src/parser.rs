@@ -360,7 +360,7 @@ impl<'s, 'c> Parser<'s, 'c> {
             SyntaxKind::KwTrue
             | SyntaxKind::KwFalse
             | SyntaxKind::KwNull
-            | SyntaxKind::KwUndefined
+            | SyntaxKind::KwNone
             | SyntaxKind::KwString
             | SyntaxKind::KwNumber
             | SyntaxKind::KwObject

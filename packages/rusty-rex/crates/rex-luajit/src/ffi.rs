@@ -23,7 +23,7 @@ pub struct FfiEncoder {
 }
 
 struct ContainerFrame {
-    kind: ContainerKind,
+    _kind: ContainerKind,
     body_start: usize,
     /// For objects: schema hash built from keys
     schema_hasher: Option<std::collections::hash_map::DefaultHasher>,
@@ -227,7 +227,7 @@ pub extern "C" fn rex_enc_open_array(enc: *mut FfiEncoder) {
     let enc = unsafe { &mut *enc };
     let body_start = enc.buf.len();
     enc.stack.push(ContainerFrame {
-        kind: ContainerKind::Array,
+        _kind: ContainerKind::Array,
         body_start,
         schema_hasher: None,
         schema_key_count: 0,
@@ -247,7 +247,7 @@ pub extern "C" fn rex_enc_open_object(enc: *mut FfiEncoder) {
     let enc = unsafe { &mut *enc };
     let body_start = enc.buf.len();
     enc.stack.push(ContainerFrame {
-        kind: ContainerKind::Object,
+        _kind: ContainerKind::Object,
         body_start,
         schema_hasher: Some(std::collections::hash_map::DefaultHasher::new()),
         schema_key_count: 0,
@@ -265,18 +265,9 @@ pub extern "C" fn rex_enc_close_object(enc: *mut FfiEncoder) {
         hasher.finish()
     } else { 0 };
 
-    // Check for schema match
-    if let Some(&schema_offset) = enc.schemas.get(&schema_key) {
-        // Schema match — rewrite body as pointer + values only.
-        // The body currently has key1,val1,key2,val2,...
-        // We need to extract just values and prepend a pointer.
-        // This is complex to do in-place, so for the FFI path we skip
-        // schema rewriting and just record for future matches.
-        // TODO: implement schema rewriting for FFI path
-    }
+    // TODO: schema rewriting for FFI path (skip for now)
 
     let body_len = enc.buf.len() - frame.body_start;
-    let obj_start = enc.buf.len() + varint_len(body_len as u64) + 1; // after size prefix
     insert_size_prefix(&mut enc.buf, frame.body_start, b':', body_len);
 
     // Record schema for future objects

@@ -2,7 +2,6 @@ use napi::bindgen_prelude::*;
 use napi::{sys, ValueType};
 use napi_derive::napi;
 use rex_core::bytecode;
-use std::hash::{Hash, Hasher};
 
 /// Compile Rex source code to REXC bytecode with full optimizations.
 #[napi]
@@ -26,7 +25,7 @@ fn js_to_value(env: &Env, raw: sys::napi_value) -> Result<bytecode::Value> {
     };
 
     match ty {
-        ValueType::Undefined => Ok(bytecode::Value::Ref("u".into())),
+        ValueType::Undefined => Ok(bytecode::Value::Ref("no".into())),
         ValueType::Null => Ok(bytecode::Value::Ref("n".into())),
         ValueType::Boolean => {
             let mut val = false;
@@ -84,7 +83,7 @@ fn js_to_value(env: &Env, raw: sys::napi_value) -> Result<bytecode::Value> {
                 Ok(bytecode::Value::Map(pairs))
             }
         }
-        _ => Ok(bytecode::Value::Ref("u".into())),
+        _ => Ok(bytecode::Value::Ref("no".into())),
     }
 }
 

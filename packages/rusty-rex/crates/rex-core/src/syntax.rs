@@ -32,7 +32,7 @@ pub enum SyntaxKind {
     KwSelf,
     KwString,
     KwTrue,
-    KwUndefined,
+    KwNone,
     KwUnless,
     KwWhen,
     KwWhile,
