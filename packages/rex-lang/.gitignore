@@ -1,0 +1,6 @@
+# Scratch/test files with sensitive data
+*.rex
+*.json
+!package.json
+!tsconfig.json
+!rex-test-helpers.json
