@@ -10,7 +10,7 @@ This single idea drives the entire language:
 
 - **Comparisons** return the left-hand value on success, `undefined` on failure
 - **`when`/`unless`** branch on whether a value is defined
-- **`and`/`or`/`nor`** short-circuit on existence, not truthiness
+- **`and`/`or`** short-circuit on existence, not truthiness
 - **Type predicates** return the value if it matches, `undefined` otherwise
 
 Because there's no truthiness, there are no truthiness bugs:
@@ -135,7 +135,6 @@ Dots navigate into nested structures:
 user.name                  // read a key
 user.address.street        // nested navigation
 headers.content-type       // domain built-in navigation
-self.email                 // navigate into implicit value
 ```
 
 For dynamic keys (when the key is a variable or expression), use `.()`:
@@ -148,14 +147,6 @@ config.(headers.x-action)  // key is a dotted path
 // Chaining
 foo.bar.(key).baz          // static, dynamic, static
 table.(k1).(k2)            // multiple dynamic keys
-```
-
-Depth-aware self uses `self@N`:
-
-```rex
-self            // current self (depth 1)
-self@2          // parent self (depth 2)
-self@3          // grandparent self (depth 3)
 ```
 
 Bare `()` is always grouping — `.()` is always navigation. No ambiguity, no significant whitespace:
@@ -172,7 +163,7 @@ foo.(a + b)                // one expression: look up (a + b) in foo
 ```rex
 x = 42
 obj.key = "value"
-headers.x-handler = self
+headers.x-handler = handler
 ```
 
 `:=` is swap assignment: it writes the new value and returns the previous value.
@@ -225,11 +216,11 @@ This means comparisons compose directly with `when` and `and`:
 
 ```rex
 when age > 18 do
-  allow(self)
+  allow(age)
 end
 
 when age > 18 and age < 65 do
-  process(self)
+  process(age)
 end
 ```
 
@@ -259,7 +250,7 @@ true | false               // true
 user.can-edit = user.is-admin & ~user.is-suspended
 ```
 
-The distinction: **words** (`and`, `or`, `nor`) operate on **existence**. **Symbols** (`&`, `|`, `^`, `~`) operate on **values**.
+The distinction: **words** (`and`, `or`) operate on **existence**. **Symbols** (`&`, `|`, `^`, `~`) operate on **values**.
 
 ### Operator Precedence
 
@@ -274,8 +265,9 @@ Highest to lowest:
 | 5     | `..`                        | range                   |
 | 6     | `==` `!=` `>` `>=` `<` `<=` | comparison              |
 | 7     | `&` `^` `\|`                | bitwise / boolean value |
-| 8     | `and` `or` `nor`            | existence               |
-| 9     | `:=` `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` | assignment |
+| 8     | `and`                       | existence and            |
+| 9     | `or`                        | existence or             |
+| 10    | `:=` `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` | assignment |
 
 Use `()` to override:
 
@@ -292,7 +284,7 @@ a * (b + c)
 
 ```rex
 when age > 18 do
-  allow(self)
+  allow(age)
 end
 
 unless string(value) do
@@ -313,10 +305,10 @@ end
 Chain with `else when`:
 
 ```rex
-when string(value) do
-  handle-string(self)
-else when number(value) do
-  handle-number(self)
+when s = string(value) do
+  handle-string(s)
+else when n = number(value) do
+  handle-number(n)
 else
   handle-other()
 end
@@ -324,16 +316,15 @@ end
 
 ### Binding in Conditions
 
-`=` inside a `when` condition both binds the value and checks existence. `self` is also set to the condition value:
+`=` inside a `when` condition both binds the value and checks existence:
 
 ```rex
 when x = get-data() do
-  use(x)            // x is the value
-  use(self)         // self is also the value
+  use(x)            // x is the condition value
 end
 ```
 
-Named bindings are aliases for `self` — useful to avoid shadowing in nested scopes:
+Named bindings are useful to avoid shadowing in nested scopes:
 
 ```rex
 when x = get-primary() do
@@ -347,13 +338,12 @@ end
 
 ### Short Circuit Operators
 
-`and`, `or`, and `nor` short-circuit based on existence (defined vs `undefined`). They return actual values, not booleans:
+`and` and `or` short-circuit based on existence (defined vs `undefined`). They return actual values, not booleans. `and` binds tighter than `or`.
 
 | Operator  | Returns                                          |
 |-----------|--------------------------------------------------|
 | `a and b` | `b` if both defined, first `undefined` otherwise |
 | `a or b`  | first defined value, `undefined` otherwise       |
-| `a nor b` | `b` if `a` is undefined, `undefined` otherwise   |
 
 ```rex
 // or — first defined value (nullish coalescing)
@@ -362,13 +352,12 @@ user.preferred-name or user.name or "anonymous"
 // and — last value if all defined
 user and user.name and user.email
 
-// nor — pass value only if guard is absent
-composites.(n) nor n
+// mixed — and binds tighter
+a and b or c        // (a and b) or c
+a or b and c        // a or (b and c)
 ```
 
-`and` and `or` are variadic in the bytecode, but in infix they chain naturally with standard left-to-right evaluation. `nor` is the binary form of `unless a do b end` (without self binding).
-
-If you want a ternary expression `a ? b : c`, you can use `a and b or c` when `a` is an existence-style condition and `b` is known to be defined, otherwise use `when a do b else c end`.
+Both are variadic in the bytecode, but in infix they chain naturally left to right.
 
 For boolean conditions, compare explicitly (for example `when flag == true do ... end`) since `when` checks defined-vs-`undefined`, not truthiness.
 
@@ -379,12 +368,7 @@ For boolean conditions, compare explicitly (for example `when flag == true do ..
 `for` iterates over a value and executes a body for each element. Returns the last expression of the last iteration.
 
 ```rex
-// Implicit — self is each value
-for in [1, 2, 3] do
-  process(self)
-end
-
-// Named value — self is also set to v
+// Named value
 for v in [1, 2, 3] do
   process(v)
 end
@@ -395,14 +379,12 @@ for k, v in [1, 2, 3] do
   process(k, v)
 end
 
-// Keys only — self is the key
+// Keys only
 for k of {a: 1, b: 2, c: 3} do
   // k = "a", "b", "c"
   log(k)
 end
 ```
-
-In `in` forms, `self` is set to the current value. In `of` forms, `self` is set to the current key.
 
 ### Iteration Order and Mutation
 
@@ -433,7 +415,7 @@ for i in 1..10 do
   process(i)
 end
 
-evens = [self % 2 == 0 and self for v in 1..100]
+evens = [v % 2 == 0 and v for v in 1..100]
 digits = 0..9
 ```
 
@@ -467,16 +449,11 @@ end
 
 ### Comprehensions
 
-Comprehensions build new collections. The body expression comes first, followed by `for` with a binding clause (using the same `in`/`of` forms as `for` loops), or just `in`/`of` with an expression for implicit `self`.
+Comprehensions build new collections. The body expression comes first, followed by `for` with a binding clause (using the same `in`/`of` forms as `for` loops).
 
 #### Array Comprehensions
 
 ```rex
-// Implicit self with range
-[self % 2 > 0 and self % 3 > 0 and self % 5 > 0 in 1..100]
-// → [1, 7, 11, 13, 17, 19, 23, 29, 31, ...]
-
-// Named value
 [v * 2 for v in [1, 2, 3]]
 // → [2, 4, 6]
 
@@ -503,8 +480,7 @@ Object comprehensions use the same `{key: value for binding}` form, with the sam
 {("player-" + k): v * 100 for k, v in scores}
 // → {"player-alice": 9500, "player-bob": 8700}
 
-// Implicit self
-{(self.name): self.score in users}
+{(v.name): v.score for v in users}
 // → {Alice: 95, Bob: 87}
 ```
 
@@ -569,10 +545,10 @@ when n = number(value) do
 end
 
 // Type dispatch
-when string(value) do
-  handle-string(self)
-else when number(value) do
-  handle-number(self)
+when s = string(value) do
+  handle-string(s)
+else when n = number(value) do
+  handle-number(n)
 else
   handle-other()
 end
@@ -614,25 +590,6 @@ delete obj.key
 delete user.temp
 ```
 
-## Self
-
-`self` refers to the implicit value in the current scope — the condition in `when`/`unless`, or the current element in `for` loops and comprehensions:
-
-```rex
-when get-data() do
-  process(self)        // self is the result of get-data()
-  self.name            // navigate into it
-end
-```
-
-`self` is navigable like any other place:
-
-```rex
-self.name
-self.email
-self.address.street
-```
-
 ## Worked Examples
 
 ### Nullish Coalescing
@@ -645,7 +602,7 @@ user.preferred-name or user.name or "anonymous"
 
 ```rex
 when age > 18 and age < 65 do
-  process(self)
+  process(age)
 end
 ```
 
@@ -656,19 +613,19 @@ actions = {
   abc: "/letters"
   123: "/numbers"
 }
-when actions.(headers.x-action) do
-  headers.x-handler = self
+when handler = actions.(headers.x-action) do
+  headers.x-handler = handler
 end
 ```
 
 Or inline:
 
 ```rex
-when {
+when handler = {
   abc: "/letters"
   123: "/numbers"
 }.(headers.x-action) do
-  headers.x-handler = self
+  headers.x-handler = handler
 end
 ```
 
@@ -712,8 +669,8 @@ end
 
 ```rex
 total = 0
-for in [10, 20, 30] do
-  total += self
+for v in [10, 20, 30] do
+  total += v
 end
 // total is 60
 ```
@@ -750,7 +707,7 @@ when path-match("/api/users/*") do
   else when method == "POST" do
     when string(headers.content-type) and headers.content-type == "application/json" do
       status = 201
-      headers.x-created = self.id
+      headers.x-created = req.body.id
     else
       status = 415
       headers.x-error = "Expected application/json"
@@ -808,9 +765,9 @@ end
 
 ## Reserved Words
 
-**Literals:** `true`, `false`, `null`, `undefined`, `self`
+**Literals:** `true`, `false`, `null`, `undefined`
 
-**Control flow:** `when`, `unless`, `for`, `in`, `of`, `do`, `else`, `end`, `break`, `continue`, `and`, `or`, `nor`, `return`
+**Control flow:** `when`, `unless`, `for`, `in`, `of`, `do`, `else`, `end`, `break`, `continue`, `and`, `or`, `return`
 
 **Place operations:** `delete`
 
@@ -854,7 +811,7 @@ path-match("/api/*")
 domain-match("*.example.com")
 
 // Mutations — assignment to domain places
-headers.x-handler = self
+headers.x-handler = handler
 status = 200
 method = "POST"
 ```
@@ -884,8 +841,8 @@ Local bindings intentionally shadow domain symbols with the same name.
 
 All navigable values use one unified **place model**:
 
-- Reading: `x`, `obj.key`, `self.name`, `headers.x-request-id`
+- Reading: `x`, `obj.key`, `headers.x-request-id`
 - Writing: `x = 1`, `obj.key = value`, `headers.content-type = "application/json"`
 - Deleting: `delete obj.key`
 
-This keeps read/write/delete semantics consistent across locals, `self`, and domain-provided symbols.
+This keeps read/write/delete semantics consistent across locals and domain-provided symbols.
