@@ -19,7 +19,7 @@ type FileMeta = {size: integer, modified: integer}
 ### `extern` — declare a host-provided binding
 
 ```rex
-// Read-only (default)
+// Read-only binding, all fields read-only
 extern req = {
   method: HttpMethod
   path: string | [string]
@@ -30,19 +30,55 @@ extern req = {
   body: string
 }
 
-// Mutable — the program can assign to properties
-extern mut res = {
-  status: integer
-  headers: Headers
-  body: string
+// Per-field mutability
+extern res = {
+  mut status: integer
+  mut headers: {mut *: string | [string]}
+  body: string          // read-only
 }
 
-// Simple typed globals
+// Reassignable binding
+extern mut status = integer
+
+// Read-only globals
 extern config = unknown
 extern secrets = {*: string}
 ```
 
-`extern` declares a host-provided binding with a type. The host populates these before the Rex program runs. Globals are read-only by default. Use `mut` after `extern` to allow property writes. `mut` is contextual — only recognized after `extern`, not a standalone keyword.
+`extern` declares a host-provided binding with a type. The host populates these before the Rex program runs. Everything is read-only by default.
+
+### Mutability (`mut`)
+
+`mut` is a property of a binding — it can appear on the top-level `extern` or on individual fields inside an object type. `mut` is contextual — only recognized after `extern` or before a field name in a type expression, not a standalone keyword.
+
+| Declaration | Meaning |
+|---|---|
+| `extern name = T` | Read-only binding, read-only fields |
+| `extern mut name = T` | Binding is reassignable (can do `name = new_value`) |
+| `mut field: T` inside object type | Field is writable (can do `obj.field = value`) |
+| `field: T` inside object type | Field is read-only |
+| `{mut *: T}` | Map entries are writable (can do `obj.key = value` for any key) |
+| `{*: T}` | Map entries are read-only |
+
+`mut` on a field controls writes to that field. `mut` on the binding controls reassignment of the whole binding. They are independent:
+
+```rex
+// Can write res.status and res.headers.x-foo, but not res.body
+extern res = {
+  mut status: integer
+  mut headers: {mut *: string | [string]}
+  body: string
+}
+
+res.status = 404                    // valid — status is mut
+res.headers.x-request-id = "abc"   // valid — headers is mut, map entries are mut
+res.body = "hello"                  // error — body is not mut
+res = {status: 500}                // error — binding is not mut
+
+// Can reassign the whole status binding
+extern mut status = integer
+status = 404                        // valid — binding is mut
+```
 
 ### Function signatures (`extern` with call shape)
 
