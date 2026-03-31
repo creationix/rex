@@ -59,7 +59,7 @@ items = [json.parse(a.value) for a in articles]
 
 ### 5. The type system catches real bugs
 
-Running `rex check routes/` against the `.rexd` domain interface file caught two real bugs in the tour app:
+The type checker is integrated into the hot reload cycle — it runs on startup (all files) and on every file save (incremental). Diagnostics appear in the server log alongside route loading, so you see type errors the moment you save. Running `rex check routes/` against the `.rexd` domain interface file caught two real bugs in the tour app:
 
 - An unused `principal` variable in the API middleware (assigned but never read downstream)
 - A missing `${hl-3}` interpolation in the DX Report page (highlighted snippet prepared but never rendered)
@@ -87,7 +87,7 @@ Every original pain point was resolved during the project:
 | **`self` keyword** | Removed — loop variables via `for v in` bindings are cleaner |
 | **Separate `when`/`unless` bytecode** | Unified into variadic `?` cond — `unless c do t end` compiles to `?(c no' t)` |
 | **Binary `and`/`or`** | Now variadic — `a and b and c` is a single `&(a b c)` |
-| **No type checking** | `rex check` validates against `.rexd` declarations — caught 2 real bugs |
+| **No type checking** | `rex check` validates against `.rexd` — integrated into hot reload cycle |
 
 ## Remaining Wishes
 
