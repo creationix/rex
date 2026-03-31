@@ -1,0 +1,18 @@
+{
+	"name": "@creationix/rex-ts",
+	"version": "0.1.0",
+	"description": "TypeScript tagged template literals for generating Rex middleware",
+	"type": "module",
+	"main": "index.ts",
+	"types": "./index.ts",
+	"exports": {
+		".": {
+			"bun": "./index.ts",
+			"default": "./index.ts"
+		}
+	},
+	"dependencies": {},
+	"devDependencies": {
+		"@types/bun": "latest"
+	}
+}
