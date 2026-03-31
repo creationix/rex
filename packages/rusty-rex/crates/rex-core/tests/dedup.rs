@@ -216,3 +216,4 @@ fn dedup_middleware_with_guard_returns() {
         principal = token
     "#);
 }
+
