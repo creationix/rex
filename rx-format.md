@@ -51,7 +51,7 @@ Character:  K L M N O P Q R S T U V W X Y Z - _
 Value:      46                                    62 63
 ```
 
-Every byte that is NOT in this set is a tag byte. Tag bytes include: `+ * , ' ^ . [ ] { } # ( ) ? ! | & > < = / ~ ; @ $ % \`
+Every byte that is NOT in this set is a tag byte. Tag bytes include: `+ * , ' ^ . [ ] { } # ( ) ? | & > < = / ~ ; $ % \`
 
 ### Varint Decoding
 
