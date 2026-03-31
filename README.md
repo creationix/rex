@@ -228,7 +228,7 @@ The [rex-serve](packages/rusty-rex/crates/rex-serve) project embeds Rex as the s
 
 - **Filesystem routing** with `[param].rex` dynamic segments and `_middleware.rex` chains
 - **Tagged template literals** (`html\`...\``) with auto-escaping and `html.raw()` for safe HTML
-- **Domain-aware compilation** — `.rexd` declarations drive opcode rewriting and variable minification
+- **Domain interface** — `.rexd` declarations drive type checking and are ready for domain-aware compilation
 - **In-memory KV store** with TTL and pub/sub channels (`kv.get/set/publish/subscribe`)
 - **WebSocket pub/sub** at `/__ws/{channel}` with per-channel Rex transform scripts
 - **Hot reload** with WebSocket browser notifications and type checking on save
