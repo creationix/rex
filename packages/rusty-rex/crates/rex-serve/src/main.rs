@@ -1,5 +1,6 @@
 mod config;
 mod handler;
+mod kv;
 mod opcodes;
 mod refs;
 mod router;

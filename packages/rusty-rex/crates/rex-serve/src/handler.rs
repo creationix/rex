@@ -272,6 +272,7 @@ fn run_rex_program(
     let mut ns_template = OpcodeNamespace { methods: vec![("render", "tr")], tag_opcode: None };
     let mut ns_crypto = OpcodeNamespace { methods: vec![("hash", "ch"), ("hmac", "cm"), ("random", "cr")], tag_opcode: None };
     let mut ns_log = OpcodeNamespace { methods: vec![("info", "li"), ("warning", "lw"), ("error", "le")], tag_opcode: None };
+    let mut ns_kv = OpcodeNamespace { methods: vec![("get", "kg"), ("set", "ks"), ("delete", "kd"), ("keys", "kk"), ("incr", "ki"), ("publish", "kp")], tag_opcode: None };
     let mut ns_html = OpcodeNamespace { methods: vec![("escape", "he"), ("highlight", "hl"), ("highlight-html", "hh"), ("raw", "hr")], tag_opcode: Some("ht") };
 
     // Host object indices:
@@ -281,7 +282,7 @@ fn run_rex_program(
     // 3: QueryObject
     // 4: CookieObject
     // 5: ns_time, 6: ns_json, 7: ns_db, 8: ns_fs
-    // 9: ns_markdown, 10: ns_template, 11: ns_crypto, 12: ns_log, 13: ns_html
+    // 9: ns_markdown, 10: ns_template, 11: ns_crypto, 12: ns_log, 13: ns_html, 14: ns_kv
 
     // Build refs (short codes from .config.rex — resolved via 'X syntax)
     let mut refs = HashMap::new();
@@ -323,11 +324,13 @@ fn run_rex_program(
     vars.insert("crypto".into(), RexValue::Host(11));
     vars.insert("log".into(), RexValue::Host(12));
     vars.insert("html".into(), RexValue::Host(13));
+    vars.insert("kv".into(), RexValue::Host(14));
 
     // Set up opcodes
     let opcodes = crate::opcodes::build_opcodes(
         state.db.clone(),
         state.project_root.clone(),
+        state.kv.clone(),
     );
 
     let ctx = Context {
@@ -348,6 +351,7 @@ fn run_rex_program(
             &mut ns_crypto,         // 11
             &mut ns_log,            // 12
             &mut ns_html,           // 13
+            &mut ns_kv,             // 14
         ],
         opcodes,
         gas_limit: state.config.server.gas_limit,

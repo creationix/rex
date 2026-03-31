@@ -9,11 +9,13 @@ use crate::refs::rex_value_to_string;
 pub fn build_opcodes(
     db: Arc<Mutex<rusqlite::Connection>>,
     project_root: PathBuf,
+    kv: Arc<std::sync::Mutex<crate::kv::KvStore>>,
 ) -> HashMap<String, fn(&[RexValue]) -> Result<RexValue, RexError>> {
     DB_CONN.with(|cell| { *cell.borrow_mut() = Some(db); });
     let canonical = project_root.canonicalize().unwrap_or_else(|_| project_root.clone());
     PROJECT_ROOT.with(|cell| { *cell.borrow_mut() = Some(project_root); });
     PROJECT_ROOT_CANONICAL.with(|cell| { *cell.borrow_mut() = Some(canonical); });
+    KV_STORE.with(|cell| { *cell.borrow_mut() = Some(kv); });
 
     let mut opcodes = HashMap::new();
 
@@ -50,6 +52,14 @@ pub fn build_opcodes(
     opcodes.insert("cm".to_string(), op_crypto_hmac as fn(&[RexValue]) -> _);
     opcodes.insert("cr".to_string(), op_crypto_random as fn(&[RexValue]) -> _);
 
+    // KV store
+    opcodes.insert("kg".to_string(), op_kv_get as fn(&[RexValue]) -> _);
+    opcodes.insert("ks".to_string(), op_kv_set as fn(&[RexValue]) -> _);
+    opcodes.insert("kd".to_string(), op_kv_delete as fn(&[RexValue]) -> _);
+    opcodes.insert("kk".to_string(), op_kv_keys as fn(&[RexValue]) -> _);
+    opcodes.insert("ki".to_string(), op_kv_incr as fn(&[RexValue]) -> _);
+    opcodes.insert("kp".to_string(), op_kv_publish as fn(&[RexValue]) -> _);
+
     // Text
     opcodes.insert("he".to_string(), op_html_escape as fn(&[RexValue]) -> _);
     opcodes.insert("hl".to_string(), op_highlight_rex as fn(&[RexValue]) -> _);
@@ -67,6 +77,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     /// Pre-canonicalized project root — computed once, reused for every sandbox check.
     static PROJECT_ROOT_CANONICAL: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    static KV_STORE: std::cell::RefCell<Option<Arc<std::sync::Mutex<crate::kv::KvStore>>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -901,6 +913,69 @@ fn highlight_html_source(source: &str) -> String {
     }
 
     out
+}
+
+// ── KV Store ──────────────────────────────────────────────────────────
+
+fn with_kv<F, R>(f: F) -> Result<R, RexError>
+where F: FnOnce(&mut crate::kv::KvStore) -> Result<R, RexError> {
+    KV_STORE.with(|cell| {
+        let borrow = cell.borrow();
+        let kv = borrow.as_ref().ok_or_else(|| RexError::HostError("no kv store".into()))?;
+        let mut store = kv.lock().map_err(|e| RexError::HostError(format!("kv lock: {e}")))?;
+        f(&mut store)
+    })
+}
+
+fn op_kv_get(args: &[RexValue]) -> Result<RexValue, RexError> {
+    let key = arg_str(args, 0)?;
+    with_kv(|store| {
+        match store.get(key) {
+            Some(val) => Ok(RexValue::Str(val.to_string())),
+            None => Ok(RexValue::RexNone),
+        }
+    })
+}
+
+fn op_kv_set(args: &[RexValue]) -> Result<RexValue, RexError> {
+    let key = arg_str(args, 0)?;
+    let value = args.get(1).map(rex_value_to_string).unwrap_or_default();
+    let ttl = args.get(2).and_then(|v| v.to_i64()).map(|t| t as u64);
+    with_kv(|store| {
+        store.set(key.to_string(), value, ttl);
+        Ok(RexValue::Bool(true))
+    })
+}
+
+fn op_kv_delete(args: &[RexValue]) -> Result<RexValue, RexError> {
+    let key = arg_str(args, 0)?;
+    with_kv(|store| {
+        Ok(RexValue::Bool(store.delete(key)))
+    })
+}
+
+fn op_kv_keys(args: &[RexValue]) -> Result<RexValue, RexError> {
+    let prefix = arg_str(args, 0)?;
+    with_kv(|store| {
+        let keys = store.keys(prefix);
+        Ok(RexValue::Array(keys.into_iter().map(RexValue::Str).collect()))
+    })
+}
+
+fn op_kv_incr(args: &[RexValue]) -> Result<RexValue, RexError> {
+    let key = arg_str(args, 0)?;
+    with_kv(|store| {
+        Ok(RexValue::Int(store.incr(key)))
+    })
+}
+
+fn op_kv_publish(args: &[RexValue]) -> Result<RexValue, RexError> {
+    let channel = arg_str(args, 0)?;
+    let data = args.get(1).map(rex_value_to_string).unwrap_or_default();
+    with_kv(|store| {
+        let count = store.publish(channel, &data);
+        Ok(RexValue::Int(count as i64))
+    })
 }
 
 // ── Database Init ─────────────────────────────────────────────────────
