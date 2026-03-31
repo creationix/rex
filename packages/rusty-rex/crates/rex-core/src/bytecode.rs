@@ -89,7 +89,6 @@ pub enum Value {
     Ref(String),
     Variable(String),
     Opcode(String),
-    SelfRef(u32),
     BreakCont(u32),
     Pointer(u32),
 
@@ -99,7 +98,6 @@ pub enum Value {
     Call(Vec<Value>),
 
     When(Vec<Value>),
-    Unless(Vec<Value>),
     Or(Vec<Value>),
     And(Vec<Value>),
     ForIn(Vec<Value>),
@@ -158,10 +156,6 @@ fn encode_into(value: &Value, out: &mut String) {
             out.push_str(name);
             out.push('%');
         }
-        Value::SelfRef(depth) => {
-            out.push_str(&encode_varint(*depth as u64));
-            out.push('@');
-        }
         Value::BreakCont(v) => {
             out.push_str(&encode_varint(*v as u64));
             out.push('\\');
@@ -186,7 +180,7 @@ fn encode_into(value: &Value, out: &mut String) {
 
         // Compound containers
         Value::When(items) => encode_compound('?', '(', ')', items, out),
-        Value::Unless(items) => encode_compound('!', '(', ')', items, out),
+
         Value::Or(items) => encode_compound('|', '(', ')', items, out),
         Value::And(items) => encode_compound('&', '(', ')', items, out),
         Value::ForIn(items) => encode_compound('>', '(', ')', items, out),
@@ -373,13 +367,13 @@ fn encode_compound(modifier: char, open: char, close: char, items: &[Value], out
 }
 
 fn is_conditional_modifier(modifier: char) -> bool {
-    matches!(modifier, '?' | '!' | '|' | '&')
+    matches!(modifier, '?' | '|' | '&')
 }
 
 /// Containers that lack a built-in size prefix and need one for O(1) skipping.
 fn is_container(value: &Value) -> bool {
     matches!(value, Value::Block(_) | Value::Array(_) | Value::Object(_) | Value::Call(_)
-        | Value::When(_) | Value::Unless(_) | Value::Or(_) | Value::And(_)
+        | Value::When(_) | Value::Or(_) | Value::And(_)
         | Value::ForIn(_) | Value::ForOf(_) | Value::While(_)
         | Value::ListCompIn(_) | Value::ListCompOf(_) | Value::ListCompWhile(_)
         | Value::MapCompIn(_) | Value::MapCompOf(_) | Value::MapCompWhile(_))
@@ -455,7 +449,7 @@ fn prescan_counts(
 ) -> usize {
     match value {
         Value::Array(items) | Value::Block(items) | Value::Call(items)
-        | Value::When(items) | Value::Unless(items) | Value::Or(items) | Value::And(items)
+        | Value::When(items) | Value::Or(items) | Value::And(items)
         | Value::ForIn(items) | Value::ForOf(items) | Value::While(items)
         | Value::ListCompIn(items) | Value::ListCompOf(items) | Value::ListCompWhile(items)
         | Value::MapCompIn(items) | Value::MapCompOf(items) | Value::MapCompWhile(items)
@@ -659,7 +653,6 @@ impl RevEncoder {
             Value::Ref(n) => { self.push(b'\''); self.push_str_rev(n.as_bytes()); }
             Value::Variable(n) => { self.push(b'$'); self.push_str_rev(n.as_bytes()); }
             Value::Opcode(n) => { self.push(b'%'); self.push_str_rev(n.as_bytes()); }
-            Value::SelfRef(d) => { self.push(b'@'); self.push_varint(*d as u64); }
             Value::BreakCont(v) => { self.push(b'\\'); self.push_varint(*v as u64); }
             Value::Pointer(d) => { self.push(b'^'); self.push_varint(*d as u64); }
 
@@ -677,7 +670,7 @@ impl RevEncoder {
 
             // Compound: closer, children, opener, modifier, [skip prefix]
             Value::When(items) => self.emit_compound(b'?', b'(', b')', items, skippable),
-            Value::Unless(items) => self.emit_compound(b'!', b'(', b')', items, skippable),
+
             Value::Or(items) => self.emit_compound(b'|', b'(', b')', items, skippable),
             Value::And(items) => self.emit_compound(b'&', b'(', b')', items, skippable),
             Value::ForIn(items) => self.emit_compound(b'>', b'(', b')', items, skippable),
@@ -848,7 +841,7 @@ impl RevEncoder {
     }
 
     fn emit_compound(&mut self, modifier: u8, open: u8, close: u8, items: &[Value], skippable: bool) {
-        let is_conditional = matches!(modifier, b'?' | b'!' | b'|' | b'&');
+        let is_conditional = matches!(modifier, b'?' | b'|' | b'&');
         let before = self.pos;
         self.push(close);
         for (i, item) in items.iter().enumerate().rev() {
@@ -987,10 +980,6 @@ fn decode_one(input: &[u8], pos: &mut usize, resolve: bool) -> Result<Value, Dec
                 })?
                 .to_owned();
             Ok(Value::Opcode(name))
-        }
-        b'@' => {
-            let depth = varint_from_raw(varint_raw) as u32;
-            Ok(Value::SelfRef(depth))
         }
         b'\\' => {
             let v = varint_from_raw(varint_raw) as u32;
@@ -1245,7 +1234,7 @@ fn decode_compound(
 
     let value = match (modifier, is_list, is_map) {
         (b'?', false, false) => Value::When(items),
-        (b'!', false, false) => Value::Unless(items),
+        (b'!', false, false) => Value::When(items), // legacy unless → cond
         (b'|', false, false) => Value::Or(items),
         (b'&', false, false) => Value::And(items),
         (b'>', false, false) => Value::ForIn(items),
@@ -1408,13 +1397,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn self_ref_roundtrip() {
-        for depth in [0, 1, 2, 10] {
-            let v = Value::SelfRef(depth);
-            assert_eq!(roundtrip(&v), v);
-        }
-    }
 
     #[test]
     fn break_cont_roundtrip() {
@@ -1553,9 +1535,11 @@ mod tests {
     }
 
     #[test]
-    fn unless_roundtrip() {
-        let v = Value::Unless(vec![
+    fn unless_desugared_roundtrip() {
+        // unless x do y end → ?(x no' y)
+        let v = Value::When(vec![
             Value::Variable("x".into()),
+            Value::Ref("no".into()),
             Value::Variable("y".into()),
         ]);
         assert_eq!(roundtrip(&v), v);
@@ -1605,10 +1589,11 @@ mod tests {
         // [self * self in items]
         let v = Value::ListCompIn(vec![
             Value::Variable("items".into()),
+            Value::Variable("x".into()),
             Value::Call(vec![
                 Value::Opcode("ml".into()),
-                Value::SelfRef(0),
-                Value::SelfRef(0),
+                Value::Variable("x".into()),
+                Value::Variable("x".into()),
             ]),
         ]);
         assert_eq!(roundtrip(&v), v);
@@ -1830,8 +1815,9 @@ mod tests {
         // deduplicated — the pointer target may be in a skipped branch.
         let shared = Value::String("shared-value".into());
         let v = Value::Block(vec![
-            Value::Unless(vec![
+            Value::When(vec![
                 Value::Variable("x".into()),
+                Value::Ref("no".into()),
                 shared.clone(),
             ]),
             Value::When(vec![
@@ -1843,8 +1829,8 @@ mod tests {
         // Both branches should contain the full string, not a pointer
         let decoded = decode(&deduped).unwrap();
         if let Value::Block(items) = &decoded {
-            if let Value::Unless(u_items) = &items[0] {
-                assert_eq!(u_items[1], Value::String("shared-value".into()));
+            if let Value::When(u_items) = &items[0] {
+                assert_eq!(u_items[2], Value::String("shared-value".into()));
             }
             if let Value::When(w_items) = &items[1] {
                 assert_eq!(w_items[1], Value::String("shared-value".into()));

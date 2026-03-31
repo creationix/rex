@@ -67,11 +67,6 @@ fn roundtrip_refs() {
     }
 }
 
-#[test]
-fn roundtrip_self() {
-    roundtrip(Value::SelfRef(0));
-    roundtrip(Value::SelfRef(2));
-}
 
 #[test]
 fn roundtrip_break_continue() {
@@ -236,8 +231,10 @@ fn roundtrip_when_else() {
 
 #[test]
 fn roundtrip_unless() {
-    roundtrip(Value::Unless(vec![
+    // unless x do y end → ?(x no' y)
+    roundtrip(Value::When(vec![
         Value::Variable("x".into()),
+        Value::Ref("no".into()),
         Value::Variable("y".into()),
     ]));
 }
@@ -337,13 +334,14 @@ fn roundtrip_nested_data() {
 
 #[test]
 fn roundtrip_list_comp_in() {
-    // [self * self in items]
+    // [x * x for x in items]
     roundtrip(Value::ListCompIn(vec![
         Value::Variable("items".into()),
+        Value::Variable("x".into()),
         Value::Call(vec![
             Value::Opcode("ml".into()),
-            Value::SelfRef(0),
-            Value::SelfRef(0),
+            Value::Variable("x".into()),
+            Value::Variable("x".into()),
         ]),
     ]));
 }
@@ -443,8 +441,10 @@ fn roundtrip_when_with_block_branches() {
 
 #[test]
 fn roundtrip_unless_with_block_branch() {
-    roundtrip(Value::Unless(vec![
+    // unless x do y = 42; y end → ?(x no' {=y$1k+ y$})
+    roundtrip(Value::When(vec![
         Value::Variable("x".into()),
+        Value::Ref("no".into()),
         Value::Block(vec![
             Value::Set(
                 Box::new(Value::Variable("y".into())),
@@ -477,10 +477,13 @@ fn roundtrip_and_with_call_branch() {
 
 #[test]
 fn roundtrip_nested_conditionals_with_blocks() {
+    // when x do (unless y do 99 end) else 0 end
+    // → ?(x ?(y no' 99) 0)
     roundtrip(Value::When(vec![
         Value::Variable("x".into()),
-        Value::Unless(vec![
+        Value::When(vec![
             Value::Variable("y".into()),
+            Value::Ref("no".into()),
             Value::Integer(99),
         ]),
         Value::Integer(0),

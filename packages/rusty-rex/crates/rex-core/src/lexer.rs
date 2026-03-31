@@ -39,8 +39,6 @@ pub enum TokenKind {
     KwInf,
     #[token("nan", word_boundary)]
     KwNan,
-    #[token("nor", word_boundary)]
-    KwNor,
     #[token("not", word_boundary)]
     KwNot,
     #[token("null", word_boundary)]
@@ -55,8 +53,6 @@ pub enum TokenKind {
     KwOr,
     #[token("return", word_boundary)]
     KwReturn,
-    #[token("self", word_boundary)]
-    KwSelf,
     #[token("string", word_boundary)]
     KwString,
     #[token("true", word_boundary)]
@@ -329,7 +325,7 @@ mod tests {
         assert_eq!(non_trivia("info"), vec![TokenKind::Ident]);
         assert_eq!(non_trivia("infinity"), vec![TokenKind::Ident]);
         assert_eq!(non_trivia("inf"), vec![TokenKind::KwInf]);
-        assert_eq!(non_trivia("self"), vec![TokenKind::KwSelf]);
+        assert_eq!(non_trivia("self"), vec![TokenKind::Ident]);
         assert_eq!(non_trivia("selfish"), vec![TokenKind::Ident]);
     }
 
@@ -412,13 +408,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn self_depth() {
-        assert_eq!(
-            non_trivia("self@2"),
-            vec![TokenKind::KwSelf, TokenKind::At, TokenKind::DecimalNumber]
-        );
-    }
 
     #[test]
     fn trivia_preserved() {
