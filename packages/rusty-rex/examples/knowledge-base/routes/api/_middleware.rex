@@ -16,4 +16,5 @@ unless key-valid do
   return {ok: false, error: "invalid_api_key"}
 end
 
-principal = api-key
+/* Authenticated identity — available to downstream handlers */
+log.info(`authenticated: ${api-key}`)

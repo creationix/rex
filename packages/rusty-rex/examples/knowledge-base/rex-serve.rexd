@@ -131,6 +131,8 @@ extern html.escape(text: string) ->string
 extern html.highlight(source: string) ->string
 // Syntax-highlight HTML source code as HTML with Tokyo Night theme
 extern html.highlight-html(source: string) ->string
+// Mark a string as pre-rendered HTML (skip escaping in html`` templates)
+extern html.raw(html: string) ->string
 // Tagged template: auto-escapes interpolated values, static HTML passes through
 // Usage: html`<p>${user-input}</p>`
 extern html(parts: [string], ...values: some) ->string
