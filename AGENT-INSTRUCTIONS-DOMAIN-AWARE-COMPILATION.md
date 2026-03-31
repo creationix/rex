@@ -94,22 +94,36 @@ Generate a short hash from the full function name. Deterministic but not human-r
 
 ### Compiler (`crates/rex-core/`)
 
-1. **`lib.rs`**: Add `compile_with_domain(source: &str, domain: &str) -> String` that parses the `.rexd` file and passes the function declarations to the lowerer.
+The compiler is a pure function — no filesystem I/O. The host reads `.rexd` files and passes the content as a string.
 
-2. **`lower.rs`**: During lowering, when a `PostfixExpr` is `identifier.identifier(args)`:
+1. **`lib.rs`**: Add `compile_with_domain(source: &str, domain: &str) -> String`. The `domain` parameter is the `.rexd` content as a string, not a file path. The compiler parses the declarations to extract function signatures.
+
+2. **`lower.rs`**: Accept an optional set of known functions from the parsed domain. During lowering, when a `PostfixExpr` is `identifier.identifier(args)`:
    - Check if `namespace.method` matches a declared `extern` function
    - If yes: emit `Value::Call([Value::Opcode(mnemonic), ...args])` instead of `Value::Call([Value::Call([Value::Variable(ns), Value::String(method)]), ...args])`
    - If no: emit as before (variable navigation)
 
 3. **No interpreter changes needed** — opcodes are already dispatched by mnemonic.
 
+4. **No filesystem access in the compiler** — the host (rex-serve, CLI, LSP) is responsible for finding and reading `.rexd` files. The compiler just receives strings.
+
 ### rex-serve (`crates/rex-serve/`)
 
-1. **`router.rs`**: Call `compile_with_domain(source, domain_content)` instead of `compile(source)`. Read the `.rexd` file once at startup.
+1. **`router.rs`**: Read the `.rexd` file once at startup. Pass its content to `compile_with_domain(source, domain_content)` for each route file.
 
 2. **`handler.rs`**: Remove the 9 `OpcodeNamespace` HostObjects (`ns_time`, `ns_json`, etc.) and the corresponding `vars.insert("time", Host(5))` lines. The opcodes are now called directly.
 
 3. **`refs.rs`**: The `OpcodeNamespace` struct can be removed entirely (or kept for the `html` tagged template, which uses `HostObject::call`).
+
+### CLI (`crates/rex-cli/`)
+
+The `rex compile` command could accept an optional `--domain` flag:
+
+```sh
+rex compile --domain rex-serve.rexd input.rex
+```
+
+The CLI reads the file, passes the content to `compile_with_domain`. Without `--domain`, it calls `compile` as before.
 
 ### Tagged templates — special case
 
@@ -120,6 +134,19 @@ The `html` tagged template compiles as `call($html, [parts], values)`. With doma
 - **Data bindings** (`headers`, `method`, `body`, `res`, `params`) remain as vars. The `.rexd` file declares them as `extern` data, not functions.
 - **The opcode registry** in `handler.rs` stays. Opcodes are still registered as `fn` pointers in the `Context.opcodes` HashMap.
 - **HostObjects for request/response** (`HeadersObject`, `ResponseObject`, etc.) stay. These provide runtime behavior (case-insensitive header lookup, mutable status).
+- **The compiler does no I/O** — it's a pure `(source, domain) -> bytecode` function.
+
+## API Design
+
+```rust
+// Pure function — no I/O. Domain is an optional string, not a path.
+pub fn compile(source: &str) -> String { ... }
+pub fn compile_with_domain(source: &str, domain: &str) -> String { ... }
+
+// The host reads .rexd files and passes the content:
+let domain = std::fs::read_to_string("rex-serve.rexd")?;
+let bytecode = rex_core::compile_with_domain(&source, &domain);
+```
 
 ## Verification
 
