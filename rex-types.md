@@ -1,6 +1,81 @@
 # Rex Type System
 
-Rex has no user-space type annotations. Types are inferred from domain interface files (`.rexd`), literals, operators, and type predicates. The type system exists purely for tooling — the compiler and interpreter are untyped.
+Types are inferred from declarations (`type`, `extern`), literals, operators, and type predicates. The type system exists purely for tooling — the compiler and interpreter are untyped.
+
+## Declarations
+
+Rex has two declaration keywords: `type` and `extern`. These are part of the Rex grammar and can appear in any `.rex` or `.rexd` file.
+
+### `type` — define a named type alias
+
+```rex
+type Headers = {*: string | [string]}
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH"
+type FileMeta = {size: integer, modified: integer}
+```
+
+`type` followed by an identifier, `=`, and a type expression. By convention, type names are uppercase. The compiler and interpreter ignore type declarations — they are consumed only by the type checker.
+
+### `extern` — declare a host-provided binding
+
+```rex
+// Read-only (default)
+extern req = {
+  method: HttpMethod
+  path: string | [string]
+  headers: Headers
+  query: {*: string | [string]}
+  cookies: {*: string}
+  ip: string
+  body: string
+}
+
+// Mutable — the program can assign to properties
+extern mut res = {
+  status: integer
+  headers: Headers
+  body: string
+}
+
+// Simple typed globals
+extern config = unknown
+extern secrets = {*: string}
+```
+
+`extern` declares a host-provided binding with a type. The host populates these before the Rex program runs. Globals are read-only by default. Use `mut` after `extern` to allow property writes. `mut` is contextual — only recognized after `extern`, not a standalone keyword.
+
+### Function signatures (`extern` with call shape)
+
+```rex
+extern json.parse(text: string) = some
+extern json.stringify(value: some) = string
+extern log.info(message: some)
+extern res.rewrite(url: string) = never
+extern res.redirect(url: string, status: integer) = never
+```
+
+`extern` with a call expression on the left declares a function signature. Return type follows `=`. Functions without `= ReturnType` return `none`.
+
+### Comments as documentation
+
+`//` comments immediately above a declaration are extracted as hover documentation:
+
+```rex
+// Client IP address from the connecting socket or X-Forwarded-For header
+extern ip = string
+```
+
+---
+
+## Domain Interface Files (`.rexd`)
+
+A `.rexd` file is a normal `.rex` file that contains only `type` and `extern` declarations. The LSP searches upward from the open file for `*.rexd` files and loads their declarations into the project-wide type environment.
+
+`.rexd` files describe the developer-facing API for a domain. The names match what the programmer writes in Rex code (`req.headers`, `res.status`). The compiler maps these to internal short ref codes via a separate host-provided mapping — the developer never sees or writes short codes.
+
+See `packages/rusty-rex/examples/knowledge-base/rex-serve.rexd` for a complete example.
+
+---
 
 ## Type Summary
 
@@ -35,80 +110,9 @@ Internally, all three object forms are a single type: an object with known field
 | `T \| U` | Union — value can be `T` or `U` |
 | `unknown` | Alias for `some \| none` |
 | `never` | Function does not return (throws or diverges) |
-| `Name` | Reference to a type alias defined in `.rexd` |
+| `Name` | Reference to a type alias defined with `type` |
 
----
-
-## Domain Interface Files (`.rexd`)
-
-A `.rexd` file declares the types of globals, functions, and type aliases available to Rex programs in a given project. The LSP searches upward from the open file for `*.rexd` files.
-
-### Syntax
-
-`.rexd` files use standard Rex grammar — they are normal Rex files that happen to contain only `type` and `extern` declarations. No special parser mode is needed; the `type` and `extern` keywords switch interpretation.
-
-#### Type aliases (`type`)
-
-`type` defines a named type shape. By convention, type names are uppercase:
-
-```rex
-type Headers = {*: string | [string]}
-type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH"
-```
-
-#### Globals (`extern`)
-
-`extern` declares a host-provided binding with a type. The host populates these before the Rex program runs:
-
-```rex
-// Read-only (default)
-extern req = {
-  method: HttpMethod
-  path: string | [string]
-  headers: Headers
-  query: {*: string | [string]}
-  cookies: {*: string}
-  ip: string
-  body: string
-}
-
-// Mutable — the program can assign to properties
-extern mut res = {
-  status: number
-  headers: Headers
-  body: string
-}
-
-// Simple typed globals
-extern config = unknown
-extern secrets = {*: string}
-```
-
-#### Functions (`extern` with call shape)
-
-`extern` with a call expression on the left side declares a function signature. Return type follows `=`:
-
-```rex
-extern log.info(message: unknown)
-extern log.warning(message: unknown)
-extern json.parse(text: string) = unknown
-extern json.stringify(value: unknown) = string
-extern res.rewrite(url: string) = never
-extern res.redirect(url: string, status: number) = never
-```
-
-Functions without `= ReturnType` return `none`.
-
-#### Comments as documentation
-
-`//` comments immediately above a declaration are extracted as hover documentation:
-
-```rex
-// Client IP address from the connecting socket or X-Forwarded-For header
-extern ip = string
-```
-
-### Type syntax
+### Type expression syntax
 
 Inside `type` and `extern` declarations, the right-hand side of `=` is a type expression. Type expressions reuse Rex value syntax (`{}`, `[]`, `|`, identifiers, string literals) but are interpreted as types:
 
@@ -158,22 +162,6 @@ when data do
   end
 end
 ```
-
-### Mutability
-
-Globals declared with `extern` are read-only by default. Use `mut` after `extern` to allow property writes:
-
-```rex
-extern mut res = { status: number, headers: Headers, body: string }
-```
-
-Inside Rex code, `res.status = 404` is valid. Without `mut`, the LSP reports an error on write attempts.
-
-`mut` is a contextual keyword — it is only recognized immediately after `extern`, not as a standalone reserved word.
-
-### No short codes
-
-`.rexd` files describe the developer-facing API. The names match what the programmer writes in Rex code (`req.headers`, `res.status`). The compiler maps these to internal short ref codes (`'H`, `'S`) via a separate host-provided mapping. The developer never sees or writes short codes.
 
 ---
 
@@ -292,13 +280,12 @@ score = x > 10    // score: number | none  (if x: number)
 
 ### Logical operators
 
-Rex uses existence-based logic, not boolean logic:
+Rex uses existence-based logic, not boolean logic. `and` binds tighter than `or`.
 
 | Expression | Type                     | Semantics                          |
 |------------|--------------------------|------------------------------------|
 | `a or b`   | `typeof(a) \| typeof(b)` | First defined value                |
-| `a and b`  | `typeof(b) \| none` | Second value if first is defined   |
-| `a nor b`  | `typeof(b) \| none` | Second value if first is none |
+| `a and b`  | `typeof(b) \| none`      | Second value if first is defined   |
 
 The `or` pattern is commonly used for defaults:
 
@@ -316,6 +303,13 @@ when cond do a else b end       // type: typeof(a) | typeof(b)
 unless cond do body end         // type: typeof(body) | none
 ```
 
+**Return:**
+
+```rex
+return expr                     // type: never (code after return is unreachable)
+return                          // type: never (bare return, value is none)
+```
+
 **Loops:**
 
 ```rex
@@ -327,7 +321,6 @@ while cond do body end          // type: typeof(body) | none
 
 ```rex
 [x * 2 for x in items]         // type: [number] (if items: [number])
-[self in 1..10]                 // type: [integer]
 {k: v for k, v in obj}         // type: {*: typeof(v)}
 ```
 
@@ -373,18 +366,7 @@ value.a
   // Combined: number | boolean | none
 ```
 
-This means a union of a known-field object and a map is useful: known fields are accessed precisely, but the map branch provides a fallback for arbitrary keys.
-
-```rex
-// A config that has known fields but also allows extensions
-Config = {timeout: number, retries: integer} | {*: unknown}
-
-config.timeout    // number | unknown | none
-config.custom     // error on left branch (unknown field), unknown | none on right
-                  // combined: unknown | none
-```
-
-An object with known fields unioned with a map does NOT suppress the error on unknown fields from the object branch — the error is still reported as a diagnostic, but the type includes the map branch's result so the program is valid.
+An object with known fields unioned with a map: known fields are accessed precisely, the map branch provides a fallback for arbitrary keys. The error on unknown fields from the object branch is still reported as a diagnostic, but the type includes the map branch's result so the program is valid.
 
 ### Navigation on none
 
@@ -407,8 +389,6 @@ when user do
   user.name               // string  (narrowed — user is defined)
 end
 ```
-
-This means the type checker never reports a navigation chain as an error. Unknown properties on concrete types produce a warning and type `none`, but the program is still valid.
 
 ### Type narrowing
 
@@ -490,13 +470,12 @@ There is no `any` escape hatch. `some` requires narrowing before use — the typ
 
 ## How it works together
 
-1. Developer creates `http.rexd` in the project root describing the HTTP domain
+1. Developer creates `rex-serve.rexd` in the project root describing the HTTP domain
 2. LSP finds and parses the `.rexd` file on startup
 3. When a `.rex` file is opened, the LSP:
    - Parses the file via the rowan CST parser
-   - Seeds the type environment from the `.rexd` globals
+   - Seeds the type environment from `.rexd` globals and any `type`/`extern` declarations in the file itself
    - Walks the CST, inferring types for each expression
    - Reports diagnostics (errors, warnings)
    - Provides completions, hover, go-to-definition from the inferred types
 4. On each edit, the LSP incrementally re-parses and re-checks
-5. No type annotations appear in `.rex` files — everything is inferred
