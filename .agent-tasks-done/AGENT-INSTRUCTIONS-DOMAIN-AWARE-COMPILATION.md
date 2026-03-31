@@ -1,6 +1,6 @@
 # Instructions: Domain-Aware Compilation
 
-> **Status: COMPLETE.** `compile_with_domain(source, domain)` reads `.rexd` declarations and rewrites navigation calls to direct opcode calls. Local variable renaming (`rename_locals`) shortens variable names. `compile_debug` skips renaming. All 471 tests pass.
+> **Status: COMPLETE.** `compile_with_domain()` implemented in rex-core, domain-aware rewriting converts dotted extern calls to direct opcode calls, rex-serve router uses it with `.rexd` auto-discovery. Remaining items (CLI `--domain` flag on compile, OpcodeNamespace cleanup) tracked in KNOWN-ISSUES.md.
 
 ## Goal
 

@@ -72,16 +72,16 @@ extern res = {
 
 Every original pain point was resolved during the project:
 
-| Issue | Resolution |
-|---|---|
-| **Lazy maps break across boundaries** | v2 bytecode: eager by default, lazy opt-in via index |
-| **No early return** | `return` keyword — halts execution, propagates through all scopes |
-| **String concatenation for HTML** | Template literals with `${expr}`, tagged templates for auto-escaping |
-| **Pointer dedup bugs** | Interpreter fixed to handle pointers in all positions |
-| **Runtime opcode indirection** | `compile_with_domain` rewrites opcodes directly from `.rexd` declarations |
-| **No type checking** | `rex check` validates against `.rexd` — integrated into hot reload |
-| **Separate when/unless bytecode** | Unified into variadic `?` cond |
-| **Binary and/or** | Now variadic — `a and b and c` is a single `&(a b c)` |
+| Issue                                 | Resolution                                                                |
+|---------------------------------------|---------------------------------------------------------------------------|
+| **Lazy maps break across boundaries** | v2 bytecode: eager by default, lazy opt-in via index                      |
+| **No early return**                   | `return` keyword — halts execution, propagates through all scopes         |
+| **String concatenation for HTML**     | Template literals with `${expr}`, tagged templates for auto-escaping      |
+| **Pointer dedup bugs**                | Interpreter fixed to handle pointers in all positions                     |
+| **Runtime opcode indirection**        | `compile_with_domain` rewrites opcodes directly from `.rexd` declarations |
+| **No type checking**                  | `rex check` validates against `.rexd` — integrated into hot reload        |
+| **Separate when/unless bytecode**     | Unified into variadic `?` cond                                            |
+| **Binary and/or**                     | Now variadic — `a and b and c` is a single `&(a b c)`                     |
 
 ## Status
 
