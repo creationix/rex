@@ -147,41 +147,41 @@ The development loop: edit → save → server reloads + type checks → browser
 
 ### Request/Response
 
-| Variable | Type | Description |
-|---|---|---|
-| `method` | string | HTTP method |
-| `path` | string | URL path |
-| `headers` | map | Request headers (case-insensitive) |
-| `query` | map | Query string parameters |
-| `cookies` | map | Cookie values |
-| `body` | string | Request body |
-| `params` | object | Route parameters from `[param]` segments |
-| `res.status` | integer | Response status (default 200) |
-| `res.headers` | map | Response headers (mutable) |
+| Variable      | Type    | Description                              |
+|---------------|---------|------------------------------------------|
+| `method`      | string  | HTTP method                              |
+| `path`        | string  | URL path                                 |
+| `headers`     | map     | Request headers (case-insensitive)       |
+| `query`       | map     | Query string parameters                  |
+| `cookies`     | map     | Cookie values                            |
+| `body`        | string  | Request body                             |
+| `params`      | object  | Route parameters from `[param]` segments |
+| `res.status`  | integer | Response status (default 200)            |
+| `res.headers` | map     | Response headers (mutable)               |
 
 ### Functions
 
-| Function | Returns | Description |
-|---|---|---|
-| `json.parse(text)` | value | Parse JSON string |
-| `json.stringify(value)` | string | Serialize to JSON |
-| `db.get(key)` | string/none | Get from SQLite KV store |
-| `db.set(key, value)` | boolean | Set in KV store |
-| `db.delete(key)` | boolean | Delete from KV store |
-| `db.list(prefix)` | array | List entries by key prefix |
-| `fs.read(path)` | string/none | Read file (sandboxed to project root) |
-| `fs.glob(pattern)` | array | List matching files |
-| `markdown.render(text)` | string | Render markdown to HTML |
-| `template.render(tmpl, data)` | string | Mustache-style template substitution |
-| `html.escape(text)` | string | Escape HTML entities |
-| `html.highlight(source)` | string | Syntax-highlight Rex source (Tokyo Night) |
-| `html.raw(html)` | object | Mark string as safe HTML (skip escaping in `html` tag) |
-| `time.now()` | integer | Unix timestamp (ms) |
-| `time.uuid()` | string | Generate UUIDv7 |
-| `crypto.hash(algo, data)` | string | Hash (e.g. "sha256") |
-| `crypto.hmac(algo, key, data)` | string | HMAC |
-| `crypto.random(bytes)` | string | Random hex string |
-| `log.info(msg)` | none | Log info |
+| Function                       | Returns     | Description                                            |
+|--------------------------------|-------------|--------------------------------------------------------|
+| `json.parse(text)`             | value       | Parse JSON string                                      |
+| `json.stringify(value)`        | string      | Serialize to JSON                                      |
+| `db.get(key)`                  | string/none | Get from SQLite KV store                               |
+| `db.set(key, value)`           | boolean     | Set in KV store                                        |
+| `db.delete(key)`               | boolean     | Delete from KV store                                   |
+| `db.list(prefix)`              | array       | List entries by key prefix                             |
+| `fs.read(path)`                | string/none | Read file (sandboxed to project root)                  |
+| `fs.glob(pattern)`             | array       | List matching files                                    |
+| `markdown.render(text)`        | string      | Render markdown to HTML                                |
+| `template.render(tmpl, data)`  | string      | Mustache-style template substitution                   |
+| `html.escape(text)`            | string      | Escape HTML entities                                   |
+| `html.highlight(source)`       | string      | Syntax-highlight Rex source (Tokyo Night)              |
+| `html.raw(html)`               | object      | Mark string as safe HTML (skip escaping in `html` tag) |
+| `time.now()`                   | integer     | Unix timestamp (ms)                                    |
+| `time.uuid()`                  | string      | Generate UUIDv7                                        |
+| `crypto.hash(algo, data)`      | string      | Hash (e.g. "sha256")                                   |
+| `crypto.hmac(algo, key, data)` | string      | HMAC                                                   |
+| `crypto.random(bytes)`         | string      | Random hex string                                      |
+| `log.info(msg)`                | none        | Log info                                               |
 
 ## WebSocket
 

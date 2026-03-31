@@ -16,6 +16,8 @@ pub struct AppState {
     pub reload_tx: broadcast::Sender<String>,
     /// In-memory KV store with pub/sub
     pub kv: Arc<std::sync::Mutex<crate::kv::KvStore>>,
+    /// Domain schema source (.rexd) for domain-aware compilation
+    pub domain_source: Option<String>,
 }
 
 pub async fn run(config: Config, project_root: PathBuf) {
@@ -26,9 +28,15 @@ pub async fn run(config: Config, project_root: PathBuf) {
     let conn = crate::opcodes::init_db(&db_path);
     let db = Arc::new(std::sync::Mutex::new(conn));
 
-    // Build route table
+    // Load domain schema (.rexd) for domain-aware compilation
+    let domain_source = find_rexd(&project_root);
+    if domain_source.is_some() {
+        tracing::info!("domain-aware compilation enabled (found .rexd)");
+    }
+
+    // Build route table with domain-aware compilation
     tracing::info!("scanning routes in {}", routes_dir.display());
-    let table = RouteTable::build(&routes_dir);
+    let table = RouteTable::build_with_domain(&routes_dir, domain_source.as_deref());
     tracing::info!(
         "loaded {} routes, {} middlewares, {} static files",
         table.routes.len(),
@@ -78,6 +86,7 @@ pub async fn run(config: Config, project_root: PathBuf) {
         project_root,
         reload_tx,
         kv,
+        domain_source,
     });
 
     // Start file watcher for hot reload
@@ -321,7 +330,7 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
         }
 
         tracing::info!("change detected, reloading routes...");
-        let new_table = RouteTable::build(&routes_dir);
+        let new_table = RouteTable::build_with_domain(&routes_dir, state.domain_source.as_deref());
         tracing::info!(
             "reloaded: {} routes, {} middlewares, {} static files",
             new_table.routes.len(),
@@ -436,6 +445,19 @@ fn type_check_files(
 /// Convert a byte offset to a 1-based line number.
 fn span_to_line(source: &str, offset: usize) -> usize {
     source[..offset.min(source.len())].matches('\n').count() + 1
+}
+
+/// Find and read the first .rexd file in the project root.
+fn find_rexd(project_root: &std::path::Path) -> Option<String> {
+    if let Ok(entries) = std::fs::read_dir(project_root) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "rexd") && path.is_file() {
+                return std::fs::read_to_string(&path).ok();
+            }
+        }
+    }
+    None
 }
 
 async fn shutdown_signal() {

@@ -135,7 +135,9 @@ extern html.highlight-html(source: string) ->string
 extern html.raw(html: string) ->string
 // Tagged template: auto-escapes interpolated values, static HTML passes through
 // Usage: html`<p>${user-input}</p>`
-extern html(parts: [string], ...values: some) ->string
+// Note: html`` tagged templates use the html namespace's HostObject call method,
+// not a direct opcode. This declaration is for type-checking only.
+// extern html(parts: [string], ...values: some) ->string
 
 // ── WebSocket Events ──────────────────────────────────────────────────
 

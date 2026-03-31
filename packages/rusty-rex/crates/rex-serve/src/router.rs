@@ -67,7 +67,19 @@ pub struct RouteMatch<'a> {
 
 impl RouteTable {
     /// Scan a directory tree and build the route table.
+    /// If `domain` is provided, uses domain-aware compilation with minification.
     pub fn build(routes_dir: &Path) -> Self {
+        Self::build_with_domain(routes_dir, None)
+    }
+
+    pub fn build_with_domain(routes_dir: &Path, domain: Option<&str>) -> Self {
+        let compile = |source: &str| -> String {
+            match domain {
+                Some(d) => rex_core::compile_with_domain(source, d),
+                None => rex_core::compile(source),
+            }
+        };
+
         let mut routes = Vec::new();
         let mut middlewares = Vec::new();
         let mut static_files = Vec::new();
@@ -83,7 +95,7 @@ impl RouteTable {
                     if name.ends_with(".rex") && path.is_file() {
                         let channel = name.trim_end_matches(".rex").to_string();
                         let source = std::fs::read_to_string(&path).unwrap_or_default();
-                        let bytecode = rex_core::compile(&source);
+                        let bytecode = compile(&source);
                         tracing::info!("  ws transform: {channel} ← {}", path.display());
                         ws_transforms.insert(channel, bytecode);
                     }
@@ -91,7 +103,7 @@ impl RouteTable {
             }
         }
 
-        scan_directory(routes_dir, routes_dir, &mut routes, &mut middlewares, &mut static_files);
+        scan_directory(routes_dir, routes_dir, &mut routes, &mut middlewares, &mut static_files, domain);
 
         // Sort routes by specificity (most specific first)
         routes.sort_by(|a, b| b.specificity.cmp(&a.specificity));
@@ -156,6 +168,7 @@ fn scan_directory(
     routes: &mut Vec<CompiledRoute>,
     middlewares: &mut Vec<CompiledMiddleware>,
     static_files: &mut Vec<StaticFile>,
+    domain: Option<&str>,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
 
@@ -171,7 +184,7 @@ fn scan_directory(
                 // Private directory — skip routing but don't scan
                 continue;
             }
-            scan_directory(base, &path, routes, middlewares, static_files);
+            scan_directory(base, &path, routes, middlewares, static_files, domain);
             continue;
         }
 
@@ -181,7 +194,10 @@ fn scan_directory(
         if name == "_middleware.rex" {
             // Middleware
             let source = std::fs::read_to_string(&path).unwrap_or_default();
-            let bytecode = rex_core::compile(&source);
+            let bytecode = match domain {
+                Some(d) => rex_core::compile_with_domain(&source, d),
+                None => rex_core::compile(&source),
+            };
             let rel = dir.strip_prefix(base).unwrap_or(Path::new(""));
             let prefix = if rel.as_os_str().is_empty() {
                 "/".to_string()
@@ -206,7 +222,10 @@ fn scan_directory(
         if name.ends_with(".rex") {
             // Route handler
             let source = std::fs::read_to_string(&path).unwrap_or_default();
-            let bytecode = rex_core::compile(&source);
+            let bytecode = match domain {
+                Some(d) => rex_core::compile_with_domain(&source, d),
+                None => rex_core::compile(&source),
+            };
             let segments = path_to_segments(base, &path);
             let specificity = compute_specificity(&segments);
             routes.push(CompiledRoute {
