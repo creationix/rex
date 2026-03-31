@@ -88,12 +88,11 @@ Every original pain point was resolved during the project:
 | **Separate `when`/`unless` bytecode** | Unified into variadic `?` cond — `unless c do t end` compiles to `?(c no' t)` |
 | **Binary `and`/`or`** | Now variadic — `a and b and c` is a single `&(a b c)` |
 | **No type checking** | `rex check` validates against `.rexd` — integrated into hot reload cycle |
-| **Runtime opcode indirection** | `compile_with_domain` designed — rex-serve ready to use it when merged |
-| **Verbose variable names in bytecode** | `rename_locals` designed — rex-serve ready to use it when merged |
+| **Runtime opcode indirection** | `compile_with_domain` rewrites opcodes directly from `.rexd` declarations |
 
 ## Remaining Wishes
 
-### Domain-aware compilation
+### Tagged template domain rewriting
 
-Rex-serve's router is wired to call `compile_with_domain` when it becomes available in rex-core. This will rewrite `json.parse()` → `%jp`, `time.uuid()` → `%tu` etc. directly in bytecode, eliminating the `OpcodeNamespace` host object indirection at runtime. The `.rexd` file already declares all opcodes. One caveat: the `html()` tagged template declaration may need special handling since tagged template calls (`html\`...\``) have a different dispatch pattern than regular function calls.
+Domain-aware compilation is live — `json.parse()` → `%jp`, `time.uuid()` → `%tu` etc. are rewritten directly. But the `html()` tagged template declaration is excluded from the `.rexd` because the compiler can't distinguish `html\`...\`` (tagged template call via `HostObject::call`) from `html(parts, values)` (regular function call). The namespace host object is still needed for tagged templates and for `html.escape`/`html.highlight`.
 
