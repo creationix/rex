@@ -42,9 +42,13 @@ return            // return none (bare return)
 
 `return` is a statement-level keyword. It evaluates its expression (if any) and halts execution of the entire program, producing that value as the final result. It propagates through all enclosing blocks, loops, and conditionals.
 
+## Prerequisite
+
+This task requires the **bytecode v2 migration** to be complete (see `AGENT-INSTRUCTIONS-BYTECODE-V2-MIGRATION.md`). After v2, the `;` tag is freed — it is no longer used for lazy lists. Do not attempt this task until the v2 migration has landed.
+
 ## Bytecode Encoding
 
-In the bytecode (v2 spec), return uses the `;` tag as a postfix operator:
+In v2 bytecode, return uses the `;` tag as a postfix operator:
 
 ```
 [value][varint];
@@ -58,14 +62,6 @@ Examples:
 (ad%x$2+);        → return x + 1
 no';              → return none (bare return)
 ```
-
-**Note:** The current codebase uses `;` for old-style lazy lists (bytecode v1). This needs to be reconciled — either update the bytecode to v2 (which removes `;` lists entirely), or use a different tag. Since the full v2 migration hasn't happened yet, the simplest approach is:
-
-**Option A (recommended):** Use `;` for return in the compiler output, and add `ReturnSignal` handling to the interpreter. The old `;` list handling in the interpreter can remain for backward compat with v1 bytecode, or be removed if v1 is no longer needed.
-
-**Option B:** If v1 compat is needed, use a different unused tag for return (e.g., one of the freed tags in v2).
-
-Check with the project owner which approach to use. The v2 spec says `;` is return.
 
 ## Changes Needed
 
@@ -162,7 +158,7 @@ Value::Return(val) => {
 }
 ```
 
-In the decoder (`decode_one`): The `;` tag is currently used for lazy lists. For v2, it means return. Handle based on context or migration state.
+In the decoder (`decode_one`): The `;` tag is no longer used for lazy lists (removed in v2). Decode `;` as return:
 
 In the dedup encoder (`RevEncoder`): handle `Return` like other single-child nodes.
 
@@ -178,20 +174,7 @@ pub enum RexError {
 ```
 
 In the eval match:
-```rust
-b';' => {
-    // Return: the previous value was already evaluated
-    // In the current tree-walking interpreter, we handle Return
-    // as a value that wraps its child
-    // Actually — `;` as postfix means the value PRECEDES it.
-    // The interpreter needs to detect this after evaluating the value.
-
-    // Alternative: handle in eval_top
-    Err(RexError::ReturnSignal(/* the preceding value */))
-}
-```
-
-**Important subtlety:** In the v2 bytecode, `;` is postfix — it comes AFTER the value. In the current tree-walking interpreter that evaluates the `Value` enum (not raw bytecode), `Return(Box<Value>)` is a wrapper. The interpreter should:
+The interpreter evaluates the `Value` enum (not raw bytecode), so `Return(Box<Value>)` is a wrapper. Handle it directly:
 
 ```rust
 Value::Return(val) => {

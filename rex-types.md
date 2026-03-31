@@ -21,9 +21,11 @@ Rex has no user-space type annotations. Types are inferred from domain interface
 | Type | Description |
 |------|-------------|
 | `[T]` | Array of `T` |
-| `{key: T, ...}` | Object with known fields |
+| `{key: T, ...}` | Object with known fields. Unknown key access is an error. |
 | `{*: T}` | Map — any string key, lookup returns `T \| none` |
-| `{key: T, *: U}` | Object with known fields and wildcard fallback |
+| `{key: T, *: U}` | Object with known fields and wildcard fallback for unknown keys (`U \| none`) |
+
+Internally, all three object forms are a single type: an object with known fields and an optional wildcard. `{key: T}` is `{key: T, *: never}` (unknown keys are errors). `{*: T}` is `{*: T}` with no known fields. This simplifies the type checker — one match arm, not three.
 
 ### Meta types
 
@@ -43,24 +45,24 @@ A `.rexd` file declares the types of globals, functions, and type aliases availa
 
 ### Syntax
 
-`.rexd` files use Rex-like syntax for familiarity but describe types, not executable code.
+`.rexd` files use standard Rex grammar — they are normal Rex files that happen to contain only `type` and `extern` declarations. No special parser mode is needed; the `type` and `extern` keywords switch interpretation.
 
-#### Type aliases
+#### Type aliases (`type`)
 
-Uppercase names define reusable types:
+`type` defines a named type shape. By convention, type names are uppercase:
 
 ```rex
-Headers = {*: string | [string]}
-HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH"
+type Headers = {*: string | [string]}
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH"
 ```
 
-#### Globals
+#### Globals (`extern`)
 
-Lowercase names declare values available to Rex programs:
+`extern` declares a host-provided binding with a type. The host populates these before the Rex program runs:
 
 ```rex
 // Read-only (default)
-req = {
+extern req = {
   method: HttpMethod
   path: string | [string]
   headers: Headers
@@ -71,29 +73,31 @@ req = {
 }
 
 // Mutable — the program can assign to properties
-mut res = {
+extern mut res = {
   status: number
   headers: Headers
   body: string
 }
 
 // Simple typed globals
-config: unknown
-secrets: {*: string}
+extern config = unknown
+extern secrets = {*: string}
 ```
 
-#### Functions
+#### Functions (`extern` with call shape)
 
-Dot-path names with typed arguments and optional return type:
+`extern` with a call expression on the left side declares a function signature. Return type follows `=`:
 
 ```rex
-log.info(message: unknown)
-log.warning(message: unknown)
-json.parse(text: string): unknown
-json.stringify(value: unknown): string
-res.rewrite(url: string): never
-res.redirect(url: string, status: number): never
+extern log.info(message: unknown)
+extern log.warning(message: unknown)
+extern json.parse(text: string) = unknown
+extern json.stringify(value: unknown) = string
+extern res.rewrite(url: string) = never
+extern res.redirect(url: string, status: number) = never
 ```
+
+Functions without `= ReturnType` return `none`.
 
 #### Comments as documentation
 
@@ -101,10 +105,12 @@ res.redirect(url: string, status: number): never
 
 ```rex
 // Client IP address from the connecting socket or X-Forwarded-For header
-ip: string
+extern ip = string
 ```
 
 ### Type syntax
+
+Inside `type` and `extern` declarations, the right-hand side of `=` is a type expression. Type expressions reuse Rex value syntax (`{}`, `[]`, `|`, identifiers, string literals) but are interpreted as types:
 
 | Syntax          | Meaning                                             |
 |-----------------|-----------------------------------------------------|
@@ -120,10 +126,10 @@ ip: string
 | `"GET"`         | String literal type — only this exact string        |
 | `[T]`           | Array of `T`                                        |
 | `{key: T, ...}` | Object with known fields                           |
-| `{*: T}`        | Map — any string key accepted, lookup returns `T \| none` (key may not exist) |
+| `{*: T}`        | Map — any string key accepted, lookup returns `T \| none` (key may not exist). The `*` wildcard key is only valid in type expressions, not in regular object literals. |
 | `{key: T, *: U}` | Object with known fields (exact type) and a wildcard fallback (`U \| none`) for other keys |
-| `T \| U`        | Union — value can be `T` or `U`                     |
-| `Name`          | Reference to a type alias                           |
+| `T \| U`        | Union — value can be `T` or `U`. Uses the `\|` operator syntax but interpreted as union in type context. |
+| `Name`          | Reference to a type alias defined with `type`       |
 
 ### `some`, `none`, and `unknown`
 
@@ -134,7 +140,7 @@ Three primitive concepts for presence and absence:
 - **`unknown`** — alias for `some | none`. Might be a value, might be absent. Common for map lookups and opaque domain fields.
 
 ```rex
-config: some                         // definitely a value, type opaque
+extern config = some                 // definitely a value, type opaque
 config.timeout                       // some | none (key may not exist)
 
 cookies.session                      // string | none (map lookup)
@@ -143,7 +149,7 @@ when cookies.session do
   // cookies.session: string (none removed — value exists)
 end
 
-data: unknown                        // same as some | none
+extern data = unknown                // same as some | none
 when data do
   // data: some (none removed — value exists)
   when number(data) do
@@ -155,17 +161,50 @@ end
 
 ### Mutability
 
-Globals are read-only by default. Use `mut` to allow property writes:
+Globals declared with `extern` are read-only by default. Use `mut` after `extern` to allow property writes:
 
 ```rex
-mut res = { status: number, headers: Headers, body: string }
+extern mut res = { status: number, headers: Headers, body: string }
 ```
 
 Inside Rex code, `res.status = 404` is valid. Without `mut`, the LSP reports an error on write attempts.
 
+`mut` is a contextual keyword — it is only recognized immediately after `extern`, not as a standalone reserved word.
+
 ### No short codes
 
 `.rexd` files describe the developer-facing API. The names match what the programmer writes in Rex code (`req.headers`, `res.status`). The compiler maps these to internal short ref codes (`'H`, `'S`) via a separate host-provided mapping. The developer never sees or writes short codes.
+
+---
+
+## Assignability
+
+A value of type `A` is assignable to a slot expecting type `B` when:
+
+| A | B | Assignable? |
+|---|---|-------------|
+| `integer` | `number` | Yes — `integer` is a subtype of `number` |
+| `LiteralStr(s)` | `string` | Yes — a literal string is a subtype of `string` |
+| any type except `none` | `some` | Yes — `some` means "any defined value" |
+| any type | `unknown` | Yes — `unknown` is `some \| none` |
+| `never` | any type | Yes — `never` is the bottom type |
+| `T` | `T \| U` | Yes — `T` is a member of the union |
+
+These rules are transitive: `integer` is assignable to `number`, and `number` is assignable to `some`, so `integer` is assignable to `some`.
+
+### Operations on `some`
+
+No arithmetic, comparison, concatenation, or property-write operations are valid on `some`. The value must first be narrowed to a concrete type using type predicates (`number()`, `string()`, etc.) or `when` guards. Navigation (property read) on `some` is valid and produces `some | none`.
+
+```rex
+extern data = some
+data + 1              // error: cannot add some and integer — narrow first
+data.foo              // valid: some | none
+
+when number(data) do
+  data + 1            // valid: number + integer = number
+end
+```
 
 ---
 
@@ -205,7 +244,7 @@ x += 1      // still integer (integer + integer = integer)
 
 ### String coercion
 
-When a non-string value appears in a string context (template literals, `+` with a string operand), it is coerced to a string representation:
+String coercion applies only in **template literals** (`` `hello ${expr}` ``). The `+` operator does **not** trigger coercion — `string + number` is a type error. Use a template literal to convert non-string values to strings.
 
 | Value | String form | Notes |
 |-------|-------------|-------|
@@ -221,7 +260,7 @@ When a non-string value appears in a string context (template literals, `+` with
 | `array` | JSON-like | `"[1, 2, 3]"` |
 | `object` | JSON-like | `"{a: 1}"` |
 
-This only applies to string coercion contexts. JSON serialization, comparison, and type checking use the actual values.
+This only applies to template literal interpolation. The `+` operator, JSON serialization, comparison, and type checking use the actual values.
 
 ### Arithmetic operators
 
@@ -229,8 +268,10 @@ This only applies to string coercion contexts. JSON serialization, comparison, a
 |------------------------------------|------------------------------------------------------------------------------|
 | `integer + integer`                | `integer`                                                                    |
 | `number + number`                  | `number`                                                                     |
+| `integer + number`                 | `number` (`integer` widens to `number`)                                      |
 | `string + string`                  | `string` (concatenation)                                                     |
-| `number + string`                  | error: cannot add number and string                                          |
+| `number + string`                  | error: cannot add number and string (use template literals for coercion)     |
+| `some + T`                         | error: cannot use `some` in arithmetic — narrow first                        |
 | `a - b`, `a * b`, `a / b`, `a % b` | `number` (or `integer` if both integer, except `/` which is always `number`) |
 | `-a`                               | same as `a`                                                                  |
 
@@ -278,7 +319,7 @@ unless cond do body end         // type: typeof(body) | none
 **Loops:**
 
 ```rex
-for x in items do body end      // type: typeof(body) (last iteration)
+for x in items do body end      // type: typeof(body) | none
 while cond do body end          // type: typeof(body) | none
 ```
 

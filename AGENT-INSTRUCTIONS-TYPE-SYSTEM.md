@@ -16,14 +16,18 @@ Implement a type checker for Rex that infers types from `.rexd` domain files and
    - String coercion rules
    - All diagnostics (errors and warnings)
 
-2. **`/packages/rusty-rex/bytecode-v2.md`** — The bytecode format (for understanding what the compiler produces)
+2. **`/packages/rusty-rex/README.md`** — Architecture overview of the Rust crates
 
-3. **`/packages/rusty-rex/README.md`** — Architecture overview of the Rust crates
+## Prerequisites
+
+1. **`type` and `extern` keywords** must be added to the lexer, syntax, and parser before `.rexd` files can be parsed. See `AGENT-INSTRUCTIONS-TYPE-EXTERN-KEYWORDS.md` for that task. This task depends on those keywords being implemented.
+
+2. **No dependency on bytecode v2 migration.** The type checker works on the CST (syntax tree), not bytecode. It does not touch `Value`, the encoder, decoder, or interpreter. It can be built in parallel with the v2 migration.
 
 ## Working Example: rex-serve
 
 The `packages/rusty-rex/examples/knowledge-base/` directory has a complete rex-serve project with:
-- `rex-serve.rexd` — domain interface file (already written, 140 lines)
+- `rex-serve.rexd` — domain interface file (already written, 152 lines)
 - `routes/` — Rex source files that use the domain
 
 Use this project to test the type checker. The `.rexd` file declares all the globals (`req`, `res`, `method`, `headers`, etc.) and functions (`json.parse`, `db.get`, `fs.read`, etc.) that the Rex files use.
@@ -72,12 +76,11 @@ db.list()                     // error: db.list expects 1 argument, got 0
 
 The type checker should live in `packages/rusty-rex/crates/rex-core/src/` as a new module, or in a new `rex-lsp` crate. The core infrastructure:
 
-1. **`.rexd` parser** — Parse `.rexd` files into a `DomainSchema` struct. The syntax is Rex-like but describes types. See `rex-types.md` for the full syntax.
+1. **`.rexd` parser** — Parse `.rexd` files into a `DomainSchema` struct. `.rexd` files use standard Rex grammar with `type` and `extern` keywords — parse them with the existing Rex parser, then walk the CST to extract type declarations. See `rex-types.md` for the full syntax.
 
 2. **Type representation** — An enum:
    ```rust
    enum Type {
-       Unknown,    // alias for Some | None
        Some,       // opaque defined value
        None,       // absence
        Never,      // unreachable
@@ -88,9 +91,10 @@ The type checker should live in `packages/rusty-rex/crates/rex-core/src/` as a n
        Str,
        LiteralStr(String),  // "GET", "POST", etc.
        Array(Box<Type>),
-       Object(Vec<(String, Type)>),  // known fields
-       Map(Box<Type>),              // {*: T}
-       ObjectMap(Vec<(String, Type)>, Box<Type>),  // {key: T, *: U}
+       Object {                         // all object/map forms unified
+           fields: Vec<(String, Type)>, // known fields (empty for pure maps)
+           wildcard: Option<Box<Type>>, // None = unknown keys are errors
+       },
        Union(Vec<Type>),
        Ref(String),  // reference to type alias
    }
@@ -106,9 +110,43 @@ The type checker should live in `packages/rusty-rex/crates/rex-core/src/` as a n
 4. **Existing infrastructure to reuse**:
    - `lexer.rs` — logos tokenizer (already handles all Rex tokens)
    - `parser.rs` — rowan CST parser with Pratt precedence
-   - `ast.rs` — typed AST wrappers (`BinaryExpr`, `ConditionalExpr`, etc.)
+   - `ast.rs` — typed AST wrappers (`BinaryExpr`, `ConditionalExpr`, `ForExpr`, `ObjectExpr`, `ArrayExpr`, `TemplateExpr`, etc.)
    - `syntax.rs` — `SyntaxKind` enum with all node/token types
    - The parser supports `parse_with_cache()` for incremental reparsing
+
+### Actual SyntaxKind values to handle
+
+The inference walk must cover these composite node kinds (from `syntax.rs`):
+
+| SyntaxKind | Rex syntax | Notes |
+|------------|-----------|-------|
+| `DecimalNumber`, `HexNumber`, `BinaryNumber` | `42`, `0xff`, `0b101` | Literals |
+| `DoubleString`, `SingleString` | `"hello"`, `'hello'` | String literals |
+| `TemplateLiteral` | `` `hello ${x}` `` | Inside `TemplateExpr` |
+| `BinaryExpr` | `a + b`, `a == b` | Binary operators |
+| `UnaryExpr` | `-x`, `not x` | Unary operators |
+| `AssignExpr` | `x = 42`, `x += 1` | Assignment |
+| `CallExpr` | `f(x)`, `json.parse(text)` | Function calls, also type predicates like `number(x)` |
+| `NavExpr` | `req.method`, `a.b.c` | Property access |
+| `ConditionalExpr` | `when`/`unless`/`else` | Control flow with narrowing |
+| `ForExpr` | `for x in items do ... end` | Loop |
+| `WhileExpr` | `while cond do ... end` | Loop |
+| `ArrayExpr` | `[1, 2, 3]` | Array literal |
+| `ArrayComprehension` | `[x * 2 for x in items]` | Array comprehension |
+| `ObjectExpr` | `{a: 1, b: 2}` | Object literal (contains `Pair` children) |
+| `ObjectComprehension` | `{k: v for k, v in obj}` | Object comprehension |
+| `Pair` | `key: value` | Inside `ObjectExpr`/`ObjectComprehension` |
+| `TemplateExpr` | `` `hello ${x}` `` | Template literal expression |
+| `RangeExpr` | `1..10` | Range |
+| `GroupExpr` | `(expr)` | Parenthesized expression |
+| `SelfExpr` | `self` | Self reference |
+| `Block` | `do ... end` body | Block of statements |
+| `Ident` | `x`, `method` | Variable reference |
+| `KwTrue`, `KwFalse` | `true`, `false` | Boolean literals |
+| `KwNull` | `null` | Null literal |
+| `KwNone` | `none` | None literal |
+
+**Note:** `TemplateExpr` has an `ast_node!` definition in `syntax.rs` but does NOT currently have a typed wrapper in `ast.rs`. You may need to add one, or work with the raw `SyntaxNode` directly.
 
 ## Key Design Decisions Already Made
 
@@ -122,7 +160,17 @@ The type checker should live in `packages/rusty-rex/crates/rex-core/src/` as a n
 8. **Mixed `{key: T, *: U}`** — known field returns `T`, unknown key returns `U | none`
 9. **Union property access** — resolve on each branch independently, union the results
 10. **`none` replaces `undefined`** — the keyword in Rex source is `none`
-11. **String coercion** — `none`→`∅`, `true`→`✓`, `false`→`✗`, `null`→`␀`, `Infinity`→`∞`
+11. **String coercion only in template literals** — `+` does NOT coerce; `string + number` is an error. Template literals coerce all types to strings: `none`→`∅`, `true`→`✓`, `false`→`✗`, `null`→`␀`, `Infinity`→`∞`
+12a. **No operations on `some`** — arithmetic, comparison, and concatenation on `some` are errors. Must narrow first via type predicates or `when`. Navigation (property read) on `some` is valid → `some | none`.
+12b. **Assignability** — `integer` assignable to `number`, `LiteralStr` to `string`, any non-`none` type to `some`, `never` to anything. These are transitive.
+13. **`.rexd` files are valid Rex** — they use standard Rex grammar with `type` and `extern` keywords; no special parser mode
+14. **`type Name = T`** — defines a named type alias (uppercase by convention)
+15. **`extern name = T`** — declares a host-provided binding with a type
+16. **`extern mut name = T`** — mutable host binding (`mut` is contextual after `extern`)
+17. **`extern name.fn(arg: T) = R`** — function signature with return type
+18. **`{*: T}` wildcard key** — only valid inside type expressions, not in regular object literals
+19. **Unified Object type** — `Object { fields, wildcard: Option<Type> }`. `{key: T}` = fields + no wildcard, `{*: T}` = no fields + wildcard, `{key: T, *: U}` = fields + wildcard. One match arm, not three.
+20. **`for` loop type** — `typeof(body) | none`, not `typeof(body)`. Empty collection = no iterations = `none`.
 
 ## Type Narrowing (Critical)
 
@@ -152,6 +200,41 @@ when input and input.slug do
   // input.slug: some (none removed by second check)
 end
 ```
+
+## Template Literal Type Inference
+
+Template literals are already implemented in the compiler. The type checker must handle them:
+
+- `TemplateExpr` always produces `Type::Str`
+- Each interpolation is inferred independently — no type errors on interpolated values (template coercion accepts everything except `never`)
+- Tagged templates (e.g., `` html`<p>${x}</p>` ``) should resolve the tag function's return type from the domain schema
+
+```rust
+SyntaxKind::TemplateExpr => {
+    // Infer all interpolation expressions (for side effects / variable tracking)
+    // but the template itself always produces a string
+    for interpolation in extract_interpolations(node) {
+        self.infer_expr(&interpolation);
+    }
+    Type::Str
+}
+```
+
+## Return Statement Type Inference (future)
+
+When early return lands (see `AGENT-INSTRUCTIONS-EARLY-RETURN.md`, which depends on the v2 migration), the type checker will need a `ReturnExpr` arm:
+
+```rust
+SyntaxKind::ReturnExpr => {
+    // Infer the return value expression if present
+    if let Some(value_expr) = ... {
+        self.infer_expr(&value_expr);
+    }
+    Type::Never  // code after return is unreachable
+}
+```
+
+This is a small incremental addition — don't block on it.
 
 ## Testing Strategy
 
