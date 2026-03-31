@@ -88,10 +88,12 @@ Every original pain point was resolved during the project:
 | **Separate `when`/`unless` bytecode** | Unified into variadic `?` cond — `unless c do t end` compiles to `?(c no' t)` |
 | **Binary `and`/`or`** | Now variadic — `a and b and c` is a single `&(a b c)` |
 | **No type checking** | `rex check` validates against `.rexd` — integrated into hot reload cycle |
+| **Runtime opcode indirection** | `compile_with_domain` rewrites opcodes directly from `.rexd` declarations |
+| **Verbose variable names in bytecode** | `rename_locals` minifies local vars — up to 47% smaller bytecode |
 
 ## Remaining Wishes
 
-### Domain-aware compilation
+### Tagged template domain rewriting
 
-The compiler treats `time.uuid()` as `$time.uuid` — variable navigation. Rex-serve creates `OpcodeNamespace` host objects that return `"%tu"` when navigated, which the interpreter then dispatches as an opcode call. With domain-aware compilation (reading `.rexd` declarations), the compiler could emit `%tu` directly — eliminating the runtime indirection and ~8 host objects per request.
+Domain-aware compilation (`compile_with_domain`) now rewrites `json.parse()` → `%jp`, `time.uuid()` → `%tu` etc. directly in bytecode, and minifies local variable names. But `html` tagged templates (`html\`<p>${x}</p>\``) still go through the `OpcodeNamespace` host object because the compiler can't distinguish tagged template calls from regular function calls. The `html()` declaration in `.rexd` had to be excluded to prevent incorrect rewriting.
 

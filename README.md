@@ -224,7 +224,15 @@ The [Rex for VS Code](packages/vscode-rex) extension provides:
 
 ## Rex in Practice
 
-The [rex-serve](packages/rusty-rex/crates/rex-serve) project embeds Rex as the scripting layer for an HTTP server — filesystem-routed `.rex` files as edge functions with middleware, templates, markdown rendering, and a CRUD API. Run the self-guided tour:
+The [rex-serve](packages/rusty-rex/crates/rex-serve) project embeds Rex as the scripting layer for an HTTP server — filesystem-routed `.rex` files as edge functions with middleware, templates, markdown rendering, a CRUD API, and real-time WebSocket pub/sub. Features:
+
+- **Filesystem routing** with `[param].rex` dynamic segments and `_middleware.rex` chains
+- **Tagged template literals** (`html\`...\``) with auto-escaping and `html.raw()` for safe HTML
+- **Domain-aware compilation** — `.rexd` declarations drive opcode rewriting and variable minification
+- **In-memory KV store** with TTL and pub/sub channels (`kv.get/set/publish/subscribe`)
+- **WebSocket pub/sub** at `/__ws/{channel}` with per-channel Rex transform scripts
+- **Hot reload** with WebSocket browser notifications and type checking on save
+- **Tokyo Night syntax highlighting** powered by the Rex lexer
 
 ```sh
 cd packages/rusty-rex
@@ -232,7 +240,7 @@ cargo run -p rex-serve -- --dir examples/knowledge-base --port 4000
 # Open http://localhost:4000
 ```
 
-For a detailed review of what worked well, what was painful, and how the type system would help, see [rex-serve/REVIEW.md](packages/rusty-rex/crates/rex-serve/REVIEW.md).
+For a detailed review of what worked well and what was painful, see [rex-serve/REVIEW.md](packages/rusty-rex/crates/rex-serve/REVIEW.md).
 
 ## Documentation
 
