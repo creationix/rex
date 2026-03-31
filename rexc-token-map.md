@@ -44,8 +44,7 @@ These are claimed by the RX data format. rexc inherits them as-is.
 |------|--------------|-----------------------|----------------|
 | `$`  | Variable     | name (string)         | keep           |
 | `%`  | Opcode       | mnemonic (string)     | keep           |
-| `@`  | Self         | depth offset (int)    | keep           |
-| `\`  | Loop control | kind + depth (int)    | **new** (was `;`) |
+| `\`  | Loop control | kind + depth (int)    | keep           |
 
 For `$` and `%`, varint is a string identifier (b64 chars = name), not numeric. Same convention as `'` refs.
 
@@ -65,10 +64,9 @@ Old rexc used a prefix character before `(`, `[`, or `{` to form compound opener
 
 | Closer | Opener | Name                        | Status                       |
 |--------|--------|-----------------------------|------------------------------|
-| `(`    | `)?`   | When                        | keep                         |
-| `(`    | `)!`   | Unless / not / nor          | keep                         |
-| `(`    | `)\|`  | Or (alt)                    | keep                         |
-| `(`    | `)&`   | And (all)                   | keep                         |
+| `(`    | `)?`   | Cond (variadic when/unless) | keep                         |
+| `(`    | `)\|`  | Or (variadic)               | keep                         |
+| `(`    | `)&`   | And (variadic)              | keep                         |
 | `(`    | `)>`   | For-in loop                 | keep                         |
 | `[`    | `]>`   | For-in list comprehension   | keep                         |
 | `{`    | `}>`   | For-in object comprehension | keep                         |
@@ -97,7 +95,7 @@ The paired delimiters provide **eager evaluation** — all expressions are execu
 
 | Container | Evaluation | Returns         | Example              |
 |-----------|-----------|-----------------|----------------------|
-| `;` `:`   | lazy (on access) | data structure | `+4(ad%@2+);4` — list where elements compute on read |
+| `;` `:`   | lazy (on access) | data structure | `+4(ad%x$2+);4` — list where elements compute on read |
 | `[` `]`   | eager, sequential | list of all results | `[a b c]` → `[a, b, c]` |
 | `{` `}`   | eager, sequential | last result only | `{a b c}` → `c` |
 | `(` `)`   | eager | call result | `(ad%2+4+)` → `3` |
@@ -121,11 +119,11 @@ Comprehensions (`>[...]`, `<[...]`, `>[{...]`, etc.) are eager — they iterate 
 Completely unassigned (no role at all):
 
 ```
-"
+"  @  !
 ```
 
 Used only as compound suffixes (could also serve as standalone scalars):
 
 ```
-?  !  &  >  <
+?  &  >  <
 ```
