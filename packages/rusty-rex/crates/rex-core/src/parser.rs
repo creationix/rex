@@ -476,11 +476,16 @@ impl<'s, 'c> Parser<'s, 'c> {
             self.bump(); // mut (consumed as Ident — it's contextual)
         }
 
-        // Parse the rest as a regular expression.
+        // Parse the body as a regular expression.
         // For `extern name = type-expr`, parse_expr produces an AssignExpr.
-        // For `extern name.fn(args) = ret-type`, the call + assignment.
-        // For `extern name.fn(args)` with no return type, a CallExpr.
+        // For `extern name.fn(args)`, a CallExpr.
         self.parse_expr();
+
+        // Check for `-> ReturnType` after the expression (function return type)
+        if self.current() == SyntaxKind::Arrow {
+            self.bump(); // ->
+            self.parse_expr(); // return type expression
+        }
 
         self.finish_node();
     }
@@ -1166,7 +1171,7 @@ mod tests {
     #[test]
     fn parse_extern_function() {
         // Function signatures may have parse errors on `:` inside args — that's OK
-        let (tree, _errors) = parse_str("extern json.parse(text: string) = some");
+        let (tree, _errors) = parse_str("extern json.parse(text: string) -> some");
         let decl = tree
             .children()
             .find(|n| n.kind() == SyntaxKind::ExternDecl)

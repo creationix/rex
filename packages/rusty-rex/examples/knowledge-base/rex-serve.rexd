@@ -83,69 +83,69 @@ extern log.error(message: some)
 // ── Response Control ───────────────────────────────────────────────────
 
 // Internal rewrite to another path. Restarts routing.
-extern res.rewrite(url: string) = never
+extern res.rewrite(url: string) ->never
 // HTTP redirect with status code (default 302)
-extern res.redirect(url: string, status: integer) = never
+extern res.redirect(url: string, status: integer) ->never
 // Proxy the request to another URL
-extern res.proxy(url: string) = some
+extern res.proxy(url: string) ->some
 
 // ── JSON ───────────────────────────────────────────────────────────────
 
 // Parse a JSON string into a value
-extern json.parse(text: string) = some
+extern json.parse(text: string) ->some
 // Serialize a value to a JSON string
-extern json.stringify(value: some) = string
+extern json.stringify(value: some) ->string
 
 // ── Database (KV) ──────────────────────────────────────────────────────
 
 // Get a value by key. Returns none if not found.
-extern db.get(key: string) = string
+extern db.get(key: string) ->string
 // Set a key-value pair. Returns true.
-extern db.set(key: string, value: string) = boolean
+extern db.set(key: string, value: string) ->boolean
 // Delete a key. Returns true.
-extern db.delete(key: string) = boolean
+extern db.delete(key: string) ->boolean
 // List entries matching a key prefix.
-extern db.list(prefix: string) = [DbEntry]
+extern db.list(prefix: string) ->[DbEntry]
 
 // ── Filesystem (read-only, sandboxed to project root) ──────────────────
 
 // Read a file's contents as a string. Path is relative to project root.
-extern fs.read(path: string) = string
+extern fs.read(path: string) ->string
 // List files matching a glob pattern relative to project root.
-extern fs.glob(pattern: string) = [string]
+extern fs.glob(pattern: string) ->[string]
 // Get file metadata (size in bytes, modified as unix timestamp ms).
-extern fs.meta(path: string) = FileMeta
+extern fs.meta(path: string) ->FileMeta
 
 // ── Content Transformation ─────────────────────────────────────────────
 
 // Render markdown text to HTML
-extern markdown.render(text: string) = string
+extern markdown.render(text: string) ->string
 // Render a mustache-style template with data. {{key}} escapes HTML, {{{key}}} is raw.
-extern template.render(template: string, data: some) = string
+extern template.render(template: string, data: some) ->string
 
 // ── HTML ───────────────────────────────────────────────────────────────
 
 // Escape HTML entities in a string
-extern html.escape(text: string) = string
+extern html.escape(text: string) ->string
 // Syntax-highlight Rex source code as HTML with Tokyo Night theme
-extern html.highlight(source: string) = string
+extern html.highlight(source: string) ->string
 // Syntax-highlight HTML source code as HTML with Tokyo Night theme
-extern html.highlight-html(source: string) = string
+extern html.highlight-html(source: string) ->string
 // Tagged template: auto-escapes interpolated values, static HTML passes through
 // Usage: html`<p>${user-input}</p>`
-extern html(parts: [string], ...values: some) = string
+extern html(parts: [string], ...values: some) ->string
 
 // ── Utilities ──────────────────────────────────────────────────────────
 
 // Current time as unix timestamp in milliseconds
-extern time.now() = integer
+extern time.now() ->integer
 // Generate a UUIDv7 string
-extern time.uuid() = string
+extern time.uuid() ->string
 // Hash data with the given algorithm (e.g. "sha256"). Returns hex string.
-extern crypto.hash(algorithm: string, data: string) = string
+extern crypto.hash(algorithm: string, data: string) ->string
 // HMAC with the given algorithm, key, and data. Returns hex string.
-extern crypto.hmac(algorithm: string, key: string, data: string) = string
+extern crypto.hmac(algorithm: string, key: string, data: string) ->string
 // Generate random bytes. Returns hex string.
-extern crypto.random(bytes: integer) = string
+extern crypto.random(bytes: integer) ->string
 // Make an HTTP request. Returns response with status, headers, and body.
-extern http.fetch(url: string, options: FetchOptions) = FetchResult
+extern http.fetch(url: string, options: FetchOptions) ->FetchResult

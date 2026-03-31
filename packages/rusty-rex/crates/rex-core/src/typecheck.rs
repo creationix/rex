@@ -211,7 +211,7 @@ fn extract_type_decl(node: &SyntaxNode) -> Option<(String, Type)> {
     Some((name.to_string(), ty))
 }
 
-/// Extract an `extern [mut] name = TypeExpr` or `extern [mut] name.fn(args) [= ReturnType]`.
+/// Extract an `extern [mut] name = TypeExpr` or `extern [mut] name.fn(args) [-> ReturnType]`.
 fn extract_extern_decl(node: &SyntaxNode, schema: &mut DomainSchema, doc: Option<String>) {
     let mut tokens = non_trivia_children(node);
 
@@ -238,10 +238,9 @@ fn extract_extern_decl(node: &SyntaxNode, schema: &mut DomainSchema, doc: Option
         Option::None => return,
     };
 
-    // The body is a single expression parsed by parse_expr:
-    // - AssignExpr for `name = type` or `name.fn(args) = ret`
-    // - CallExpr for `name.fn(args)` (no return type)
-    // - NavExpr for `name.fn(args)` where call is on a nav
+    // The body is an expression parsed by parse_expr, optionally followed by `-> ReturnType`:
+    // - AssignExpr for `name = type`
+    // - CallExpr for `name.fn(args)` — may be followed by `-> ReturnType`
     match &next {
         rowan::NodeOrToken::Node(n) => {
             match n.kind() {
@@ -249,7 +248,16 @@ fn extract_extern_decl(node: &SyntaxNode, schema: &mut DomainSchema, doc: Option
                     extract_extern_assign(n, mutable, doc, schema);
                 }
                 SyntaxKind::CallExpr => {
-                    extract_extern_function(n, Option::None, doc, schema);
+                    // Check for `-> ReturnType` after the call
+                    let mut return_type = Option::None;
+                    if let Some(arrow) = tokens.next() {
+                        if as_token_kind(&arrow) == Some(SyntaxKind::Arrow) {
+                            if let Some(ret_child) = tokens.next() {
+                                return_type = Some(interpret_type_child(&ret_child));
+                            }
+                        }
+                    }
+                    extract_extern_function(n, return_type, doc, schema);
                 }
                 _ => {}
             }
@@ -259,7 +267,7 @@ fn extract_extern_decl(node: &SyntaxNode, schema: &mut DomainSchema, doc: Option
 }
 
 /// Extract `name = TypeExpr` from an AssignExpr inside an ExternDecl.
-/// Could be a simple global or a function with return type.
+/// Always a global declaration (functions use `->` and are handled separately).
 fn extract_extern_assign(
     node: &SyntaxNode,
     mutable: bool,
@@ -280,16 +288,6 @@ fn extract_extern_assign(
 
     if lhs.is_empty() || rhs.is_empty() { return; }
 
-    // Check if LHS is a CallExpr → function signature with return type
-    if let Some(call_node) = as_node(&lhs[0]) {
-        if call_node.kind() == SyntaxKind::CallExpr {
-            let ret_type = interpret_type_expr_from_children(rhs);
-            extract_extern_function(call_node, Some(ret_type), doc, schema);
-            return;
-        }
-    }
-
-    // Simple global: name = TypeExpr
     let name = match extract_dotted_name(lhs) {
         Some(n) => n,
         Option::None => return,
@@ -779,7 +777,7 @@ mod tests {
 
     #[test]
     fn parse_extern_function_with_return() {
-        let schema = parse_rexd("extern json.parse(text: string) = some");
+        let schema = parse_rexd("extern json.parse(text: string) -> some");
         let f = schema.functions.get("json.parse").unwrap();
         assert_eq!(f.args.len(), 1);
         assert_eq!(f.args[0], ("text".into(), Type::Str));
@@ -797,7 +795,7 @@ mod tests {
 
     #[test]
     fn parse_extern_function_multiple_args() {
-        let schema = parse_rexd("extern db.set(key: string, value: string) = boolean");
+        let schema = parse_rexd("extern db.set(key: string, value: string) -> boolean");
         let f = schema.functions.get("db.set").unwrap();
         assert_eq!(f.args.len(), 2);
         assert_eq!(f.args[0], ("key".into(), Type::Str));
@@ -807,7 +805,7 @@ mod tests {
 
     #[test]
     fn parse_doc_comments() {
-        let schema = parse_rexd("// Parse a JSON string\nextern json.parse(text: string) = some");
+        let schema = parse_rexd("// Parse a JSON string\nextern json.parse(text: string) -> some");
         let f = schema.functions.get("json.parse").unwrap();
         assert_eq!(f.doc.as_deref(), Some("Parse a JSON string"));
     }
