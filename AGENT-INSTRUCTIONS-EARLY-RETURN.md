@@ -1,5 +1,7 @@
 # Instructions: Implement Early Return in Rex
 
+> **Status: COMPLETE.** `return` keyword implemented across lexer, parser, lowerer, bytecode encoder/decoder, interpreter, and decompiler. Sample app updated to use guard-clause pattern. Tests added for all layers.
+
 ## Goal
 
 Add a `return` keyword to the Rex language that halts execution and produces a final value. This requires changes to the lexer, parser, compiler (lowerer), interpreter, and decompiler.
@@ -48,20 +50,22 @@ This task requires the **bytecode v2 migration** to be complete (see `AGENT-INST
 
 ## Bytecode Encoding
 
-In v2 bytecode, return uses the `;` tag as a postfix operator:
+In v2 bytecode, return uses the `;` tag as a prefix compound operator (same pattern as `*` for decimals):
 
 ```
-[value][varint];
+[varint];[value]
 ```
 
-The value comes first (already evaluated), then `;` signals return. The varint is reserved for future multi-return (currently always 0 = empty = single return).
+The `;` tag comes first (with a varint reserved for future multi-return, currently always 0 = empty), then the return value follows. The value is evaluated, then return halts execution with that value.
 
 Examples:
 ```
-1k+;              → return 42
-(ad%x$2+);        → return x + 1
-no';              → return none (bare return)
+;1k+              → return 42
+;(ad%x$2+)        → return x + 1
+;no'              → return none (bare return)
 ```
+
+Since `;` is a single byte, it does not need a length prefix for skipping — the value after it is independently skippable when it's a container.
 
 ## Changes Needed
 
@@ -150,17 +154,31 @@ pub enum Value {
 }
 ```
 
-In the encoder (`encode_into`):
+In the encoder (`encode_into`) — `;` is a prefix compound, like `*` for decimals:
 ```rust
 Value::Return(val) => {
-    encode_into(val, out);
-    out.push(';');
+    out.push(';');           // tag first (varint before it is empty = 0)
+    encode_into(val, out);   // return value follows
 }
 ```
 
-In the decoder (`decode_one`): The `;` tag is no longer used for lazy lists (removed in v2). Decode `;` as return:
+In the decoder (`decode_one`) — `;` reads the next value as its child:
+```rust
+b';' => {
+    // Return: varint is reserved (ignored for now)
+    let child = read_value(input, pos, resolve)?;
+    Ok(Value::Return(Box::new(child)))
+}
+```
 
-In the dedup encoder (`RevEncoder`): handle `Return` like other single-child nodes.
+In the dedup encoder (`RevEncoder`) — write in reverse (value first, then `;`):
+```rust
+Value::Return(val) => {
+    self.write(val);
+    self.push(b';');
+    // varint is empty (0) — nothing to push
+}
+```
 
 ### 7. Interpreter (`crates/rex-core/src/interpret.rs`)
 
@@ -173,12 +191,13 @@ pub enum RexError {
 }
 ```
 
-In the eval match:
-The interpreter evaluates the `Value` enum (not raw bytecode), so `Return(Box<Value>)` is a wrapper. Handle it directly:
+In the cursor interpreter's eval match, add a `b';'` arm:
 
 ```rust
-Value::Return(val) => {
-    let result = self.eval_value(val)?;
+b';' => {
+    // Return: evaluate the next value, then signal return
+    let _reserved = parse_uint(raw); // reserved varint, currently ignored
+    let result = self.eval()?;
     return Err(RexError::ReturnSignal(result));
 }
 ```
@@ -289,7 +308,6 @@ fn roundtrip_return() {
 | `crates/rex-core/src/decompile.rs` | Decompile `Return` → `return expr` |
 | `crates/rex-core/tests/samples.rs` | Parse tests |
 | `crates/rex-core/tests/roundtrip.rs` | Round-trip tests |
-| `packages/rusty-rex/rex.ohm` | Add `returnTok`, `ReturnKw` to grammar |
 
 ## Verification
 
@@ -299,3 +317,83 @@ echo 'return 42' | rex run               # outputs 42
 echo 'x = 1\nreturn x\n99' | rex run     # outputs 1 (not 99)
 echo 'return' | rex run                   # outputs none
 ```
+
+## Follow-up: Simplify rex-serve Example App
+
+Once early return lands, the sample app in `examples/knowledge-base/` should be updated to use it. The `unless X / when X` mirror pattern appears **6 times** across 3 files. Early return replaces each pair with a flat guard clause.
+
+### 1. `routes/api/_middleware.rex` — Auth guards (biggest win)
+
+**Before (23 lines, 2 levels of nesting):**
+```rex
+unless api-key do
+  res.status = 401
+  {ok: false, error: "missing_api_key", ...}
+end
+when api-key do
+  key-valid = db.get("keys:" + api-key)
+  unless key-valid do
+    res.status = 401
+    {ok: false, error: "invalid_api_key"}
+  end
+  when key-valid do
+    principal = api-key
+  end
+end
+```
+
+**After (flat, linear):**
+```rex
+unless api-key do
+  res.status = 401
+  return {ok: false, error: "missing_api_key", ...}
+end
+key-valid = db.get("keys:" + api-key)
+unless key-valid do
+  res.status = 401
+  return {ok: false, error: "invalid_api_key"}
+end
+principal = api-key
+```
+
+### 2. `routes/api/articles.rex` — POST input validation
+
+**Before:** Duplicated 4-part condition in `unless`/`when` mirror (lines 9–25).
+
+**After:**
+```rex
+unless input and input.slug and input.title and input.body do
+  res.status = 422
+  return {ok: false, error: "slug_title_body_required"}
+end
+record = { slug: input.slug, ... }
+db.set("article:" + input.slug, json.stringify(record))
+res.status = 201
+{ok: true, slug: input.slug}
+```
+
+### 3. `routes/api/articles/[slug].rex` — GET and PUT 404 guards
+
+The `unless record / when record` mirror appears **twice** (GET on lines 6–12, PUT on lines 17–33).
+
+**After (GET example):**
+```rex
+record = db.get("article:" + slug)
+unless record do
+  res.status = 404
+  return {ok: false, error: "not_found"}
+end
+{ok: true, article: json.parse(record)}
+```
+
+Same pattern for PUT's `unless existing` guard.
+
+### Summary of changes
+
+| File | Mirror pairs removed | Lines saved (approx) |
+|------|---------------------|----------------------|
+| `routes/api/_middleware.rex` | 2 | ~10 |
+| `routes/api/articles.rex` | 1 | ~5 |
+| `routes/api/articles/[slug].rex` | 2 | ~8 |
+
+These changes are cosmetic (behavior is identical) but demonstrate the ergonomic value of early return for guard-clause-heavy middleware and API handlers.

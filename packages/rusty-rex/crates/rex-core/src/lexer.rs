@@ -53,6 +53,8 @@ pub enum TokenKind {
     KwOf,
     #[token("or", word_boundary)]
     KwOr,
+    #[token("return", word_boundary)]
+    KwReturn,
     #[token("self", word_boundary)]
     KwSelf,
     #[token("string", word_boundary)]

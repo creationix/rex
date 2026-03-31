@@ -357,6 +357,17 @@ impl<'s, 'c> Parser<'s, 'c> {
             SyntaxKind::KwBreak | SyntaxKind::KwContinue => {
                 self.bump();
             }
+            SyntaxKind::KwReturn => {
+                self.start_node(SyntaxKind::ReturnExpr);
+                self.bump(); // return
+                // Parse optional return value (if next token starts an expression)
+                if !self.at_end() && !matches!(self.current(),
+                    SyntaxKind::KwEnd | SyntaxKind::KwElse | SyntaxKind::RBrace |
+                    SyntaxKind::RBracket | SyntaxKind::RParen | SyntaxKind::Error) {
+                    self.parse_expr();
+                }
+                self.finish_node();
+            }
             SyntaxKind::LBracket => self.parse_array(),
             SyntaxKind::LBrace => self.parse_object(),
             SyntaxKind::KwTrue
@@ -1225,5 +1236,12 @@ mod tests {
         let (_tree, _errors) = parse(&source, &tokens);
         // Errors on `:` and `...` in function args are expected
         // The important thing is: no panic, and TypeDecl/ExternDecl nodes exist
+    }
+
+    #[test]
+    fn parse_return() {
+        assert_no_errors("return 42");
+        assert_no_errors("return");
+        assert_no_errors("when x do return y end");
     }
 }

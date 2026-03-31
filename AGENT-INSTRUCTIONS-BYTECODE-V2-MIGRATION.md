@@ -1,5 +1,7 @@
 # Instructions: Migrate Bytecode Encoder/Decoder to V2
 
+> **Status: COMPLETE.** `Value::List` → `Value::Array`, `Value::Map` → `Value::Object`, `RexValue::Lazy`/`LazySpan` removed, encoder/decoder updated to use `[]`/`{}` paired delimiters. This file is retained as a design reference.
+
 ## Goal
 
 Update the Rex bytecode encoder, decoder, and interpreter to match the v2 spec (`packages/rusty-rex/bytecode-v2.md`). This is the foundational change that unblocks early return (`;` tag) and simplifies the format.
@@ -278,7 +280,7 @@ fn is_data(v: &Value) -> bool {
 
 ### 11. `crates/rex-serve/src/opcodes.rs`
 
-- Remove `RexValue::Lazy(span) =>` lazy materialization arm
+- No changes needed — no `RexValue::Lazy` references exist in this file
 
 ### 12. `crates/rex-node/src/lib.rs`
 

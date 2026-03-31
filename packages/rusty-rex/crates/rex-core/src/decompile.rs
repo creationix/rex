@@ -90,6 +90,14 @@ impl Ctx {
                 out.push_str("delete ");
                 self.write(place, out, Prec::Unary);
             }
+            Value::Return(val) => {
+                out.push_str("return");
+                // Check if value is bare return (none)
+                if !matches!(val.as_ref(), Value::Ref(r) if r == "no") {
+                    out.push(' ');
+                    self.write(val, out, Prec::Top);
+                }
+            }
 
             Value::Chain(segments) => {
                 // Decompile chain back to template literal syntax
@@ -940,6 +948,18 @@ mod tests {
     fn decompile_delete() {
         let v = Value::Delete(Box::new(Value::Variable("x".into())));
         assert_eq!(decompile(&v), "delete x");
+    }
+
+    #[test]
+    fn decompile_return() {
+        let v = Value::Return(Box::new(Value::Integer(42)));
+        assert_eq!(decompile(&v), "return 42");
+    }
+
+    #[test]
+    fn decompile_bare_return() {
+        let v = Value::Return(Box::new(Value::Ref("no".into())));
+        assert_eq!(decompile(&v), "return");
     }
 
     #[test]

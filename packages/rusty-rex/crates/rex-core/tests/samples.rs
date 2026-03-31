@@ -614,3 +614,11 @@ fn whitespace_only() {
 fn comment_only() {
     assert_parses("// just a comment\n");
 }
+
+#[test]
+fn early_return() {
+    assert_parses("return 42");
+    assert_parses("return");
+    assert_parses("when x do return 1 end\n2");
+    assert_parses("unless api-key do\n  return {ok: false}\nend");
+}

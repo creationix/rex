@@ -30,6 +30,7 @@ pub enum SyntaxKind {
     KwObject,
     KwOf,
     KwOr,
+    KwReturn,
     KwSelf,
     KwString,
     KwTrue,
@@ -111,6 +112,7 @@ pub enum SyntaxKind {
     TemplateExpr,
     TypeDecl,
     ExternDecl,
+    ReturnExpr,
 
     /// Rowan requires a dedicated root kind.
     Root,

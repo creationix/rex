@@ -16,6 +16,7 @@ pub enum RexError {
     HostError(String),
     BreakSignal(u32),
     ContinueSignal(u32),
+    ReturnSignal(RexValue),
 }
 
 impl std::fmt::Display for RexError {
@@ -28,6 +29,7 @@ impl std::fmt::Display for RexError {
             RexError::HostError(msg) => write!(f, "host error: {msg}"),
             RexError::BreakSignal(_) => write!(f, "break outside loop"),
             RexError::ContinueSignal(_) => write!(f, "continue outside loop"),
+            RexError::ReturnSignal(_) => write!(f, "return signal"),
         }
     }
 }
@@ -269,7 +271,11 @@ impl<'a> Interpreter<'a> {
     fn eval_top(&mut self) -> Result<RexValue, RexError> {
         let mut last = RexValue::RexNone;
         while !self.at_end() {
-            last = self.eval()?;
+            match self.eval() {
+                Ok(val) => last = val,
+                Err(RexError::ReturnSignal(val)) => return self.force_value(val),
+                Err(e) => return Err(e),
+            }
         }
         // Recursively force nested containers.
         self.force_value(last)
@@ -330,6 +336,11 @@ impl<'a> Interpreter<'a> {
                     Err(RexError::ContinueSignal(v / 2))
                 }
             }
+            b';' => {
+                // Return: ;[value] — raw is always empty (no size prefix)
+                let val = self.eval()?;
+                Err(RexError::ReturnSignal(val))
+            }
             b'^' => {
                 // Pointer: seek forward by delta, eval target
                 let delta = parse_uint(raw) as usize;
@@ -378,7 +389,13 @@ impl<'a> Interpreter<'a> {
 
             // Paired containers
             b'(' => self.eval_call(),
-            b'[' => self.eval_eager_array(),
+            b'[' => {
+                if self.peek_is_index() {
+                    self.eval_indexed_array()
+                } else {
+                    self.eval_eager_array()
+                }
+            }
             b'{' => self.eval_block(),
 
             // Compound containers
@@ -424,6 +441,61 @@ impl<'a> Interpreter<'a> {
         Ok(RexValue::Array(items))
     }
 
+    /// Check if the next bytes form an index header (b64 digits + '#').
+    fn peek_is_index(&self) -> bool {
+        let mut i = self.pos;
+        while i < self.code.len() && is_b64(self.code[i]) { i += 1; }
+        i > self.pos && i < self.code.len() && self.code[i] == b'#'
+    }
+
+    /// Evaluate an indexed array: skip the index, eval elements eagerly.
+    fn eval_indexed_array(&mut self) -> Result<RexValue, RexError> {
+        let raw = self.read_raw();
+        let packed = parse_uint(raw);
+        self.read_byte(); // consume '#'
+
+        let count = (packed >> 3) as usize;
+        let width = ((packed & 7) + 1) as usize;
+
+        // Skip pointer table
+        self.pos += count * width;
+
+        // Evaluate elements eagerly
+        let mut items = Vec::with_capacity(count);
+        while self.peek() != b']' && !self.at_end() {
+            items.push(self.eval()?);
+        }
+        self.read_byte(); // consume ']'
+        Ok(RexValue::Array(items))
+    }
+
+    /// Evaluate an indexed object: skip the pointer table, eval key-value pairs eagerly.
+    fn eval_indexed_object(&mut self) -> Result<RexValue, RexError> {
+        let raw = self.read_raw();
+        let packed = parse_uint(raw);
+        self.read_byte(); // consume '#'
+
+        let count = (packed >> 3) as usize;
+        let width = ((packed & 7) + 1) as usize;
+
+        // Skip pointer table
+        self.pos += count * width;
+
+        // Read key-value pairs eagerly
+        let mut pairs = Vec::with_capacity(count);
+        while self.peek() != b'}' && !self.at_end() {
+            let k = self.eval()?;
+            let v = self.eval()?;
+            let k_str = match k {
+                RexValue::Str(s) => s,
+                _ => format!("{k:?}"),
+            };
+            pairs.push((k_str, v));
+        }
+        self.read_byte(); // consume '}'
+        Ok(RexValue::Object(pairs))
+    }
+
     fn eval_block(&mut self) -> Result<RexValue, RexError> {
         // In v2, {} is used for both code blocks and data objects.
         // Distinguish by peeking at raw bytecode: if the first element
@@ -433,6 +505,11 @@ impl<'a> Interpreter<'a> {
         if self.peek() == b'}' {
             self.read_byte(); // empty {}
             return Ok(RexValue::Object(vec![]));
+        }
+
+        // Indexed object: <packed>#<pointers><key-value-pairs>
+        if self.peek_is_index() {
+            return self.eval_indexed_object();
         }
 
         if self.peek_is_string_literal() {
@@ -517,12 +594,12 @@ impl<'a> Interpreter<'a> {
             self.self_stack.pop();
             // Skip else branch if present
             if self.peek() != b')' {
-                self.skip_value()?;
+                self.skip_value_fast()?;
             }
             self.read_byte(); // ')'
             Ok(result)
         } else {
-            self.skip_value()?; // skip then
+            self.skip_value_fast()?; // skip then
             let result = if self.peek() != b')' {
                 self.eval()?
             } else {
@@ -540,12 +617,12 @@ impl<'a> Interpreter<'a> {
             // Condition is none → execute then branch
             let result = self.eval()?;
             if self.peek() != b')' {
-                self.skip_value()?;
+                self.skip_value_fast()?;
             }
             self.read_byte(); // ')'
             Ok(result)
         } else {
-            self.skip_value()?; // skip then
+            self.skip_value_fast()?; // skip then
             let result = if self.peek() != b')' {
                 self.eval()?
             } else {
@@ -562,7 +639,7 @@ impl<'a> Interpreter<'a> {
         if left.is_defined() {
             // Skip right
             if self.peek() != b')' {
-                self.skip_value()?;
+                self.skip_value_fast()?;
             }
             self.read_byte(); // ')'
             Ok(left)
@@ -579,7 +656,7 @@ impl<'a> Interpreter<'a> {
         if !left.is_defined() {
             // Skip right
             if self.peek() != b')' {
-                self.skip_value()?;
+                self.skip_value_fast()?;
             }
             self.read_byte(); // ')'
             Ok(RexValue::RexNone)
@@ -1008,9 +1085,20 @@ impl<'a> Interpreter<'a> {
                 let size = parse_uint(raw) as usize;
                 self.pos += size;
             }
-            b'(' => self.skip_until(b')')?,
-            b'[' => self.skip_until(b']')?,
-            b'{' => self.skip_until(b'}')?,
+            b'(' | b'[' | b'{' => {
+                let closer = match tag { b'(' => b')', b'[' => b']', _ => b'}' };
+                if !raw.is_empty() {
+                    let size = parse_uint(raw) as usize;
+                    self.pos += size;
+                    if self.peek() == closer { self.read_byte(); }
+                } else {
+                    // Skip index header if present (arrays and objects only)
+                    if tag != b'(' && self.peek_is_index() {
+                        self.skip_index();
+                    }
+                    self.skip_until(closer)?;
+                }
+            }
             b'?' | b'!' | b'|' | b'&' | b'>' | b'<' | b'#' => {
                 let opener = self.read_byte();
                 let closer = match opener { b'(' => b')', b'[' => b']', b'{' => b'}', _ => b')' };
@@ -1018,9 +1106,36 @@ impl<'a> Interpreter<'a> {
             }
             b'=' | b'/' => { self.skip_value()?; self.skip_value()?; }
             b'~' => { self.skip_value()?; }
+            b';' => { self.skip_value_fast()?; }
             _ => {}
         }
         Ok(())
+    }
+
+    fn skip_value_fast(&mut self) -> Result<(), RexError> {
+        if self.at_end() { return Ok(()); }
+        let save = self.pos;
+        let raw = self.read_raw();
+        if !raw.is_empty() && matches!(self.peek(), b'[' | b'{' | b'(') {
+            let size = parse_uint(raw) as usize;
+            self.read_byte(); // consume opener
+            self.pos += size;
+            self.read_byte(); // consume closer
+            return Ok(());
+        }
+        self.pos = save;
+        self.skip_value()
+    }
+
+    /// Skip past an index header: <packed>#<pointers>.
+    /// Assumes peek_is_index() returned true.
+    fn skip_index(&mut self) {
+        let raw = self.read_raw();
+        let packed = parse_uint(raw);
+        self.read_byte(); // consume '#'
+        let count = (packed >> 3) as usize;
+        let width = ((packed & 7) + 1) as usize;
+        self.pos += count * width;
     }
 
     fn skip_until(&mut self, closer: u8) -> Result<(), RexError> {
@@ -1324,5 +1439,158 @@ mod tests {
         ctx.gas_limit = 100;
         let result = run(&bc, ctx);
         assert!(matches!(result, Err(RexError::GasLimitExceeded)));
+    }
+
+    #[test]
+    fn eval_return() {
+        assert!(matches!(eval("return 42"), RexValue::Int(42)));
+    }
+
+    #[test]
+    fn eval_bare_return() {
+        assert!(matches!(eval("return"), RexValue::RexNone));
+    }
+
+    #[test]
+    fn eval_return_halts() {
+        // Return halts execution — 99 is never reached
+        assert!(matches!(eval("return 1\n99"), RexValue::Int(1)));
+    }
+
+    #[test]
+    fn eval_return_in_when() {
+        // Return exits the entire program, not just the when block
+        assert!(matches!(eval("when true do return 1 end\n2"), RexValue::Int(1)));
+    }
+
+    #[test]
+    fn eval_return_in_when_skipped() {
+        // When condition is false, return is not hit
+        assert!(matches!(eval("when none do return 1 end\n2"), RexValue::Int(2)));
+    }
+
+    #[test]
+    fn eval_return_in_unless() {
+        assert!(matches!(eval("unless none do return 42 end\n99"), RexValue::Int(42)));
+    }
+
+    #[test]
+    fn eval_return_in_loop() {
+        let bc = crate::compile("x = 0\nwhile true do\n  x = x + 1\n  when x == 5 do return x end\nend\n99");
+        let mut ctx = Context::default();
+        ctx.gas_limit = 10000;
+        let result = run(&bc, ctx).unwrap();
+        assert!(matches!(result.value, RexValue::Int(5)));
+    }
+
+    // ── Length-prefix skip tests ───────────────────────────────────────
+
+    #[test]
+    fn skip_length_prefixed_then_branch() {
+        // x is none → skip then block, eval else
+        assert!(matches!(eval("x = none\nwhen x do\n  99\nelse\n  42\nend"), RexValue::Int(42)));
+    }
+
+    #[test]
+    fn skip_length_prefixed_else_branch() {
+        // x is defined → eval then, skip else block
+        assert!(matches!(eval("x = 1\nwhen x do\n  42\nelse\n  99\nend"), RexValue::Int(42)));
+    }
+
+    #[test]
+    fn skip_unless_length_prefixed() {
+        assert!(matches!(eval("unless true do 99 end"), RexValue::RexNone));
+        assert!(matches!(eval("unless none do 42 end"), RexValue::Int(42)));
+    }
+
+    #[test]
+    fn skip_or_length_prefixed() {
+        // left is defined → skip right (which is a block)
+        let bc = crate::compile("x = 1\nx or [1, 2, 3]");
+        let result = run(&bc, Context::default()).unwrap();
+        assert!(matches!(result.value, RexValue::Int(1)));
+    }
+
+    #[test]
+    fn skip_and_length_prefixed() {
+        // left is none → skip right (which is a block)
+        assert!(!eval("none and [1, 2, 3]").is_defined());
+    }
+
+    #[test]
+    fn cross_branch_dedup_safe() {
+        // Ensure pointer dedup doesn't create cross-branch references
+        let source = "x = none\nunless x do y = 401 end\nwhen x do\n  unless x do y = 401 end\nend\ny";
+        assert!(matches!(eval(source), RexValue::Int(401)));
+    }
+
+    #[test]
+    fn nested_when_skip() {
+        // Nested conditionals with blocks — all should skip correctly
+        let source = "x = none\nwhen x do\n  when x do 1 else 2 end\nelse\n  when true do 42 else 99 end\nend";
+        assert!(matches!(eval(source), RexValue::Int(42)));
+    }
+
+    // ── Indexed array tests ───────────────────────────────────────────
+
+    #[test]
+    fn eval_indexed_array() {
+        use crate::bytecode::encode_indexed_array;
+
+        let items = vec![
+            crate::bytecode::Value::Integer(1),
+            crate::bytecode::Value::Integer(2),
+            crate::bytecode::Value::Integer(3),
+        ];
+        let bc = encode_indexed_array(&items);
+        let result = run(&bc, Context::default()).unwrap();
+        if let RexValue::Array(vals) = result.value {
+            assert_eq!(vals.len(), 3);
+            assert!(matches!(vals[0], RexValue::Int(1)));
+            assert!(matches!(vals[1], RexValue::Int(2)));
+            assert!(matches!(vals[2], RexValue::Int(3)));
+        } else {
+            panic!("expected array");
+        }
+    }
+
+    #[test]
+    fn eval_indexed_array_with_strings() {
+        use crate::bytecode::encode_indexed_array;
+
+        let items = vec![
+            crate::bytecode::Value::String("hello".into()),
+            crate::bytecode::Value::String("world".into()),
+        ];
+        let bc = encode_indexed_array(&items);
+        let result = run(&bc, Context::default()).unwrap();
+        if let RexValue::Array(vals) = result.value {
+            assert_eq!(vals.len(), 2);
+            assert_eq!(vals[0].as_str(), Some("hello"));
+            assert_eq!(vals[1].as_str(), Some("world"));
+        } else {
+            panic!("expected array");
+        }
+    }
+
+    #[test]
+    fn eval_indexed_object() {
+        use crate::bytecode::{encode_indexed_object, Value};
+
+        let pairs = vec![
+            (Value::String("name".into()), Value::String("Ada".into())),
+            (Value::String("score".into()), Value::Integer(95)),
+        ];
+        let bc = encode_indexed_object(&pairs);
+        let result = run(&bc, Context::default()).unwrap();
+        if let RexValue::Object(vals) = result.value {
+            assert_eq!(vals.len(), 2);
+            assert_eq!(vals[0].0, "name");
+            assert_eq!(vals[0].1.as_str(), Some("Ada"));
+            assert_eq!(vals[1].0, "score");
+            assert!(matches!(vals[1].1, RexValue::Int(95)));
+        } else {
+            panic!("expected object, got {:?}", result.value);
+        }
     }
 }

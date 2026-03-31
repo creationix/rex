@@ -91,17 +91,30 @@ Containers use paired delimiters. The body is zero or more values between the de
 | `[`  | `]`   | Array  |
 | `{`  | `}`   | Object |
 
+#### Optional length prefix
+
+Any paired container can optionally be preceded by a varint giving the byte count of the body (everything between the delimiters, excluding the delimiters themselves):
+
+```
+[body]           → no prefix, not skippable — consumer must parse all children
+[size][body]     → length-prefixed, skippable — consumer can jump size bytes past opener
+```
+
+The producer decides which containers to length-prefix. Typical uses:
+- **Control flow branches** — the interpreter skips the untaken branch by jumping `size` bytes past the opener, then consuming the closer
+- **Large data containers** — skip past a container without parsing its contents
+
+The length prefix is a varint of b64 digits immediately before the opening delimiter. Since `[` and `{` are not b64 digits, the parser can always tell whether a varint precedes the opener.
+
 **Arrays:**
 
 Arrays are semantically an ordered list of values of any type.
 
-They are encoded as the values directly.
-
-| Encoding     | Value               |
-|--------------|---------------------|
-| `[]`         | `[]`                |
-| `[2+4+6+]`   | `[1, 2, 3]`         |
-| `[[t'][f']]` | `[[true], [false]]` |
+| Encoding    | Value       | Skippable?    |
+|-------------|-------------|---------------|
+| `[]`        | `[]`        | no            |
+| `[2+4+6+]`  | `[1, 2, 3]` | no            |
+| `6[2+4+6+]` | `[1, 2, 3]` | yes (6 bytes) |
 
 **Objects:**
 
@@ -119,30 +132,54 @@ Since keys are always strings semantically, the first node in key position disam
 
 ### Indexed Containers
 
-When a container has a `#` immediately after the opening delimiter, it is **indexed**. Indexed containers support:
-
-- **Random access** — jump directly to any element by index
-- **Lazy evaluation** — elements are only parsed/executed when accessed
-- **Skippable** — the end pointer allows jumping past the entire container
+A container can have an index for random access. The `#` tag appears inside the container, just before the element data. It follows the standard `[varint][tag]` parsing rule — the varint before `#` encodes both the element count and pointer width.
 
 #### Index format
 
 ```
-[#<end_ptr><count><ptr0><ptr1>...<ptrN><elem0><elem1>...<elemN>]
+[ <packed>#<ptr0><ptr1>...<ptrN> <elem0><elem1>...<elemN> ]
 ```
 
-- `end_ptr` — fixed-width pointer to the byte just past the last element (before `]`). Used for skipping the entire container.
-- `count` — varint giving the number of elements
-- `ptr0..ptrN` — fixed-width pointers, one per element. Each is a relative delta from the end of the index to the start of that element.
-- Pointer width — minimum number of b64 digits needed to reach the farthest element. All pointers use this same width.
+- `packed` — varint before the `#` tag, encoding two values:
+  - Lower 3 bits: pointer width (1–8 b64 digits per pointer)
+  - Upper bits: element count (`packed >> 3`)
+- `ptr0..ptrN` — fixed-width pointers, one per element. Each is a byte offset from the end of the pointer table to the start of that element. All pointers use the same width (zero-padded on the left).
+- Elements follow immediately after the pointer table, encoded normally.
+
+The consumer reads `packed`, computes `count = packed >> 3` and `width = (packed & 7) + 1`, then reads `count * width` b64 digits as the pointer table. Elements follow.
+
+```
+[4#0123 2+4+]    → packed=4: count=0 (4>>3), width=5 (4&7+1) — wrong example
+[a#02 2+4+]      → packed=a (10): count=1 (10>>3), width=3 (10&7+1) — also wrong
+[8#0 2+]         → packed=8: count=1, width=1. ptr0=0. one element: int 1
+```
+
+Concretely, for a 2-element array `[1, 2]` with pointer width 1:
+- count=2, width=1 → packed = (2 << 3) | (1-1) = 16 → varint `g`
+- ptr0=`0` (offset 0 from end of table), ptr1=`2` (offset 2)
+- Result: `[g#022+4+]`
+
+#### Skipping
+
+Skipping an indexed container uses the **length prefix** (before the opener), not an internal end pointer. The `#` index is purely for random access.
 
 **No index = eager.** The consumer reads all elements sequentially.
 
-**Index present = lazy.** The consumer can jump to individual elements or skip the entire container.
+**Index present = random access.** The consumer can jump to individual elements via the pointer table.
 
 #### Indexed objects
 
-For objects, the index contains one pointer per key-value pair, pointing to the start of the key. Pointers are sorted by key (byte-order comparison of the encoded key) for O(log n) binary search lookup.
+Schema and index are mutually exclusive on the same object. Schema is for compression of many small same-shape objects; index is for random access into large flat objects. They serve different levels of the data hierarchy.
+
+An indexed object has one pointer per key-value pair pointing to the start of the key. Pointers are sorted by key (byte-order comparison of the encoded key) for O(log n) binary search lookup.
+
+#### Placement
+
+```
+[ <packed>#<pointers> <elements> ]          ← indexed array
+{ <packed>#<pointers> <key0><val0>... }     ← indexed object (sorted by key)
+{ <schema-ptr> <val0><val1>... }            ← schema-shared object
+```
 
 ### String Chains
 
@@ -258,17 +295,17 @@ The interpreter distinguishes objects from blocks by context: inside data positi
 
 ### Return
 
-`[value][varint];` — the preceding value is the return value. The `;` tag halts execution and propagates through all enclosing blocks, loops, and conditionals.
+`[optional size];[value]` — a compound tag like decimal (`*`). The `;` tag always consumes the next value as the return value. Halts execution and propagates through all enclosing blocks, loops, and conditionals.
 
-The varint encodes the number of return values minus one (reserved for future multi-return). Currently always 0 (single return).
+The varint before `;` is the byte count of `[value]` (for skipping). If the varint is empty (no b64 digits before `;`), the return is not skippable — the consumer must parse the child to advance past it. If a size is present, the consumer can skip `size` bytes to jump past the return value without parsing it.
 
 ```
-1k+;             → return 42
-(ad%x$2+);       → return x + 1
-no';             → return none (bare return)
+;1k+             → return 42 (not skippable)
+3;1k+            → return 42 (skippable — value is 3 bytes)
+;no'             → return none (bare return)
 ```
 
-A bare `return` with no value compiles to `no';` — the compiler injects `none` before the return tag.
+A bare `return` with no value compiles to `;no'` — the compiler injects `none` as the child.
 
 Rex source:
 ```rex
@@ -315,14 +352,14 @@ Rex uses **existence** instead of truthiness. Only `none` represents absence. `f
 - `and`/`or`/`nor` short-circuit on existence
 - Type predicates return the value if it matches, `none` otherwise
 
-### Eager vs Lazy
+### Eager vs Indexed
 
-| Has index? | Evaluation                            | Random access            | Skippable             |
-|------------|---------------------------------------|--------------------------|-----------------------|
-| No         | Eager — all children parsed/evaluated | No — sequential only     | No                    |
-| Yes (`#`)  | Lazy — children parsed on access      | Yes — via index pointers | Yes — via end pointer |
+| Has index? | Random access           | Skippable               |
+|------------|-------------------------|-------------------------|
+| No         | No — sequential only    | Only with length prefix |
+| Yes (`#`)  | Yes — via pointer table | Only with length prefix |
 
-The producer decides which containers to index based on the use case. Typical pattern: root container indexed (lazy), inner data eager.
+The producer decides which containers to index. The index enables random access; skipping is always via the length prefix (before the opener), independent of whether an index is present.
 
 ### Gas-Bounded Execution
 
@@ -334,35 +371,35 @@ Gas is charged per loop/comprehension iteration. The host sets the limit; 0 = un
 
 ### RX (data layer)
 
-| Tag     | Kind   | Description                             |
-|---------|--------|-----------------------------------------|
-| `+`     | scalar | Integer (zigzag)                        |
-| `*`     | prefix | Decimal exponent (followed by `[sig]+`) |
-| `,`     | sized  | String (varint = byte count)            |
-| `'`     | scalar | Named reference                         |
-| `^`     | scalar | Pointer (delta offset)                  |
-| `.`     | sized  | String chain (varint = byte count)      |
-| `[` `]` | paired | Array                                   |
-| `{` `}` | paired | Object                                  |
-| `#`     | index  | Index header (inside container)         |
+| Tag     | Kind   | Description                                                                                 |
+|---------|--------|---------------------------------------------------------------------------------------------|
+| `+`     | scalar | Integer (zigzag)                                                                            |
+| `*`     | prefix | Decimal exponent (followed by `[sig]+`)                                                     |
+| `,`     | sized  | String (varint = byte count)                                                                |
+| `'`     | scalar | Named reference                                                                             |
+| `^`     | scalar | Pointer (delta offset)                                                                      |
+| `.`     | sized  | String chain (varint = byte count)                                                          |
+| `[` `]` | paired | Array (optional varint length prefix before `[`)                                            |
+| `{` `}` | paired | Object (optional varint length prefix before `{`)                                           |
+| `#`     | index  | Index header: varint encodes (count << 3 \| width-1), followed by fixed-width pointer table |
 
 ### REXC (language layer)
 
-| Tag     | Kind     | Description                      |
-|---------|----------|----------------------------------|
-| `$`     | scalar   | Variable                         |
-| `%`     | scalar   | Opcode                           |
-| `@`     | scalar   | Self (depth)                     |
-| `\`     | scalar   | Break/continue                   |
-| `(` `)` | paired   | Call                             |
-| `?`     | modifier | When (before `(`)                |
-| `!`     | modifier | Unless (before `(`)              |
-| `\|`    | modifier | Or (before `(`)                  |
-| `&`     | modifier | And (before `(`)                 |
-| `>`     | modifier | For-in (before `(`, `[`, or `{`) |
-| `<`     | modifier | For-of (before `(`, `[`, or `{`) |
-| `#`     | modifier | While (before `(`, `[`, or `{`)  |
-| `=`     | fixed    | Set (2 children)                 |
-| `/`     | fixed    | Swap-set (2 children)            |
-| `~`     | fixed    | Delete (1 child)                 |
-| `;`     | postfix  | Return (follows its value, varint = count - 1) |
+| Tag     | Kind     | Description                                               |
+|---------|----------|-----------------------------------------------------------|
+| `$`     | scalar   | Variable                                                  |
+| `%`     | scalar   | Opcode                                                    |
+| `@`     | scalar   | Self (depth)                                              |
+| `\`     | scalar   | Break/continue                                            |
+| `(` `)` | paired   | Call (optional length prefix)                             |
+| `?`     | modifier | When (before `(`)                                         |
+| `!`     | modifier | Unless (before `(`)                                       |
+| `\|`    | modifier | Or (before `(`)                                           |
+| `&`     | modifier | And (before `(`)                                          |
+| `>`     | modifier | For-in (before `(`, `[`, or `{`)                          |
+| `<`     | modifier | For-of (before `(`, `[`, or `{`)                          |
+| `#`     | modifier | While (before `(`, `[`, or `{`)                           |
+| `=`     | fixed    | Set (2 children)                                          |
+| `/`     | fixed    | Swap-set (2 children)                                     |
+| `~`     | fixed    | Delete (1 child)                                          |
+| `;`     | compound | Return (optional size varint, always consumes next value) |
