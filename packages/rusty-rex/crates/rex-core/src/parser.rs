@@ -730,8 +730,20 @@ impl<'s, 'c> Parser<'s, 'c> {
 
     fn parse_obj_key(&mut self) {
         match self.current() {
-            SyntaxKind::Ident => self.bump(),
-            SyntaxKind::Star => self.bump(),
+            SyntaxKind::Ident => {
+                // Check for `mut` modifier: `mut fieldname: Type` or `mut *: Type`
+                if self.current_text() == "mut"
+                    && matches!(self.nth(1), SyntaxKind::Ident | SyntaxKind::Star) {
+                    self.bump(); // mut (contextual modifier)
+                    self.bump(); // field name or *
+                } else {
+                    self.bump(); // plain field name
+                }
+            }
+            SyntaxKind::Star => {
+                // Also handle `mut *:` — mut before wildcard
+                self.bump()
+            }
             SyntaxKind::DecimalNumber | SyntaxKind::HexNumber | SyntaxKind::BinaryNumber => {
                 self.bump()
             }
