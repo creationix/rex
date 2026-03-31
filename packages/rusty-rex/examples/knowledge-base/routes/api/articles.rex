@@ -20,7 +20,7 @@ when method == "POST" do
     created: time.now()
     updated: time.now()
   }
-  db.set("article:" + input.slug, json.stringify(record))
+  db.set(`article:${input.slug}`, json.stringify(record))
   res.status = 201
   return {ok: true, slug: input.slug}
 end
