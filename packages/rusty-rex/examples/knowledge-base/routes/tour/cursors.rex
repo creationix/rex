@@ -11,10 +11,11 @@ Click into each window to make it active and move your cursor.</p>
 <div class="card">
 <p><strong>How it works:</strong> Each browser connects to a WebSocket pub/sub channel
 (<code>/__ws/cursors</code>). Mouse movements are published as JSON messages.
-Every subscriber receives them and renders colored dots.</p>
-<p>The server is just a relay — no Rex script processes cursor events. The
-<code>kv.publish</code>/<code>kv.subscribe</code> system handles fan-out natively.
-A Rex middleware layer could add auth, rate limiting, or spatial filtering.</p>
+Every subscriber receives them and renders colored cursor arrows.</p>
+<p>A Rex transform script (<code>_ws/cursors.rex</code>) runs on every message
+before publishing. The current transform <strong>inverts the Y axis</strong> —
+other people's cursors appear mirrored vertically. Edit the script to change
+the transform in real-time (hot reload works for WebSocket scripts too).</p>
 </div>
 
 <div id="cursor-area" style="position:relative;height:60vh;border:1px solid var(--border);border-radius:0.5rem;margin:1.5rem 0;overflow:hidden;cursor:crosshair;background:var(--surface)">
@@ -29,6 +30,15 @@ maintains the channel in an in-memory KV store with automatic cleanup.</p>
 <pre>/* Any Rex handler can also publish to this channel: */
 kv.publish("cursors", json.stringify({x: 100, y: 200, color: "#ff0000"}))</pre>
 </details>`
+
+/* Show the transform script source */
+ws-source = fs.read("routes/_ws/cursors.rex")
+when ws-source do
+  body = body + html`<h2>Transform Script</h2>
+<p>This Rex script runs on every cursor message (<code>_ws/cursors.rex</code>).
+Try editing it — changes take effect immediately via hot reload:</p>
+<pre>${html.raw(html.highlight(ws-source))}</pre>`
+end
 
 cursor-script = `<script>
 (function() {
