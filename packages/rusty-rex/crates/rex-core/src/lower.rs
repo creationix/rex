@@ -660,12 +660,7 @@ fn lower_array(node: &SyntaxNode) -> Value {
         }
     }
 
-    // Pure data (all literals) → lazy list, otherwise eager array
-    if items.iter().all(is_data) {
-        Value::List(items)
-    } else {
-        Value::Array(items)
-    }
+    Value::Array(items)
 }
 
 fn lower_array_comprehension(node: &SyntaxNode) -> Value {
@@ -725,14 +720,7 @@ fn lower_object(node: &SyntaxNode) -> Value {
         }
     }
 
-    // Pure data → lazy map, otherwise can't use map (has expressions)
-    if pairs.iter().all(|(k, v)| is_data(k) && is_data(v)) {
-        Value::Map(pairs)
-    } else {
-        // For non-data objects, emit as a block that builds the object
-        // For now, use Map anyway (the encoder handles it)
-        Value::Map(pairs)
-    }
+    Value::Object(pairs)
 }
 
 fn lower_pair(node: &SyntaxNode) -> (Value, Value) {
@@ -977,7 +965,7 @@ fn lower_tagged_template(tag: &str, parts: &[TemplatePart]) -> Value {
     let mut call_items = Vec::new();
     // Tag as opcode (built-in) — use Variable for user-defined tags
     call_items.push(Value::Variable(tag.to_string()));
-    call_items.push(Value::List(string_parts));
+    call_items.push(Value::Array(string_parts));
     call_items.extend(exprs);
 
     Value::Call(call_items)
@@ -987,11 +975,12 @@ fn lower_tagged_template(tag: &str, parts: &[TemplatePart]) -> Value {
 fn is_data(v: &Value) -> bool {
     match v {
         Value::Integer(_) | Value::Decimal { .. } | Value::String(_) | Value::Ref(_) => true,
-        Value::List(items) => items.iter().all(is_data),
-        Value::Map(pairs) => pairs.iter().all(|(k, v)| is_data(k) && is_data(v)),
+        Value::Array(items) => items.iter().all(is_data),
+        Value::Object(pairs) => pairs.iter().all(|(k, v)| is_data(k) && is_data(v)),
         _ => false,
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1044,8 +1033,8 @@ mod tests {
 
     #[test]
     fn compile_array_data() {
-        // Pure data array → lazy list
-        assert_eq!(compile("[1, 2, 3]"), "6;2+4+6+");
+        // Data array → paired [] container
+        assert_eq!(compile("[1, 2, 3]"), "[2+4+6+]");
     }
 
     #[test]

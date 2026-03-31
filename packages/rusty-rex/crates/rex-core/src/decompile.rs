@@ -64,9 +64,8 @@ impl Ctx {
                 }
             }
 
-            Value::List(items) => self.write_list(items, out),
-            Value::Map(pairs) => self.write_map(pairs, out),
-            Value::Array(items) => self.write_array(items, out),
+            Value::Array(items) => self.write_list(items, out),
+            Value::Object(pairs) => self.write_map(pairs, out),
             Value::Block(items) => self.write_block(items, out, prec),
             Value::Call(items) => self.write_call(items, out, prec),
 
@@ -121,17 +120,6 @@ impl Ctx {
     }
 
     fn write_list(&mut self, items: &[Value], out: &mut String) {
-        out.push('[');
-        for (i, item) in items.iter().enumerate() {
-            if i > 0 {
-                out.push_str(", ");
-            }
-            self.write(item, out, Prec::Top);
-        }
-        out.push(']');
-    }
-
-    fn write_array(&mut self, items: &[Value], out: &mut String) {
         out.push('[');
         for (i, item) in items.iter().enumerate() {
             if i > 0 {
@@ -925,8 +913,8 @@ mod tests {
     }
 
     #[test]
-    fn decompile_map() {
-        let v = Value::Map(vec![
+    fn decompile_object() {
+        let v = Value::Object(vec![
             (Value::String("a".into()), Value::Integer(1)),
             (Value::String("b".into()), Value::Integer(2)),
         ]);
@@ -934,13 +922,13 @@ mod tests {
     }
 
     #[test]
-    fn decompile_empty_map() {
-        assert_eq!(decompile(&Value::Map(vec![])), "{}");
+    fn decompile_empty_object() {
+        assert_eq!(decompile(&Value::Object(vec![])), "{}");
     }
 
     #[test]
-    fn decompile_list() {
-        let v = Value::List(vec![
+    fn decompile_array() {
+        let v = Value::Array(vec![
             Value::Integer(1),
             Value::Integer(2),
             Value::Integer(3),

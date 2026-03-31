@@ -288,12 +288,12 @@ fn roundtrip_while() {
 
 #[test]
 fn roundtrip_empty_list() {
-    roundtrip(Value::List(vec![]));
+    roundtrip(Value::Array(vec![]));
 }
 
 #[test]
 fn roundtrip_list() {
-    roundtrip(Value::List(vec![
+    roundtrip(Value::Array(vec![
         Value::Integer(1),
         Value::Integer(2),
         Value::Integer(3),
@@ -302,12 +302,12 @@ fn roundtrip_list() {
 
 #[test]
 fn roundtrip_empty_map() {
-    roundtrip(Value::Map(vec![]));
+    roundtrip(Value::Object(vec![]));
 }
 
 #[test]
 fn roundtrip_map() {
-    roundtrip(Value::Map(vec![
+    roundtrip(Value::Object(vec![
         (Value::String("name".into()), Value::String("Ada".into())),
         (Value::String("score".into()), Value::Integer(95)),
     ]));
@@ -315,15 +315,15 @@ fn roundtrip_map() {
 
 #[test]
 fn roundtrip_nested_data() {
-    roundtrip(Value::Map(vec![
+    roundtrip(Value::Object(vec![
         (
             Value::String("users".into()),
-            Value::List(vec![
-                Value::Map(vec![
+            Value::Array(vec![
+                Value::Object(vec![
                     (Value::String("name".into()), Value::String("Ada".into())),
                     (Value::String("active".into()), Value::Ref("t".into())),
                 ]),
-                Value::Map(vec![
+                Value::Object(vec![
                     (Value::String("name".into()), Value::String("Ben".into())),
                     (Value::String("active".into()), Value::Ref("f".into())),
                 ]),

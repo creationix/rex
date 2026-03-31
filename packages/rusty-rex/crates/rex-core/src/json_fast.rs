@@ -91,7 +91,7 @@ impl<'s> JsonParser<'s> {
 
         if self.current() == Some(TokenKind::RBrace) {
             self.bump();
-            return Some(Value::Map(pairs));
+            return Some(Value::Object(pairs));
         }
 
         loop {
@@ -128,7 +128,7 @@ impl<'s> JsonParser<'s> {
         if !self.eat(TokenKind::RBrace) {
             return None;
         }
-        Some(Value::Map(pairs))
+        Some(Value::Object(pairs))
     }
 
     fn parse_array(&mut self) -> Option<Value> {
@@ -137,7 +137,7 @@ impl<'s> JsonParser<'s> {
 
         if self.current() == Some(TokenKind::RBracket) {
             self.bump();
-            return Some(Value::List(items));
+            return Some(Value::Array(items));
         }
 
         loop {
@@ -172,7 +172,7 @@ impl<'s> JsonParser<'s> {
         if !self.eat(TokenKind::RBracket) {
             return None;
         }
-        Some(Value::List(items))
+        Some(Value::Array(items))
     }
 
     fn parse_string(&mut self) -> Option<Value> {
@@ -309,7 +309,7 @@ mod tests {
     fn json_array() {
         assert_eq!(
             parse_json("[1, 2, 3]"),
-            Value::List(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)])
+            Value::Array(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)])
         );
     }
 
@@ -318,7 +318,7 @@ mod tests {
         let v = parse_json(r#"{"a": 1, "b": 2}"#);
         assert_eq!(
             v,
-            Value::Map(vec![
+            Value::Object(vec![
                 (Value::String("a".into()), Value::Integer(1)),
                 (Value::String("b".into()), Value::Integer(2)),
             ])
@@ -330,11 +330,11 @@ mod tests {
         let v = parse_json(r#"{"items": [1, {"x": true}]}"#);
         assert_eq!(
             v,
-            Value::Map(vec![(
+            Value::Object(vec![(
                 Value::String("items".into()),
-                Value::List(vec![
+                Value::Array(vec![
                     Value::Integer(1),
-                    Value::Map(vec![(Value::String("x".into()), Value::Ref("t".into()))]),
+                    Value::Object(vec![(Value::String("x".into()), Value::Ref("t".into()))]),
                 ]),
             )])
         );
@@ -342,8 +342,8 @@ mod tests {
 
     #[test]
     fn json_empty() {
-        assert_eq!(parse_json("{}"), Value::Map(vec![]));
-        assert_eq!(parse_json("[]"), Value::List(vec![]));
+        assert_eq!(parse_json("{}"), Value::Object(vec![]));
+        assert_eq!(parse_json("[]"), Value::Array(vec![]));
     }
 
     #[test]

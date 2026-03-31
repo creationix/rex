@@ -1,8 +1,7 @@
 //! Zero-copy cursor interpreter for REXC/RX bytecode.
 //!
 //! Evaluates bytecode in-place without deserializing to a `Value` tree.
-//! Lazy containers (`;` `:`) are only evaluated on access. Host objects
-//! provide mutable proxy behavior via the `HostObject` trait.
+//! Host objects provide mutable proxy behavior via the `HostObject` trait.
 
 use std::collections::HashMap;
 
@@ -49,8 +48,6 @@ pub enum RexValue {
     Object(Vec<(String, RexValue)>),
     /// Index into the interpreter's host_objects vec.
     Host(usize),
-    /// Lazy reference into bytecode — not yet evaluated.
-    Lazy(LazySpan),
 }
 
 impl RexValue {
@@ -94,17 +91,8 @@ impl RexValue {
             RexValue::Array(_) => "array",
             RexValue::Object(_) => "object",
             RexValue::Host(_) => "object",
-            RexValue::Lazy(_) => "lazy",
         }
     }
-}
-
-/// Lazy byte range into the bytecode.
-#[derive(Debug, Clone)]
-pub struct LazySpan {
-    pub start: usize,
-    pub end: usize,
-    pub is_map: bool,
 }
 
 // ── Host object trait ───────────────────────────────────────────────────
@@ -283,8 +271,7 @@ impl<'a> Interpreter<'a> {
         while !self.at_end() {
             last = self.eval()?;
         }
-        // Eagerly materialize the final return value so lazy maps/lists
-        // that reference variables are resolved before the context is dropped.
+        // Recursively force nested containers.
         self.force_value(last)
     }
 
@@ -389,22 +376,6 @@ impl<'a> Interpreter<'a> {
                 Ok(RexValue::Str(result))
             }
 
-            // Lazy containers
-            b';' => {
-                let size = parse_uint(raw) as usize;
-                let body_start = self.pos;
-                let body_end = self.pos + size;
-                self.pos = body_end;
-                Ok(RexValue::Lazy(LazySpan { start: body_start, end: body_end, is_map: false }))
-            }
-            b':' => {
-                let size = parse_uint(raw) as usize;
-                let body_start = self.pos;
-                let body_end = self.pos + size;
-                self.pos = body_end;
-                Ok(RexValue::Lazy(LazySpan { start: body_start, end: body_end, is_map: true }))
-            }
-
             // Paired containers
             b'(' => self.eval_call(),
             b'[' => self.eval_eager_array(),
@@ -454,12 +425,85 @@ impl<'a> Interpreter<'a> {
     }
 
     fn eval_block(&mut self) -> Result<RexValue, RexError> {
+        // In v2, {} is used for both code blocks and data objects.
+        // Distinguish by peeking at raw bytecode: if the first element
+        // is a string literal (varint + ','), it's an object. If the
+        // first element is a pointer (varint + '^') that resolves to an
+        // object, it's a schema-shared object. Otherwise it's a block.
+        if self.peek() == b'}' {
+            self.read_byte(); // empty {}
+            return Ok(RexValue::Object(vec![]));
+        }
+
+        if self.peek_is_string_literal() {
+            return self.eval_object();
+        }
+
+        // Check for schema pointer: varint + '^'
+        if self.peek_is_pointer() {
+            // Eval the pointer — if it resolves to an object, treat as schema-shared
+            let first = self.eval()?;
+            if let RexValue::Object(schema_pairs) = &first {
+                let keys: Vec<String> = schema_pairs.iter().map(|(k, _)| k.clone()).collect();
+                let mut pairs = Vec::new();
+                for key in &keys {
+                    let v = self.eval()?;
+                    pairs.push((key.clone(), v));
+                }
+                self.read_byte(); // consume '}'
+                return Ok(RexValue::Object(pairs));
+            }
+            // Not an object pointer — treat as block, continue
+            let mut last = first;
+            while self.peek() != b'}' && !self.at_end() {
+                last = self.eval()?;
+            }
+            self.read_byte(); // consume '}'
+            return Ok(last);
+        }
+
+        // Code block — evaluate expressions, return last
         let mut last = RexValue::RexNone;
         while self.peek() != b'}' && !self.at_end() {
             last = self.eval()?;
         }
         self.read_byte(); // consume '}'
         Ok(last)
+    }
+
+    /// Check if the next value in the stream is a string literal (varint + ',').
+    fn peek_is_string_literal(&self) -> bool {
+        let mut i = self.pos;
+        // Skip varint digits
+        while i < self.code.len() && is_b64(self.code[i]) {
+            i += 1;
+        }
+        i < self.code.len() && self.code[i] == b','
+    }
+
+    /// Check if the next value in the stream is a pointer (varint + '^').
+    fn peek_is_pointer(&self) -> bool {
+        let mut i = self.pos;
+        while i < self.code.len() && is_b64(self.code[i]) {
+            i += 1;
+        }
+        i < self.code.len() && self.code[i] == b'^'
+    }
+
+    /// Evaluate an object: alternating string keys and values until '}'.
+    fn eval_object(&mut self) -> Result<RexValue, RexError> {
+        let mut pairs = Vec::new();
+        while self.peek() != b'}' && !self.at_end() {
+            let k = self.eval()?;
+            let v = self.eval()?;
+            let k_str = match k {
+                RexValue::Str(s) => s,
+                _ => format!("{k:?}"),
+            };
+            pairs.push((k_str, v));
+        }
+        self.read_byte(); // consume '}'
+        Ok(RexValue::Object(pairs))
     }
 
     // ── Control flow ────────────────────────────────────────────────
@@ -593,9 +637,8 @@ impl<'a> Interpreter<'a> {
             self.pos = body_start;
             match self.eval_until(closer) {
                 Ok(val) => {
-                    // Force-evaluate during iteration so lazy values that
-                    // reference the loop variable are resolved immediately,
-                    // before the variable is overwritten by the next iteration.
+                    // Force-evaluate during iteration so values referencing
+                    // the loop variable are resolved before it's overwritten.
                     let forced = if opener != b'(' {
                         self.force_value(val)?
                     } else {
@@ -745,8 +788,7 @@ impl<'a> Interpreter<'a> {
         match &callee {
             // Opcode call: %ad, %lt, etc.
             RexValue::Str(s) if s.starts_with('%') => {
-                // Force-materialize lazy args for opcodes since they can't
-                // access the interpreter to resolve lazy spans themselves.
+                // Force-materialize args for opcodes.
                 let eager_args: Vec<RexValue> = args.into_iter()
                     .map(|a| self.force_value(a))
                     .collect::<Result<Vec<_>, _>>()?;
@@ -817,65 +859,8 @@ impl<'a> Interpreter<'a> {
                     Ok(RexValue::RexNone)
                 }
             }
-            RexValue::Lazy(span) => {
-                self.read_lazy_property(span.clone(), key)
-            }
             _ => Ok(RexValue::RexNone),
         }
-    }
-
-    fn read_lazy_property(&mut self, span: LazySpan, key: &RexValue) -> Result<RexValue, RexError> {
-        if span.is_map {
-            // Map: scan key-value pairs
-            if let Some(k) = key.as_str() {
-                let save = self.pos;
-                self.pos = span.start;
-                while self.pos < span.end {
-                    let map_key = self.eval()?;
-                    let map_val = self.eval()?;
-                    if let RexValue::Str(ref mk) = map_key {
-                        if mk == k {
-                            self.pos = save;
-                            return Ok(map_val);
-                        }
-                    }
-                }
-                self.pos = save;
-                return Ok(RexValue::RexNone);
-            }
-        } else {
-            // List: sequential or indexed access
-            if let Some(idx) = key.to_i64() {
-                let save = self.pos;
-                self.pos = span.start;
-                let mut i = 0;
-                while self.pos < span.end {
-                    if i == idx as usize {
-                        let val = self.eval()?;
-                        self.pos = save;
-                        return Ok(val);
-                    }
-                    self.skip_value()?;
-                    i += 1;
-                }
-                self.pos = save;
-                return Ok(RexValue::RexNone);
-            }
-            if let Some(k) = key.as_str() {
-                if k == "size" {
-                    let save = self.pos;
-                    self.pos = span.start;
-                    let mut count = 0;
-                    while self.pos < span.end {
-                        self.skip_value()?;
-                        count += 1;
-                    }
-                    self.pos = save;
-                    return Ok(RexValue::Int(count));
-                }
-            }
-        }
-        Ok(RexValue::RexNone)
     }
 
     // ── Mutation (set/delete) ──────────────────────────────────────
@@ -959,22 +944,6 @@ impl<'a> Interpreter<'a> {
             RexValue::Host(idx) => {
                 Ok(self.host_objects[*idx].iter_values().unwrap_or_default())
             }
-            RexValue::Lazy(span) => {
-                let save = self.pos;
-                self.pos = span.start;
-                let mut items = Vec::new();
-                while self.pos < span.end {
-                    if span.is_map {
-                        let _key = self.eval()?;
-                        let val = self.eval()?;
-                        items.push(val);
-                    } else {
-                        items.push(self.eval()?);
-                    }
-                }
-                self.pos = save;
-                Ok(items)
-            }
             _ => Ok(vec![]),
         }
     }
@@ -986,54 +955,15 @@ impl<'a> Interpreter<'a> {
             RexValue::Host(idx) => {
                 Ok(self.host_objects[*idx].iter_keys().unwrap_or_default())
             }
-            RexValue::Lazy(span) if span.is_map => {
-                let save = self.pos;
-                self.pos = span.start;
-                let mut keys = Vec::new();
-                while self.pos < span.end {
-                    keys.push(self.eval()?);
-                    self.skip_value()?; // skip value
-                }
-                self.pos = save;
-                Ok(keys)
-            }
             _ => Ok(vec![]),
         }
     }
 
     // ── Force evaluation ────────────────────────────────────────────
 
-    /// Eagerly evaluate a value, materializing lazy containers.
+    /// Recursively force nested containers.
     fn force_value(&mut self, value: RexValue) -> Result<RexValue, RexError> {
         match value {
-            RexValue::Lazy(span) => {
-                let save = self.pos;
-                self.pos = span.start;
-                if span.is_map {
-                    let mut pairs = Vec::new();
-                    while self.pos < span.end {
-                        let key = self.eval()?;
-                        let val = self.eval()?;
-                        let key_str = match key {
-                            RexValue::Str(s) => s,
-                            _ => format!("{key:?}"),
-                        };
-                        let val = self.force_value(val)?;
-                        pairs.push((key_str, val));
-                    }
-                    self.pos = save;
-                    Ok(RexValue::Object(pairs))
-                } else {
-                    let mut items = Vec::new();
-                    while self.pos < span.end {
-                        let val = self.eval()?;
-                        let val = self.force_value(val)?;
-                        items.push(val);
-                    }
-                    self.pos = save;
-                    Ok(RexValue::Array(items))
-                }
-            }
             RexValue::Array(items) => {
                 let forced: Result<Vec<_>, _> = items.into_iter()
                     .map(|v| self.force_value(v))
@@ -1074,7 +1004,7 @@ impl<'a> Interpreter<'a> {
         match tag {
             b'+' | b'\'' | b'$' | b'%' | b'@' | b'\\' | b'^' => {}
             b'*' => { self.skip_value()?; }
-            b',' | b';' | b':' | b'.' => {
+            b',' | b'.' => {
                 let size = parse_uint(raw) as usize;
                 self.pos += size;
             }
@@ -1314,8 +1244,7 @@ mod tests {
 
     #[test]
     fn eval_data_array() {
-        // Pure data arrays compile to lazy lists (`;`) but are
-        // force-evaluated at the top level to produce concrete values.
+        // Data arrays produce concrete values.
         let v = eval("[1, 2, 3]");
         assert_eq!(v.type_name(), "array");
         if let RexValue::Array(items) = v {

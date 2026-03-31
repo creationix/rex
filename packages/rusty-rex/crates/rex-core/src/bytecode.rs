@@ -93,9 +93,8 @@ pub enum Value {
     BreakCont(u32),
     Pointer(u32),
 
-    List(Vec<Value>),
-    Map(Vec<(Value, Value)>),
     Array(Vec<Value>),
+    Object(Vec<(Value, Value)>),
     Block(Vec<Value>),
     Call(Vec<Value>),
 
@@ -171,21 +170,16 @@ fn encode_into(value: &Value, out: &mut String) {
             out.push('^');
         }
 
-        // Sized-body containers
-        Value::List(items) => encode_sized_body(';', items, out),
-        Value::Map(pairs) => {
-            let mut body = String::new();
-            for (k, v) in pairs {
-                encode_into(k, &mut body);
-                encode_into(v, &mut body);
-            }
-            out.push_str(&encode_varint(body.len() as u64));
-            out.push(':');
-            out.push_str(&body);
-        }
-
         // Paired containers
         Value::Array(items) => encode_paired('[', ']', items, out),
+        Value::Object(pairs) => {
+            out.push('{');
+            for (k, v) in pairs {
+                encode_into(k, out);
+                encode_into(v, out);
+            }
+            out.push('}');
+        }
         Value::Block(items) => encode_paired('{', '}', items, out),
         Value::Call(items) => encode_paired('(', ')', items, out),
 
@@ -303,7 +297,7 @@ fn prescan_counts(
     counts: &mut std::collections::HashMap<*const Value, usize>,
 ) -> usize {
     match value {
-        Value::List(items) | Value::Array(items) | Value::Block(items) | Value::Call(items)
+        Value::Array(items) | Value::Block(items) | Value::Call(items)
         | Value::When(items) | Value::Unless(items) | Value::Or(items) | Value::And(items)
         | Value::ForIn(items) | Value::ForOf(items) | Value::While(items)
         | Value::ListCompIn(items) | Value::ListCompOf(items) | Value::ListCompWhile(items)
@@ -313,7 +307,7 @@ fn prescan_counts(
             counts.insert(value as *const Value, c);
             c
         }
-        Value::Map(pairs) => {
+        Value::Object(pairs) => {
             let c: usize = 1 + pairs.iter().map(|(k, v)| prescan_counts(k, counts) + prescan_counts(v, counts)).sum::<usize>();
             counts.insert(value as *const Value, c);
             c
@@ -483,7 +477,7 @@ impl RevEncoder {
         }
         // Small containers only (strings handled by write_string)
         match value {
-            Value::List(_) | Value::Map(_) | Value::Array(_) | Value::Block(_) | Value::Call(_) | Value::Chain(_) => {
+            Value::Array(_) | Value::Object(_) | Value::Block(_) | Value::Call(_) | Value::Chain(_) => {
                 let c = self.node_counts.get(&(value as *const Value)).copied().unwrap_or(1);
                 if c >= 2 && c <= DEDUP_COMPLEXITY_LIMIT {
                     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -511,17 +505,9 @@ impl RevEncoder {
             Value::BreakCont(v) => { self.push(b'\\'); self.push_varint(*v as u64); }
             Value::Pointer(d) => { self.push(b'^'); self.push_varint(*d as u64); }
 
-            // Sized: body first (children in reverse), then tag+size
-            Value::List(items) => {
-                let before = self.pos;
-                for item in items.iter().rev() { self.write(item); }
-                let body_len = self.pos - before;
-                self.push(b';'); self.push_varint(body_len as u64);
-            }
-            Value::Map(pairs) => self.emit_map(pairs),
-
             // Paired: closer, children reversed, opener
             Value::Array(items) => { self.push(b']'); for i in items.iter().rev() { self.write(i); } self.push(b'['); }
+            Value::Object(pairs) => self.emit_object(pairs),
             Value::Block(items) => { self.push(b'}'); for i in items.iter().rev() { self.write(i); } self.push(b'{'); }
             Value::Call(items) => { self.push(b')'); for i in items.iter().rev() { self.write(i); } self.push(b'('); }
 
@@ -635,41 +621,34 @@ impl RevEncoder {
         }
     }
 
-    fn emit_map(&mut self, pairs: &[(Value, Value)]) {
+    fn emit_object(&mut self, pairs: &[(Value, Value)]) {
         if pairs.is_empty() {
-            self.push(b':');
+            self.push(b'}');
+            self.push(b'{');
             return;
         }
 
-        // Compute schema key from the map's keys
         let schema = Self::schema_key(pairs);
 
         if let Some(&(schema_left, _schema_len)) = self.schemas.get(&schema) {
-            // Schema match: emit pointer to previous object, then just values.
-            let before = self.pos;
+            // Schema match: emit values + pointer to schema, wrapped in {}
+            self.push(b'}');
             for (_k, v) in pairs.iter().rev() {
                 self.write(v);
             }
-            // Emit pointer to the schema object
             let delta = (self.pos - schema_left) as u64;
             self.push(b'^');
             self.push_varint(delta);
-
-            let body_len = self.pos - before;
-            self.push(b':');
-            self.push_varint(body_len as u64);
+            self.push(b'{');
         } else {
-            // First time seeing this schema: encode normally and record
+            // First occurrence: encode all key-value pairs
             let before = self.pos;
+            self.push(b'}');
             for (k, v) in pairs.iter().rev() {
                 self.write(v);
                 self.write(k);
             }
-            let body_len = self.pos - before;
-            self.push(b':');
-            self.push_varint(body_len as u64);
-
-            // Record: left edge = self.pos (after writing the whole object)
+            self.push(b'{');
             let obj_len = self.pos - before;
             self.schemas.insert(schema, (self.pos, obj_len));
         }
@@ -832,67 +811,49 @@ fn decode_one(input: &[u8], pos: &mut usize, resolve: bool) -> Result<Value, Dec
             Ok(Value::Pointer(delta))
         }
 
-        // Sized-body containers
-        b';' => {
-            let size = varint_from_raw(varint_raw) as usize;
-            let end = *pos + size;
-            let mut items = Vec::new();
-            while *pos < end {
-                items.push(read_value(input, pos, resolve)?);
-            }
-            Ok(Value::List(items))
-        }
-        b':' => {
-            let size = varint_from_raw(varint_raw) as usize;
-            let end = *pos + size;
-            if *pos >= end {
-                return Ok(Value::Map(vec![]));
-            }
-            // Peek at first value to determine if this is key-value pairs
-            // or a schema-shared object (pointer/object + values).
-            let first = read_value(input, pos, resolve)?;
-            match &first {
-                Value::String(_) => {
-                    // Normal key-value pairs: first is a key
-                    let mut pairs = Vec::new();
-                    let val = read_value(input, pos, resolve)?;
-                    pairs.push((first, val));
-                    while *pos < end {
-                        let key = read_value(input, pos, resolve)?;
-                        let val = read_value(input, pos, resolve)?;
-                        pairs.push((key, val));
-                    }
-                    Ok(Value::Map(pairs))
-                }
-                Value::Map(schema_pairs) => {
-                    // Schema-shared: first value resolved to a map.
-                    // Use its keys, read remaining values from body.
-                    let mut pairs = Vec::new();
-                    for (schema_key, _) in schema_pairs {
-                        let val = read_value(input, pos, resolve)?;
-                        pairs.push((schema_key.clone(), val));
-                    }
-                    Ok(Value::Map(pairs))
-                }
-                _ => {
-                    // Fallback: treat as key-value pairs
-                    let mut pairs = Vec::new();
-                    let val = read_value(input, pos, resolve)?;
-                    pairs.push((first, val));
-                    while *pos < end {
-                        let key = read_value(input, pos, resolve)?;
-                        let val = read_value(input, pos, resolve)?;
-                        pairs.push((key, val));
-                    }
-                    Ok(Value::Map(pairs))
-                }
-            }
-        }
-
-        // Paired containers (with optional size prefix)
+        // Paired containers
         b'(' => decode_paired_body(input, pos, b')', resolve, |items| Value::Call(items)),
         b'[' => decode_paired_body(input, pos, b']', resolve, |items| Value::Array(items)),
-        b'{' => decode_paired_body(input, pos, b'}', resolve, |items| Value::Block(items)),
+        b'{' => {
+            let mut children = Vec::new();
+            while *pos < input.len() && input[*pos] != b'}' {
+                children.push(read_value(input, pos, resolve)?);
+            }
+            if *pos < input.len() && input[*pos] == b'}' {
+                *pos += 1;
+            } else {
+                return Err(DecodeError { pos: *pos, message: "expected closing '}'".into() });
+            }
+
+            if children.is_empty() {
+                return Ok(Value::Object(vec![]));
+            }
+
+            match &children[0] {
+                // First child is a string → explicit key-value object
+                Value::String(_) if children.len() % 2 == 0 => {
+                    let pairs = children.chunks(2)
+                        .map(|chunk| (chunk[0].clone(), chunk[1].clone()))
+                        .collect();
+                    Ok(Value::Object(pairs))
+                }
+                // First child is an object (schema pointer resolved) → schema-shared object
+                Value::Object(schema_pairs) => {
+                    let pairs = schema_pairs.iter().zip(children[1..].iter())
+                        .map(|((k, _), v)| (k.clone(), v.clone()))
+                        .collect();
+                    Ok(Value::Object(pairs))
+                }
+                Value::Array(schema_keys) => {
+                    let pairs = schema_keys.iter().zip(children[1..].iter())
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    Ok(Value::Object(pairs))
+                }
+                // Otherwise → code block
+                _ => Ok(Value::Block(children))
+            }
+        }
 
         // Compound modifiers
         b'?' | b'!' | b'|' | b'&' | b'>' | b'<' | b'#' => {
@@ -1204,58 +1165,49 @@ mod tests {
         // Encode two identical strings — second becomes a pointer.
         // decode() should resolve the pointer back to the string.
         let long_str = Value::String("this-is-a-long-repeated-string".into());
-        let v = Value::List(vec![long_str.clone(), long_str.clone()]);
+        let v = Value::Array(vec![long_str.clone(), long_str.clone()]);
         let deduped = encode_dedup(&v);
         assert!(deduped.contains('^'), "expected pointer in deduped output");
 
         let decoded = decode(&deduped).unwrap();
         // Both elements should be the resolved string, not a Pointer
-        if let Value::List(items) = &decoded {
+        if let Value::Array(items) = &decoded {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], Value::String("this-is-a-long-repeated-string".into()));
             assert_eq!(items[1], Value::String("this-is-a-long-repeated-string".into()));
         } else {
-            panic!("expected List, got {decoded:?}");
+            panic!("expected Array, got {decoded:?}");
         }
     }
 
     // ── Container round-trips ───────────────────────────────────────
 
     #[test]
-    fn list_roundtrip() {
-        let v = Value::List(vec![
-            Value::Integer(1),
-            Value::Integer(2),
-            Value::Integer(3),
-        ]);
-        assert_eq!(roundtrip(&v), v);
-    }
-
-    #[test]
-    fn list_encoding() {
-        // [1, 2, 3] → 6;2+4+6+
-        let v = Value::List(vec![
-            Value::Integer(1),
-            Value::Integer(2),
-            Value::Integer(3),
-        ]);
-        assert_eq!(encode(&v), "6;2+4+6+");
-    }
-
-    #[test]
-    fn map_roundtrip() {
-        let v = Value::Map(vec![
-            (Value::String("name".into()), Value::String("Ada".into())),
-            (Value::String("score".into()), Value::Integer(95)),
-        ]);
-        assert_eq!(roundtrip(&v), v);
-    }
-
-    #[test]
     fn array_roundtrip() {
         let v = Value::Array(vec![
             Value::Integer(1),
             Value::Integer(2),
+            Value::Integer(3),
+        ]);
+        assert_eq!(roundtrip(&v), v);
+    }
+
+    #[test]
+    fn array_encoding() {
+        // [1, 2, 3] → [2+4+6+]
+        let v = Value::Array(vec![
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(3),
+        ]);
+        assert_eq!(encode(&v), "[2+4+6+]");
+    }
+
+    #[test]
+    fn object_roundtrip() {
+        let v = Value::Object(vec![
+            (Value::String("name".into()), Value::String("Ada".into())),
+            (Value::String("score".into()), Value::Integer(95)),
         ]);
         assert_eq!(roundtrip(&v), v);
     }
@@ -1296,10 +1248,8 @@ mod tests {
 
     #[test]
     fn empty_containers() {
-        assert_eq!(roundtrip(&Value::List(vec![])), Value::List(vec![]));
-        assert_eq!(roundtrip(&Value::Map(vec![])), Value::Map(vec![]));
         assert_eq!(roundtrip(&Value::Array(vec![])), Value::Array(vec![]));
-        assert_eq!(roundtrip(&Value::Block(vec![])), Value::Block(vec![]));
+        assert_eq!(roundtrip(&Value::Object(vec![])), Value::Object(vec![]));
         assert_eq!(roundtrip(&Value::Call(vec![])), Value::Call(vec![]));
     }
 
@@ -1510,23 +1460,23 @@ mod tests {
 
     #[test]
     fn json_object_encoding() {
-        // {"name": "Ada", "score": 95} as lazy map
-        let v = Value::Map(vec![
+        // {"name": "Ada", "score": 95} as object
+        let v = Value::Object(vec![
             (Value::String("name".into()), Value::String("Ada".into())),
             (Value::String("score".into()), Value::Integer(95)),
         ]);
         let encoded = encode(&v);
         let decoded = roundtrip(&v);
         assert_eq!(decoded, v);
-        // Verify the encoded starts with size + ':'
-        assert!(encoded.contains(':'), "map should contain ':' tag");
+        // Verify the encoded uses paired {} delimiters
+        assert!(encoded.starts_with('{') && encoded.ends_with('}'), "object should use {{}} delimiters");
     }
 
     // ── Dedup tests ─────────────────────────────────────────────────
 
     #[test]
     fn dedup_no_effect_on_unique_values() {
-        let v = Value::List(vec![
+        let v = Value::Array(vec![
             Value::Integer(1),
             Value::Integer(2),
             Value::Integer(3),
@@ -1538,7 +1488,7 @@ mod tests {
     fn dedup_replaces_repeated_large_strings() {
         // Two identical long strings — second should be a pointer
         let long_str = Value::String("this-is-a-long-repeated-string".into());
-        let v = Value::List(vec![long_str.clone(), long_str.clone()]);
+        let v = Value::Array(vec![long_str.clone(), long_str.clone()]);
         let normal = encode(&v);
         let deduped = encode_dedup(&v);
         assert!(
@@ -1553,7 +1503,7 @@ mod tests {
     #[test]
     fn dedup_skips_small_values() {
         // Small values (< 4 bytes) should not be deduped
-        let v = Value::List(vec![
+        let v = Value::Array(vec![
             Value::Integer(1),
             Value::Integer(1),
             Value::Integer(1),
@@ -1565,11 +1515,11 @@ mod tests {
 
     #[test]
     fn dedup_repeated_objects() {
-        let obj = Value::Map(vec![
+        let obj = Value::Object(vec![
             (Value::String("name".into()), Value::String("Ada".into())),
             (Value::String("score".into()), Value::Integer(95)),
         ]);
-        let v = Value::List(vec![obj.clone(), obj.clone(), obj.clone()]);
+        let v = Value::Array(vec![obj.clone(), obj.clone(), obj.clone()]);
         let normal = encode(&v);
         let deduped = encode_dedup(&v);
         assert!(
@@ -1582,12 +1532,12 @@ mod tests {
 
     #[test]
     fn dedup_repeated_arrays() {
-        let arr = Value::List(vec![
+        let arr = Value::Array(vec![
             Value::String("alpha".into()),
             Value::String("beta".into()),
             Value::String("gamma".into()),
         ]);
-        let v = Value::List(vec![arr.clone(), arr.clone()]);
+        let v = Value::Array(vec![arr.clone(), arr.clone()]);
         let normal = encode(&v);
         let deduped = encode_dedup(&v);
         assert!(
