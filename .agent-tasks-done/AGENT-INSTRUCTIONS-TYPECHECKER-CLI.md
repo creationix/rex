@@ -1,5 +1,7 @@
 # Instructions: Implement Rex Type Checker CLI
 
+> **Status: COMPLETE.** `rex check` command implemented with auto-discovery of `.rexd` files, colored output, file:line:col diagnostics, and exit code 1 on errors. Integrated with the type checker engine in `typecheck.rs`.
+
 ## Goal
 
 Build a `rex check` CLI command that type-checks Rex source files against a `.rexd` domain interface. No user-written type annotations — all types are inferred. The checker outputs errors and warnings to stderr with file/line/column locations. Exit code 0 = clean, 1 = errors found.

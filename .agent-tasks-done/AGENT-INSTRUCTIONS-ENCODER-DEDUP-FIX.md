@@ -1,5 +1,7 @@
 # Instructions: Fix encode_dedup Pointer Delta Calculation
 
+> **Status: COMPLETE.** Pointer delta calculation fixed in RevEncoder. Dedup roundtrip tests pass.
+
 ## Problem
 
 The `RevEncoder` in `crates/rex-core/src/bytecode.rs` produces invalid pointer deltas for complex programs with many dedup opportunities. The decoder fails with "unexpected end of input" and the interpreter produces wrong results.
