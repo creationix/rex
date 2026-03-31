@@ -398,6 +398,7 @@ impl<'a> Interpreter<'a> {
             b'>' => self.eval_for_in(),
             b'<' => self.eval_for_of(),
             b'#' => self.eval_while(),
+            b'@' => self.eval_match(),
 
             // Mutation
             b'=' => self.eval_set(),
@@ -1641,6 +1642,47 @@ mod tests {
             assert!(matches!(vals[1].1, RexValue::Int(95)));
         } else {
             panic!("expected object, got {:?}", result.value);
+        }
+    }
+
+    // ── Regression tests for known bugs ────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "expected 3 items")]
+    fn bug_for_in_range_binding() {
+        // Bug: `for v in 1..3` doesn't bind `v` — loop variable is none
+        let v = eval("for v in 1..3 do v end");
+        // For loop returns last iteration's value (should be 3)
+        assert!(matches!(v, RexValue::Int(3)),
+            "expected Int(3), got {:?}", v);
+        // Also test comprehension with range
+        let v2 = eval("[v for v in 1..3]");
+        if let RexValue::Array(items) = v2 {
+            assert_eq!(items.len(), 3, "expected 3 items, got {}", items.len());
+        } else {
+            panic!("expected array");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "expected true")]
+    fn bug_dynamic_integer_key() {
+        // Bug: obj.(4) = true then obj.(4) returns none
+        // Integer keys set via dynamic navigation don't round-trip
+        let v = eval("obj = {}\nobj.(4) = true\nobj.(4)");
+        assert!(matches!(v, RexValue::Bool(true)),
+            "expected true, got {:?} — expected true", v);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected array")]
+    fn bug_array_push_method() {
+        // Bug: [1, 2].push(3) returns none instead of [1, 2, 3]
+        let v = eval("[1, 2].push(3)");
+        if let RexValue::Array(items) = &v {
+            assert_eq!(items.len(), 3);
+        } else {
+            panic!("expected array, got {:?}", v);
         }
     }
 }
