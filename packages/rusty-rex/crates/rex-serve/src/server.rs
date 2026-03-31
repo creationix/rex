@@ -14,6 +14,8 @@ pub struct AppState {
     pub project_root: PathBuf,
     /// Broadcast channel for file change notifications (for WebSocket clients)
     pub reload_tx: broadcast::Sender<String>,
+    /// In-memory KV store with pub/sub
+    pub kv: Arc<std::sync::Mutex<crate::kv::KvStore>>,
 }
 
 pub async fn run(config: Config, project_root: PathBuf) {
@@ -55,12 +57,27 @@ pub async fn run(config: Config, project_root: PathBuf) {
     // Broadcast channel for live reload notifications
     let (reload_tx, _) = broadcast::channel::<String>(16);
 
+    // In-memory KV store
+    let kv = Arc::new(std::sync::Mutex::new(crate::kv::KvStore::new()));
+
+    // Background TTL eviction
+    let kv_evict = kv.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            if let Ok(mut store) = kv_evict.lock() {
+                store.evict_expired();
+            }
+        }
+    });
+
     let state = Arc::new(AppState {
         config,
         route_table: RwLock::new(table),
         db,
         project_root,
         reload_tx,
+        kv,
     });
 
     // Start file watcher for hot reload
@@ -72,6 +89,7 @@ pub async fn run(config: Config, project_root: PathBuf) {
 
     let app = Router::new()
         .route("/__reload", get(ws_reload_handler))
+        .route("/__ws/{channel}", get(ws_pubsub_handler))
         .fallback(crate::handler::handle_request)
         .with_state(state.clone());
 
@@ -128,6 +146,60 @@ async fn ws_reload_connection(
         }
     }
     tracing::debug!("live reload client disconnected");
+}
+
+/// WebSocket handler for pub/sub channels.
+/// Clients connect to /__ws/{channel} and send/receive JSON messages.
+async fn ws_pubsub_handler(
+    ws: axum::extract::WebSocketUpgrade,
+    axum::extract::Path(channel): axum::extract::Path<String>,
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::response::Response {
+    ws.on_upgrade(move |socket| ws_pubsub_connection(socket, channel, state))
+}
+
+async fn ws_pubsub_connection(
+    mut socket: axum::extract::ws::WebSocket,
+    channel: String,
+    state: Arc<AppState>,
+) {
+    use axum::extract::ws::Message;
+
+    // Subscribe to the channel
+    let mut rx = {
+        let mut store = state.kv.lock().unwrap();
+        store.subscribe(&channel)
+    };
+
+    tracing::debug!("pub/sub client connected to channel: {channel}");
+
+    loop {
+        tokio::select! {
+            // Broadcast message from channel → send to client
+            msg = rx.recv() => {
+                match msg {
+                    Ok(data) => {
+                        if socket.send(Message::Text(data.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            // Client message → publish to channel
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        let mut store = state.kv.lock().unwrap();
+                        store.publish(&channel, &text);
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+    tracing::debug!("pub/sub client disconnected from channel: {channel}");
 }
 
 async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
