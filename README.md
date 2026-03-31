@@ -68,6 +68,17 @@ rex fibonacci.rex
 rex -c --expr "when x do y end"
 ```
 
+## File Formats
+
+| Extension | Format | Description |
+|---|---|---|
+| `.rex` | Rex source | The high-level language — compiled to `.rexc` bytecode |
+| `.rexd` | Rex declarations | Domain interface files — `type` and `extern` declarations for tooling |
+| `.rexc` | REXC bytecode | Compiled Rex — variables, control flow, opcodes. Superset of RX |
+| `.rx` | RX data | Data-only subset of REXC — JSON-compatible values encoded as compact UTF-8 |
+
+RX is to REXC what JSON is to JavaScript: a pure data format that happens to be valid in the larger language. You can store RX in JSON string fields, diff it, and transmit it like any other text.
+
 ## Rex in Practice: rex-serve
 
 The [rex-serve](packages/rusty-rex/crates/rex-serve) demo embeds Rex as the scripting layer for an HTTP server. Every page is a `.rex` file. Run the self-guided tour:
