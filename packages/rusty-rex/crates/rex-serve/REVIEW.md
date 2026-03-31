@@ -1,25 +1,24 @@
 # Rex in Practice: Lessons from rex-serve
 
-rex-serve embeds Rex as the scripting layer for an HTTP server — filesystem-routed `.rex` files as edge functions with middleware, templates, markdown rendering, and a CRUD API. This document captures what stood out during development.
+rex-serve embeds Rex as the scripting layer for an HTTP server — filesystem-routed `.rex` files as edge functions with middleware, templates, markdown rendering, a CRUD API, and real-time WebSocket pub/sub. This document captures what stood out during development.
 
 ## Favorite Features
 
-### 1. Existence semantics eliminate an entire class of bugs
+### Existence semantics eliminate an entire class of bugs
 
-When handling HTTP requests, you constantly deal with optional values — headers that may not exist, query params that may be absent, database lookups that return nothing. In most languages, you need `!= null` or `?? default` checks everywhere and still get bitten by `0` or `""` being falsy. Rex's existence model makes `or` do exactly what you mean:
+HTTP handlers are full of optional values — headers that may not exist, query params that may be absent, database lookups that return nothing. In most languages, you need `!= null` or `?? default` checks everywhere and still get bitten by `0` or `""` being falsy. Rex's existence model makes `or` do exactly what you mean:
 
 ```rex
 api-key = headers.authorization     /* none if missing, string if present */
 max = query.limit or 100            /* 0 is a valid limit, won't fall through */
-name = user.nickname or user.email  /* "" is a valid nickname */
 
 unless api-key do
-  res.status = 401                  /* only fires if truly absent */
+  res.status = 401
   return {ok: false, error: "unauthorized"}
 end
 ```
 
-### 2. Guard-style handlers with `return`
+### Guard-style handlers with `return`
 
 Sequential `when` blocks with `return` let you write handlers as flat guard clauses — no nesting, no `else` chains, top-to-bottom readability:
 
@@ -35,7 +34,7 @@ res.status = 405
 {ok: false, error: "method_not_allowed"}
 ```
 
-### 3. Template literals with safe-by-default HTML
+### Template literals with safe-by-default HTML
 
 Tagged templates let hosts define domain-specific string processing. The `html` tag auto-escapes interpolated values, while `html.raw()` marks pre-rendered HTML as safe:
 
@@ -45,11 +44,11 @@ body = html`<h1>${title}</h1>
 <footer>Generated at ${time.now()}</footer>`
 ```
 
-No more escaped quotes, no more `body = body + "..." + var + "..."`. Template literals with `${expr}` interpolation eliminated the worst ergonomic issue in the project. Nested templates work — `html` for escaping user data, untagged backticks for composing safe fragments.
+Nested templates work naturally — use `html` for escaping user data, untagged backticks for composing safe fragments.
 
-### 4. Comprehensions + unified navigation
+### Comprehensions + unified navigation
 
-Mapping, filtering, and reshaping data reads like a pipeline. The `.` syntax works uniformly for headers, config, JSON, arrays, and host objects:
+Mapping, filtering, and reshaping data reads like a pipeline. The `.` syntax works uniformly across headers, config, JSON, arrays, and host objects:
 
 ```rex
 articles = db.list("article:")
@@ -57,20 +56,15 @@ items = [json.parse(a.value) for a in articles]
 {ok: true, articles: [{slug: a.slug, title: a.title} for a in items]}
 ```
 
-### 5. The type system catches real bugs
+### Type checking catches real bugs
 
-The type checker is integrated into the hot reload cycle — it runs on startup (all files) and on every file save (incremental). Diagnostics appear in the server log alongside route loading, so you see type errors the moment you save. Running `rex check routes/` against the `.rexd` domain interface file caught two real bugs in the tour app:
-
-- An unused `principal` variable in the API middleware (assigned but never read downstream)
-- A missing `${hl-3}` interpolation in the DX Report page (highlighted snippet prepared but never rendered)
-
-Both were genuine issues that visual testing missed. The per-field `mut` declarations in `.rexd` are especially valuable — they precisely express which parts of the response object a handler can write to:
+The type checker runs on startup and on every file save via hot reload. Running `rex check` against the `.rexd` domain interface caught genuine issues that visual testing missed. The per-field `mut` declarations precisely express which parts of the response a handler can write to:
 
 ```rex
 extern res = {
   mut status: integer
   mut headers: {mut *: string | [string]}
-  body: string          /* read-only — type checker flags res.body = "x" */
+  body: string          /* read-only */
 }
 ```
 
@@ -81,18 +75,14 @@ Every original pain point was resolved during the project:
 | Issue | Resolution |
 |---|---|
 | **Lazy maps break across boundaries** | v2 bytecode: eager by default, lazy opt-in via index |
-| **No early return** | `return` keyword — halts execution, propagates through blocks/loops |
-| **String concatenation for HTML** | Template literals with `${expr}`, tagged templates for `html` |
-| **Pointer dedup bugs** | Interpreter fixed: eval_block and eval_set handle pointers in all positions |
-| **`self` keyword** | Removed — loop variables via `for v in` bindings are cleaner |
-| **Separate `when`/`unless` bytecode** | Unified into variadic `?` cond — `unless c do t end` compiles to `?(c no' t)` |
-| **Binary `and`/`or`** | Now variadic — `a and b and c` is a single `&(a b c)` |
-| **No type checking** | `rex check` validates against `.rexd` — integrated into hot reload cycle |
+| **No early return** | `return` keyword — halts execution, propagates through all scopes |
+| **String concatenation for HTML** | Template literals with `${expr}`, tagged templates for auto-escaping |
+| **Pointer dedup bugs** | Interpreter fixed to handle pointers in all positions |
 | **Runtime opcode indirection** | `compile_with_domain` rewrites opcodes directly from `.rexd` declarations |
+| **No type checking** | `rex check` validates against `.rexd` — integrated into hot reload |
+| **Separate when/unless bytecode** | Unified into variadic `?` cond |
+| **Binary and/or** | Now variadic — `a and b and c` is a single `&(a b c)` |
 
 ## Status
 
-All original pain points and feature requests have been resolved. The platform is fully functional with no remaining workarounds or known issues.
-
-The domain rewriter safely coexists with tagged templates — `html\`...\`` compiles as `Call([Variable, Array, ...])` which doesn't match the rewrite pattern `Call([Call([Variable, String]), ...])`, so the `html()` declaration can stay in the `.rexd` for type checking without interfering with runtime dispatch.
-
+All pain points have been resolved. The platform is fully functional with no remaining workarounds or known issues.
