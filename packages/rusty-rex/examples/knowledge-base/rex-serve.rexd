@@ -137,6 +137,14 @@ extern html.raw(html: string) ->string
 // Usage: html`<p>${user-input}</p>`
 extern html(parts: [string], ...values: some) ->string
 
+// ── WebSocket Events ──────────────────────────────────────────────────
+
+// WebSocket transform scripts (_ws/*.rex) receive event data via this binding
+extern event = {
+  // The raw message string (JSON)
+  data: string
+}
+
 // ── Utilities ──────────────────────────────────────────────────────────
 
 // Current time as unix timestamp in milliseconds
