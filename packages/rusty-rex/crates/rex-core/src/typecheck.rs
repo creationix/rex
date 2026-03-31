@@ -336,6 +336,9 @@ pub struct DomainSchema {
 pub struct GlobalEntry {
     pub ty: Type,
     pub mutable: bool,
+    /// Fields that are writable (from `mut field: T` in the type expression).
+    /// Contains dot-paths like "status", "headers". Wildcard `*` means all map keys.
+    pub mutable_fields: Vec<String>,
     pub doc: Option<String>,
 }
 
@@ -504,7 +507,9 @@ fn extract_extern_assign(
     };
     let ty = interpret_type_expr_from_children(rhs);
 
-    schema.globals.insert(name, GlobalEntry { ty, mutable, doc });
+    // Extract mutable fields from the CST (look for `mut` before field names in ObjectExpr)
+    let mutable_fields = extract_mutable_fields_from_cst(rhs);
+    schema.globals.insert(name, GlobalEntry { ty, mutable, mutable_fields, doc });
 }
 
 /// Extract a function signature from a CallExpr.
@@ -719,6 +724,43 @@ fn interpret_type_node(node: &SyntaxNode) -> Type {
             Type::unknown()
         }
         _ => Type::unknown(),
+    }
+}
+
+/// Extract field names that have `mut` prefix from CST children of a type expression.
+fn extract_mutable_fields_from_cst(
+    children: &[rowan::NodeOrToken<SyntaxNode, SyntaxToken>],
+) -> Vec<String> {
+    let mut result = Vec::new();
+    for child in children {
+        if let Some(n) = as_node(child) {
+            if n.kind() == SyntaxKind::ObjectExpr {
+                extract_mut_from_object_node(n, &mut result);
+            }
+        }
+    }
+    result
+}
+
+/// Walk an ObjectExpr node looking for `mut` annotations on Pair children.
+fn extract_mut_from_object_node(node: &SyntaxNode, result: &mut Vec<String>) {
+    for child in node.children() {
+        if child.kind() == SyntaxKind::Pair {
+            let children: Vec<_> = non_trivia_children(&child).collect();
+            // Check if first child is Ident("mut")
+            if children.len() >= 3 {
+                if let Some(text) = as_token_text(&children[0]) {
+                    if text == "mut" {
+                        // Second child is the field name (or *)
+                        if let Some(SyntaxKind::Star) = as_token_kind(&children[1]) {
+                            result.push("*".to_string());
+                        } else if let Some(name) = as_token_text(&children[1]) {
+                            result.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1065,7 +1107,13 @@ impl<'a> TypeEnv<'a> {
     fn infer_program(&mut self, root: &SyntaxNode) {
         for child in root.children_with_tokens() {
             match child {
-                rowan::NodeOrToken::Node(n) => { self.infer_node(&n); }
+                rowan::NodeOrToken::Node(n) => {
+                    self.infer_node(&n);
+                    // After processing a conditional, apply flow narrowing for subsequent code
+                    if n.kind() == SyntaxKind::ConditionalExpr {
+                        self.apply_flow_narrowing(&n);
+                    }
+                }
                 rowan::NodeOrToken::Token(t) if !t.kind().is_trivia() => { self.infer_token(&t); }
                 _ => {}
             }
@@ -1160,7 +1208,7 @@ impl<'a> TypeEnv<'a> {
                     Type::Int
                 } else if lt.is_numeric() && rt.is_numeric() {
                     Type::Number
-                } else if lt == Type::Some || rt == Type::Some {
+                } else if self.type_contains_some(&lt) || self.type_contains_some(&rt) {
                     self.error(Self::span_of(node), format!(
                         "cannot use 'some' in arithmetic — narrow first"
                     ));
@@ -1386,9 +1434,59 @@ impl<'a> TypeEnv<'a> {
         }
     }
 
-    fn check_mutability(&mut self, _dotted_name: &str, _span: std::ops::Range<usize>) {
-        // TODO: implement per-field mutability checks
-        // Need to walk the type tree checking `mut` annotations on fields
+    /// Check if a type contains `some` (directly or in a union).
+    fn type_contains_some(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Some => true,
+            Type::Union(types) | Type::Intersection(types) => {
+                types.iter().any(|t| self.type_contains_some(t))
+            }
+            Type::Ref(name) => {
+                self.schema.type_aliases.get(name)
+                    .or_else(|| self.inline_aliases.get(name))
+                    .map_or(false, |t| self.type_contains_some(t))
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if a write to a dotted path is allowed.
+    fn check_mutability(&mut self, dotted_name: &str, span: std::ops::Range<usize>) {
+        let parts: Vec<&str> = dotted_name.splitn(2, '.').collect();
+        if parts.len() < 2 { return; }
+        let root = parts[0];
+
+        // Check if the root global exists and if writes are allowed
+        if let Some(entry) = self.schema.globals.get(root) {
+            if entry.mutable {
+                return; // entire binding is mut — all writes allowed
+            }
+            // Check per-field mutability by looking at the type
+            // For now, we check if the field path has a `mut` annotation
+            // by looking at the mutability_map stored during .rexd parsing
+            let field_path = parts[1];
+            if !self.is_field_mutable(root, field_path) {
+                self.error(span, format!(
+                    "cannot assign to read-only property '{}' on '{}'",
+                    field_path, root
+                ));
+            }
+        }
+    }
+
+    /// Check if a field path on a global is mutable.
+    fn is_field_mutable(&self, root: &str, field: &str) -> bool {
+        if let Some(entry) = self.schema.globals.get(root) {
+            if entry.mutable { return true; }
+            // Check per-field mutability
+            let first_part = field.split('.').next().unwrap_or(field);
+            // Field is mutable if explicitly listed, or wildcard * allows all
+            entry.mutable_fields.contains(&first_part.to_string())
+                || entry.mutable_fields.contains(&"*".to_string())
+        } else {
+            // Unknown global — assume mutable (local variable)
+            true
+        }
     }
 
     fn infer_call(&mut self, node: &SyntaxNode) -> Type {
@@ -1827,12 +1925,71 @@ impl<'a> TypeEnv<'a> {
         let mut last = Type::None;
         for child in node.children_with_tokens() {
             match child {
-                rowan::NodeOrToken::Node(n) => last = self.infer_node(&n),
+                rowan::NodeOrToken::Node(n) => {
+                    last = self.infer_node(&n);
+                    // After processing a conditional, apply flow narrowing for subsequent code
+                    if n.kind() == SyntaxKind::ConditionalExpr {
+                        self.apply_flow_narrowing(&n);
+                    }
+                }
                 rowan::NodeOrToken::Token(t) if !t.kind().is_trivia() => last = self.infer_token(&t),
                 _ => {}
             }
         }
         last
+    }
+
+    /// If a conditional always returns/breaks in its body, apply inverse narrowing
+    /// to the current scope for subsequent statements.
+    fn apply_flow_narrowing(&mut self, node: &SyntaxNode) {
+        let children: Vec<_> = non_trivia_children(node).collect();
+        if children.is_empty() { return; }
+
+        let is_when = as_token_kind(&children[0]) == Some(SyntaxKind::KwWhen);
+        let is_unless = as_token_kind(&children[0]) == Some(SyntaxKind::KwUnless);
+        if !is_when && !is_unless { return; }
+
+        // Find `do` to get the condition
+        let do_idx = children.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::KwDo));
+        let do_idx = match do_idx { Some(i) => i, None => return };
+
+        // Check if the body always exits (contains return or break)
+        let has_else = children.iter().any(|c| as_node(c).map_or(false, |n| n.kind() == SyntaxKind::ElseBranch));
+        if has_else { return; } // if there's an else, flow continues regardless
+
+        let body_always_exits = children[do_idx + 1..].iter().any(|c| {
+            if let Some(n) = as_node(c) {
+                if n.kind() == SyntaxKind::Block {
+                    return self.block_always_exits(n);
+                }
+            }
+            false
+        });
+
+        if !body_always_exits { return; }
+
+        // The body always exits → after this statement, the condition's inverse holds
+        let cond_children = &children[1..do_idx];
+        let narrowings = self.extract_narrowings(cond_children);
+
+        if is_when {
+            // `when cond do return end` → after this, cond is false → apply inverse
+            self.apply_narrowings_inverse(&narrowings);
+        } else {
+            // `unless cond do return end` → after this, cond is true → apply normal
+            self.apply_narrowings(&narrowings);
+        }
+    }
+
+    /// Check if a block always exits (contains a return statement).
+    fn block_always_exits(&self, node: &SyntaxNode) -> bool {
+        for child in node.children() {
+            match child.kind() {
+                SyntaxKind::ReturnExpr => return true,
+                _ => {}
+            }
+        }
+        false
     }
 
     fn infer_for(&mut self, node: &SyntaxNode) -> Type {
