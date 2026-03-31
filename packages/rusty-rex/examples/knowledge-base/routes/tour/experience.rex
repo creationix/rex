@@ -73,11 +73,12 @@ default</strong>. Laziness is opt-in via an explicit index marker. Object litera
 handler code evaluate immediately — no workarounds needed. This was the single
 biggest improvement from the v2 migration.</p>
 
-<h3>Pointer deduplication interacts badly with skipped branches (open bug)</h3>
-<p>The bytecode encoder's pointer deduplication creates references across conditional
-branches. When a pointer's target is inside a skipped branch, the interpreter misreads
-the bytecode. Workaround: rex-serve uses <code>compile_no_dedup()</code> to avoid
-pointers entirely. This persists after the v2 migration.</p>
+<h3>Pointer deduplication interacts badly with skipped branches (fixed)</h3>
+<p>The interpreter had two bugs triggered by pointer dedup: object keys deduped as
+pointers were misidentified as schema pointers, and navigation places deduped as
+pointers silently skipped writes. Both were interpreter bugs, not encoder bugs — the
+pointers were correct. Fixed with 13 regression tests.
+<code>compile_no_dedup()</code> workaround removed.</p>
 
 <h3>No early return (fixed: <code>return</code> keyword)</h3>
 <p>This <em>was</em> the second biggest pain point. Without <code>return</code>, every handler
