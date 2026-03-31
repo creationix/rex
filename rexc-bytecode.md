@@ -1,268 +1,191 @@
 # REXC Bytecode Format
 
-REXC is a compact bytecode for the Rex language, serialized as printable UTF-8. It is a **strict superset of [RX](rx-format.md)** — every valid RX document is valid REXC.
-
-REXC extends RX with: variables, opcodes, calls, control flow, loops, comprehensions, mutation, blocks, and return. This document covers only the extensions. See [rx-format.md](rx-format.md) for the base data format (parsing rule, b64 alphabet, zigzag, scalars, containers, pointers, chains, indexes).
+REXC is the bytecode for Rex, serialized as printable UTF-8. It is a strict superset of [RX](rx-format.md) — every valid RX document is valid REXC. This document covers only the extensions; see [rx-format.md](rx-format.md) for the base data format.
 
 ---
 
-## Additional Paired Container
+## Scalars
 
-RX uses `[]` and `{}`. REXC adds one more paired container:
+Same `[varint][tag]` rule as RX. `$` and `%` use the varint bytes as a name (like `'`), not as a number.
 
-| Open | Close | Name |
-|------|-------|------|
-| `(`  | `)`   | Call |
-
-Calls evaluate: the first child is the callee, the rest are arguments.
-
-```
-(ad%2+4+)                -> add(1, 2) = 3
-(user$4,name)            -> user.name
-(user$7,address6,street) -> user.address.street
-```
-
----
-
-## Additional Scalars
-
-| Tag | Name           | Varint meaning                             |
-|-----|----------------|--------------------------------------------|
-| `$` | Variable       | name (opaque b64 bytes, like `'` for refs) |
-| `%` | Opcode         | mnemonic (opaque b64 bytes)                |
+| Tag | Name | Varint |
+|-----|------|--------|
+| `$` | Variable | name |
+| `%` | Opcode | mnemonic |
 | `\` | Break/Continue | `(depth-1)*2 + kind` (0=break, 1=continue) |
 
-These follow the same `[varint][tag]` parsing rule as RX scalars. `$` and `%` use the varint bytes as a name (like `'`), not as a number.
+---
+
+## Calls
+
+`(callee arg0 arg1 ...)` — first child is the callee, rest are arguments.
+
+```
+(ad%2+4+)                 add(1, 2) = 3
+(user$4,name)             user.name
+(user$7,address6,street)  user.address.street
+```
 
 ---
 
-## Compound Modifiers
+## Control Flow
 
-REXC adds modifier tags that appear **before** a paired container's opening delimiter. The modifier + opener + closer form a compound container.
+Modifier tags appear before a paired container's opener. The modifier + opener + closer form a compound container.
 
-### Control Flow
+### Cond (`?`)
 
-| Modifier | Container | Name | Children             |
-|----------|-----------|------|----------------------|
-| `?`      | `(` `)`   | Cond | variadic (see below) |
-| `&`      | `(` `)`   | And  | variadic             |
-| `\|`     | `(` `)`   | Or   | variadic             |
-
-**And** `&(a b c ...)`: evaluate left to right. If all children are defined, return the last value. At the first `none`, stop and return `none`. Zero children returns `none`.
-
-**Or** `|(a b c ...)`: evaluate left to right. Return the first defined value. If all children are `none`, return `none`. Zero children returns `none`.
-
-**Cond** `?(c1 t1 [c2 t2 ...] [else])`: evaluate condition-body pairs left to right. For each pair, evaluate the condition; if defined, evaluate the corresponding body and return it (skip all remaining pairs and else). If no condition matches, evaluate and return the else expression. If no else (even number of children), return `none`.
+`?(c1 t1 [c2 t2 ...] [else])` — condition-body pairs, left to right. First defined condition's body is evaluated and returned. If no match, evaluate else (or return `none`).
 
 ```
-?(c t)              // when c do t end
-?(c t e)            // when c do t else e end
-?(c1 t1 c2 t2 e)   // when c1 do t1 else when c2 do t2 else e end
+?(c t)              when c do t end
+?(c t e)            when c do t else e end
+?(c1 t1 c2 t2 e)   when c1 do t1 else when c2 do t2 else e end
 ```
 
-The source-level `unless` keyword compiles to `?` with a `none` placeholder in the then position:
+`unless` compiles to `?` with swapped branches:
 
 ```
-unless c do t end          ->  ?(c no' t)
-unless c do t else e end   ->  ?(c e t)
+?(c no' t)          unless c do t end
+?(c e t)            unless c do t else e end
 ```
 
-### Loops
+### And / Or (`&`, `|`)
 
-| Modifier | Container | Name   | Children                    |
-|----------|-----------|--------|-----------------------------|
-| `>`      | `(` `)`   | For-in | iterable, [$bindings], body |
-| `<`      | `(` `)`   | For-of | iterable, [$bindings], body |
-| `#`      | `(` `)`   | While  | cond, body                  |
+Variadic, short-circuit on existence:
 
-Bindings: 1-2 `$` variables between iterable and body.
+- **`&(a b c ...)`** — evaluate left to right. Return last value if all defined, first `none` otherwise.
+- **`|(a b c ...)`** — return first defined value. All `none` returns `none`.
 
-| Modifier     | 1 binding  | 2 bindings    |
-|--------------|------------|---------------|
-| `>` (for-in) | `for v in` | `for k, v in` |
-| `<` (for-of) | `for k of` | --            |
+### Loops (`>`, `<`, `#`)
+
+| Modifier | Name | Children |
+|---|---|---|
+| `>` `()` | For-in | iterable, [$bindings], body |
+| `<` `()` | For-of | iterable, [$bindings], body |
+| `#` `()` | While | cond, body |
+
+Bindings: 1-2 `$` variables. `>` with 1 = `for v in`, with 2 = `for k, v in`. `<` with 1 = `for k of`.
 
 ### Comprehensions
 
-Comprehensions use the same modifiers but with `[]` or `{}` instead of `()`:
+Same modifiers with `[]` or `{}` instead of `()`:
 
-| Tags     | Name                        | Children                                    |
-|----------|-----------------------------|---------------------------------------------|
-| `>[` `]` | For-in array comprehension  | iterable, [$bindings], value_expr           |
-| `<[` `]` | For-of array comprehension  | iterable, [$bindings], value_expr           |
-| `#[` `]` | While array comprehension   | cond, value_expr                            |
-| `>{` `}` | For-in object comprehension | iterable, [$bindings], key_expr, value_expr |
-| `<{` `}` | For-of object comprehension | iterable, [$bindings], key_expr, value_expr |
-| `#{` `}` | While object comprehension  | cond, key_expr, value_expr                  |
-
-### Modifier Parsing
-
-The decoder encounters a modifier as a tag byte (after reading the varint, which is always empty for modifiers). It then reads the next byte as the opener and parses children until the matching closer:
-
-```
-// In read_value, after reading raw varint and tag:
-case '?', '|', '&', '>', '<', '#':
-    opener = read_byte(input, pos)          // '(' or '[' or '{'
-    closer = matching_closer(opener)        // ')' or ']' or '}'
-    children = []
-    while input[pos] != closer:
-        children.push(read_value(input, pos))
-    pos += 1   // consume closer
-    return CompoundNode(tag, opener, children)
-```
-
-**Disambiguation of `#`**: as an index, `#` is always followed by b64 digits (the index is a non-empty array of b64 pointer values). As a modifier, `#` is always followed by `(`, `[`, or `{`. Since opener bytes are not b64 digits, the parser distinguishes the two cases by inspecting the byte after `#`.
-
----
-
-## Length Prefixes (Skip Support)
-
-In pure RX, containers never need length prefixes.  Random access in RX is enabled via indexes on select values. In REXC, the interpreter sometimes needs to skip values without fully parsing them. Delimited containers (anything with matching brackets, including compound modifiers) can always be skipped by scanning for the closing delimiter — but this requires parsing each nested child. A length prefix allows jumping past the entire body in constant time.
-
-**Rule**: when a container appears in a skip position, the encoder always adds a length prefix — a varint before the opening delimiter giving the byte count of the body (between delimiters, excluding the delimiters themselves). This applies uniformly: inside conditional modifiers (`?`, `&`, `|`), fixed-arity operators (`=`, `/`), return (`;`), or anywhere else a value might be skipped.
-
-Scalars never need length prefixes — they are self-delimiting. The decimal tag (`.`) is a special case: skip the `.` tag, then skip the embedded child value.
-
-```
-?(cond 4{2+4+} 2{6+})      // container branches are length-prefixed
-&(a$ 4{2+4+} 2{6+})        // and: skippable children are prefixed
-|(a$ 2{6+})                 // or: skippable children are prefixed
-=x$ 4[2+4+]                // set: value child is length-prefixed
-?(x$ 1k+)                  // scalar branch, no prefix needed
-```
-
-When the length prefix is zero (no b64 digits before the opener), the interpreter falls back to scanning for the matching closer. This is fine because an empty container is trivially fast to skip.
-
-```
-skip_value(input, pos):
-    raw = read_b64_digits(input, pos)
-    if raw is non-empty and input[pos] is '[' or '{' or '(':
-        // length-prefixed container: jump in constant time
-        size = b64_to_uint(raw)
-        pos += 1       // skip opener
-        pos += size    // jump past body
-        pos += 1       // skip closer
-    else:
-        // scalar, zero-prefix container, or fixed-arity: skip by parsing
-        pos = saved
-        parse_and_discard(input, pos)
-```
-
-Since `[`, `{`, `(` are not b64 digits, the parser always distinguishes a length prefix from an unprefixed container.
+| Tags | Name | Children |
+|---|---|---|
+| `>[]` | Array comp (for-in) | iterable, [$bindings], value_expr |
+| `>{}` | Object comp (for-in) | iterable, [$bindings], key_expr, value_expr |
+| `<[]` `<{}` | Same (for-of) | same |
+| `#[]` `#{}` | Same (while) | cond, value/key_expr |
 
 ---
 
 ## Fixed-Arity Operators
 
-No delimiters -- children are self-delimiting values that follow the tag.
+Children follow the tag directly (no delimiters):
 
-| Tag | Name     | Children                         |
-|-----|----------|----------------------------------|
-| `=` | Set      | place, value                     |
-| `/` | Swap-set | place, value (returns old value) |
-| `~` | Delete   | place                            |
+| Tag | Name | Children |
+|-----|------|----------|
+| `=` | Set | place, value |
+| `/` | Swap-set | place, value (returns old) |
+| `~` | Delete | place |
 
 ```
-=x$1k+          -> x = 42
-=x$(ad%x$2+)    -> x += 1  (desugared: x = add(x, 1))
-~x$              -> delete x
+=x$1k+           x = 42
+=x$(ad%x$2+)     x += 1  (desugared)
+~x$               delete x
 ```
 
 ---
 
 ## Block
 
-`{expr0 expr1 ... exprN}` -- evaluates all expressions sequentially, returns the last result. Uses the same `{}` delimiters as objects.
+`{expr0 expr1 ... exprN}` — evaluates sequentially, returns last. Same `{}` delimiters as objects.
 
-The interpreter distinguishes objects from blocks by peeking at the first child:
-- First child is a string literal (varint + `,`) -> object (key-value pairs)
-- First child resolves to an object/array -> schema-shared object
-- First child is an index (varint + `#`) -> indexed object
-- Otherwise -> code block
+Disambiguation: first child is a string literal → object. First child resolves to object/array → schema-shared object. Otherwise → block.
 
 ---
 
 ## Return
 
-`;[value]` -- the `;` tag consumes the next value as the return expression. Halts execution and propagates through all enclosing blocks, loops, and conditionals.
+`;[value]` — consumes the next value. Halts execution, propagates through all enclosing scopes.
 
 ```
-;1k+             -> return 42
-;no'             -> return none (bare return)
+;1k+       return 42
+;no'       return none
 ```
-
-A bare `return` compiles to `;no'` -- the compiler injects `none` as the child.
 
 ---
 
-## Tagged Template Literals
+## Template Literals
 
-Template literals compile to string chains (`.`) for untagged, or to calls for tagged.
+Compile to existing constructs — no new tags.
 
-**Untagged** -- `` `hello ${name}` `` compiles to a string chain:
+**Untagged** → string chain (`.`):
 ```
-.[5,hello name$]     -> "hello " + name -> "hello Ada"
+.[5,hello name$]              `hello ${name}`
 ```
 
-**Tagged** -- `` html`<a>${title}</a>` `` compiles to a call:
+**Tagged** → call with string parts array:
 ```
-(html%[4,<a >5,</a>]title$)     -> html(["<a>", "</a>"], title)
+(html%[4,<a >5,</a>]title$)   html`<a>${title}</a>`
 ```
+
+---
+
+## Length Prefixes
+
+Containers in skip positions get a varint length prefix before the opener — the byte count of the body (between delimiters). This lets the interpreter jump past skipped branches in constant time.
+
+```
+?(cond 4{2+4+} 2{6+})   branches are length-prefixed
+=x$ 4[2+4+]             set value is length-prefixed
+```
+
+Scalars don't need prefixes (self-delimiting). No prefix (empty varint) falls back to scanning for the closer.
+
+Since `[`, `{`, `(` are not b64 digits, a length prefix is always unambiguous.
 
 ---
 
 ## Semantics
 
-### Existence, Not Truthiness
+### Existence
 
-Rex uses **existence** instead of truthiness. Only `none` represents absence. `false`, `null`, `0`, and `""` are all defined values.
+Only `none` is absence. `false`, `null`, `0`, `""` are defined values. Comparisons return value or `none`. Control flow branches on defined vs `none`.
 
-- Comparisons return the left-hand value on success, `none` on failure
-- `when`/`unless` branch on whether a value is defined (not none)
-- `and`/`or` short-circuit on existence (variadic)
-- Type predicates return the value if it matches, `none` otherwise
+### Variables
 
-### Variable Scoping and Visibility
+| Declaration | Visibility | Mutable | Optimizable |
+|---|---|---|---|
+| `extern x` | host → script | no | no |
+| `extern mut x` | host ↔ script | yes | no |
+| `x = ...` | local | yes | yes |
 
-Variables (`$`) fall into two categories based on `extern` declarations (from `.rexd` or source):
+Host interface = `extern` bindings (inputs) + `extern mut` bindings (bidirectional) + return value (output).
 
-| Declaration    | Visibility    | Mutable | Optimizable |
-|----------------|---------------|---------|-------------|
-| `extern x`     | host → script | no      | no (pinned) |
-| `extern mut x` | host ↔ script | yes     | no (pinned) |
-| `x = ...`      | script-local  | yes     | yes         |
+### Gas
 
-The host interface is the `extern` contract plus the return value:
-
-- **Inputs**: `extern` bindings (read-only) and `extern mut` bindings (initial values)
-- **Outputs**: `extern mut` bindings (modified values) and the evaluation's return value (last expression)
-
-All non-extern variables are local. The optimizer may replace them with stack slots, inline them, or eliminate them entirely.
-
-### Gas-Bounded Execution
-
-Gas is charged per loop/comprehension iteration. The host sets the limit; 0 = unlimited.
+Charged per loop/comprehension iteration. Host sets limit; 0 = unlimited.
 
 ---
 
 ## Tag Summary
 
-All RX tags (see [rx-format.md](rx-format.md)) plus:
+All [RX tags](rx-format.md) plus:
 
-| Tag  | Kind     | Varint meaning              | Body / children                             |
-|------|----------|-----------------------------|---------------------------------------------|
-| `$`  | scalar   | name (opaque)               | none                                        |
-| `%`  | scalar   | mnemonic (opaque)           | none                                        |
-| `\`  | scalar   | break/continue code         | none                                        |
-| `(`  | opener   | (length prefix in skip pos) | values until `)`                            |
-| `)`  | closer   | --                          | --                                          |
-| `?`  | modifier | (empty)                     | compound: `?(` children `)` (variadic cond) |
-| `\|` | modifier | (empty)                     | compound: `\|(` children `)` (variadic or)  |
-| `&`  | modifier | (empty)                     | compound: `&(` children `)` (variadic and)  |
-| `>`  | modifier | (empty)                     | compound with `(`, `[`, `{`                 |
-| `<`  | modifier | (empty)                     | compound with `(`, `[`, `{`                 |
-| `#`  | modifier | (empty)                     | compound with `(`, `[`, `{`                 |
-| `=`  | fixed    | (empty)                     | 2 children                                  |
-| `/`  | fixed    | (empty)                     | 2 children                                  |
-| `~`  | fixed    | (empty)                     | 1 child                                     |
-| `;`  | prefix   | (empty)                     | 1 child (return value)                      |
+| Tag | Kind | Description |
+|-----|------|-------------|
+| `$` | scalar | Variable (name in varint) |
+| `%` | scalar | Opcode (mnemonic in varint) |
+| `\` | scalar | Break/continue |
+| `(` `)` | paired | Call |
+| `?` | modifier | Cond (before `()`) |
+| `&` | modifier | And (before `()`) |
+| `\|` | modifier | Or (before `()`) |
+| `>` | modifier | For-in (before `()` `[]` `{}`) |
+| `<` | modifier | For-of (before `()` `[]` `{}`) |
+| `#` | modifier | While (before `()` `[]` `{}`) |
+| `=` | fixed | Set (2 children) |
+| `/` | fixed | Swap-set (2 children) |
+| `~` | fixed | Delete (1 child) |
+| `;` | prefix | Return (1 child) |
