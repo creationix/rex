@@ -49,6 +49,30 @@ result = {(k): v * 2 for k, v in data}
 
 **Note:** These methods work in the TypeScript/bun Rex implementation (`packages/rex-lang`). The Rust interpreter is newer and hasn't caught up on built-in methods yet.
 
+## Domain-Aware Compilation (remaining items)
+
+### CLI `--domain` flag on `rex compile`
+
+The `compile_with_domain()` API exists in `rex-core` and `rex-serve` uses it, but the CLI's `compile` subcommand doesn't expose a `--domain` flag. Adding it is trivial — mirror the existing `--domain` flag on `rex check`.
+
+### OpcodeNamespace HostObjects still created per request
+
+`rex-serve/handler.rs` still creates 10 `OpcodeNamespace` HostObjects per HTTP request (`ns_time`, `ns_json`, `ns_db`, etc.) and 5 per WebSocket transform. These are redundant when domain-aware compilation is active (opcodes are called directly), but harmless. Removing them would reduce per-request allocations.
+
+## WebSocket Middleware (remaining items)
+
+### Per-connection state not implemented
+
+The plan called for `HashMap<ConnectionId, RexValue>` to persist state across messages on the same WebSocket connection. Currently each message invocation gets a fresh context. Workaround: use the KV store with connection-specific keys.
+
+### Connect/close lifecycle hooks not implemented
+
+Only `message` events trigger Rex scripts. The plan called for `connect` (accept/reject + init state), `close` (cleanup), `file-change`, and `db-set` event types routed to Rex middleware. Currently connects are accepted unconditionally and closes just log.
+
+### Event-specific script routing not implemented
+
+The plan proposed `routes/_ws/connect.rex`, `routes/_ws/message.rex`, etc. as separate scripts per event type. Currently a single transform script per channel handles all messages.
+
 ## Planned Features
 
 ### `match` expression (design incomplete)

@@ -1,6 +1,6 @@
 # Instructions: Rex-Powered WebSocket Middleware
 
-> **Status: COMPLETE.** Two WebSocket endpoints in rex-serve: `/__reload` (live reload broadcast) and `/__ws/{channel}` (pub/sub with optional Rex transform scripts in `routes/_ws/{channel}.rex`). Built on axum's native WS support with tokio broadcast channels. Working example: `routes/_ws/cursors.rex`. Client-side auto-reconnect included.
+> **Status: COMPLETE.** KV store with pub/sub and TTL, all 6 `kv.*` opcodes, `routes/_ws/` transform script discovery, WebSocket handler running Rex transforms on messages. Remaining items (per-connection state, connect/close lifecycle hooks, event-specific routing) tracked in KNOWN-ISSUES.md.
 
 ## Goal
 
