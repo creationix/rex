@@ -3,8 +3,10 @@ res.headers.content-type = "text/html"
 layout = fs.read("routes/_layouts/page.html")
 
 body = html`<h1>Live Cursors</h1>
-<p>Move your mouse around. Every connected browser sees everyone else's cursor in
-real-time. Open this page in multiple windows to see it in action.</p>
+<p>Move your mouse in the area below. Every connected browser sees everyone else's
+cursor in real-time. Open this page in <strong>two side-by-side windows</strong> — the
+active window sends cursor positions, and all other windows render them.
+Click into each window to make it active and move your cursor.</p>
 
 <div class="card">
 <p><strong>How it works:</strong> Each browser connects to a WebSocket pub/sub channel
