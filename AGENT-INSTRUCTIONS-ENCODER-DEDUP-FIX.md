@@ -29,17 +29,27 @@ end
 
 Simple programs dedup correctly. The bug appears when there are many pointer targets spread across conditional branches, comprehensions, and return statements.
 
+## Core Concept
+
+The dedup logic is extremely simple:
+
+1. **When writing a value**, store the current total document size (`self.pos`) indexed by the value's hash/key.
+2. **When writing a duplicate**, look up the stored entry. If a pointer is cheaper to write than the value itself, emit a pointer.
+3. **The pointer delta** is simply: `current self.pos - stored self.pos`. That's it.
+
+`self.pos` tracks total bytes written so far. The delta between two `self.pos` values is preserved through the final `buf.reverse()` — if value A was recorded at pos=10 and we're now at pos=25, the delta is 15, and that same distance of 15 holds in the forward buffer after reversal.
+
+Don't think about reverse encoding, the "right edge of the pointer", the "left edge of the target", or the size of the pointer vs target in terms of buffer positions. It's just the delta of total document sizes.
+
 ## Root Cause
 
-The `RevEncoder` builds bytecode right-to-left, then reverses the buffer. It records each value's position after emitting it (`self.pos`), and computes pointer deltas as `self.pos - target_left`.
-
-A pointer delta should be the distance from the **right edge of the pointer** (the byte after the `^` tag) to the **left edge of the target** (the first byte of the target value, typically a varint). In the reversed buffer, this corresponds to `self.pos - target_left` at the time the pointer is written.
-
-However, this calculation is wrong in some cases. The `RevEncoder.pos` field counts bytes pushed, but the relationship between `pos` at write time and the final forward position after reversal may be off by one or more bytes in certain scenarios — particularly when:
+The `RevEncoder` currently over-complicates this. The recording and delta computation may be wrong in some cases because the code conflates buffer positions with document sizes or introduces off-by-one errors when:
 
 1. Pointers reference targets inside compound structures (calls, blocks, conditionals)
 2. Multiple levels of nesting create long chains of pointers
 3. String dedup and value dedup interact (both `write_string` and `write` have independent dedup paths)
+
+The fix should simplify the logic to match the core concept above: record `self.pos` after writing, compute `self.pos - recorded_pos` when deduplicating.
 
 ## How to Debug
 
@@ -82,28 +92,29 @@ The fix is in `crates/rex-core/src/bytecode.rs`, in the `RevEncoder` implementat
 
 ### The invariant
 
-For any pointer in the final (reversed) bytecode:
-- The pointer is `[varint delta][^]`
-- The interpreter reads the varint, reads `^`, then `target = current_pos + delta`
-- `target` must point to the **first byte** of the target value (its varint prefix, or its tag if it has no varint)
+The dedup invariant is simple:
 
-In the `RevEncoder`:
-- `self.pos` grows monotonically as bytes are pushed (right-to-left)
-- After `buf.reverse()`, position `P` in the reverse buffer maps to position `total - 1 - P` in the forward buffer
-- The delta between two positions in the reverse buffer equals the delta in the forward buffer (reversal preserves gaps)
+1. `self.pos` = total bytes written so far (grows monotonically)
+2. After writing a value, record `self.pos` keyed by the value's hash
+3. When encountering a duplicate, `delta = self.pos - recorded_pos`
+4. The pointer `[varint delta][^]` must be cheaper (fewer bytes) than re-emitting the value
 
-So the formula `delta = self.pos - target_left` should be correct IF `target_left` is recorded at the right moment. Verify that:
-- `target_left` is recorded AFTER the full value is emitted (including any varints, tags, and body)
-- The recording happens at `self.pos` which is the position of the leftmost byte of the value
+This works because reversal preserves deltas — the gap between any two `self.pos` snapshots is the same in the forward buffer.
+
+Verify that:
+- `self.pos` is recorded AFTER the full value is emitted (including any varints, tags, and body)
 - No off-by-one from the `push` ordering
+- The cost comparison uses the actual pointer size (`varint_len(delta) + 1`) vs the target's encoded length
 
 ### Suggested approach
 
-1. Add a validation pass: after `encode_dedup`, immediately `decode` the result and assert success. This catches all bad pointers at encode time.
+1. **Simplify the recording**: ensure every dedup path (in `write` and `write_string`) follows the same pattern: emit the value, then record `self.pos`. The stored value is the total document size at that point, nothing more.
 
-2. Write a focused test that isolates the minimal failing case. Start with the complex handler test and remove pieces until you find the smallest program that fails.
+2. **Simplify the delta**: when a duplicate is found, compute `delta = self.pos - recorded_pos`. Don't reason about buffer positions, left edges, or right edges.
 
-3. Add logging to `write` and `write_string` to print the delta, target_left, and self.pos for each pointer written. Compare these with what the decoder expects.
+3. **Add a validation pass**: after `encode_dedup`, immediately `decode` the result and assert success. This catches all bad pointers at encode time.
+
+4. **Write a focused test** that isolates the minimal failing case. Start with the complex handler test and remove pieces until you find the smallest program that fails.
 
 ## Verification
 
