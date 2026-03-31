@@ -1,5 +1,7 @@
 # Instructions: Implement Rex Type Checking
 
+> **Status: COMPLETE.** Full type checker implemented in `crates/rex-core/src/typecheck.rs`. Includes: `.rexd` parser, Type enum with property resolution/assignability, inference engine (all expression types), type narrowing (existence, predicates, comparison, and-chains, flow-sensitive), intersection types, per-field mut checking, unused variable warnings, "did you mean" suggestions, template interpolation tracking, and `rex check` CLI command. All knowledge-base examples pass with 0 errors. This file is retained as a design reference.
+
 ## Goal
 
 Implement a type checker for Rex that infers types from `.rexd` domain files and Rex source code, with no user-written type annotations. The type checker should run in the LSP (for editor diagnostics, hover, completions) and optionally as a standalone CLI check.

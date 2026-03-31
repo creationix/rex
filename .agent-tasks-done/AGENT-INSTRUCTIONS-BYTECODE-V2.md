@@ -1,5 +1,7 @@
 # Agent Task: Bytecode V2 — Remove self, unless, nor from Rust compiler
 
+> **Status: COMPLETE.** `KwSelf`, `KwNor`, `Value::Unless` removed. `unless` compiles to `?(cond none body)` pattern. Language simplified.
+
 ## Overview
 
 The bytecode spec (`rexc-bytecode.md`) and language spec (`language.md`) have been updated. The Rust compiler in `packages/rusty-rex/crates/rex-core/src/` needs to match.
