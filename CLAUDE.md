@@ -76,5 +76,7 @@ bun run reinstall
 ## Documentation
 
 - [language.md](language.md) — Rex syntax and semantics reference
-- [rexc-bytecode.md](rexc-bytecode.md) — `rexc` encoding specification
+- [rx-format.md](rx-format.md) — RX data format (JSON-compatible, subset of REXC)
+- [rexc-bytecode.md](rexc-bytecode.md) — REXC bytecode (RX + language constructs)
+- [rex-compilation.md](rex-compilation.md) — Rex source to REXC compilation mapping
 - [CONTRIBUTING.md](CONTRIBUTING.md) — repo layout, architecture, development workflow

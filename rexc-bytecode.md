@@ -1,88 +1,20 @@
 # REXC Bytecode Format
 
-REXC is a compact bytecode that serializes as printable UTF-8. It is a **superset of [RX](rx-format.md)**: every valid RX document is valid REXC. The RX layer handles data encoding (numbers, strings, arrays, objects, pointers, chains, indexes). REXC adds language constructs: variables, opcodes, control flow, mutation, and evaluation semantics.
+REXC is a compact bytecode for the Rex language, serialized as printable UTF-8. It is a **strict superset of [RX](rx-format.md)** — every valid RX document is valid REXC.
 
-REXC embeds directly in JSON string values with minimal escaping.
-
----
-
-## Parsing Rule
-
-Every value starts with zero or more base-64 digits (the varint), followed by a non-b64 tag byte. The tag determines how to interpret the varint and what (if any) body follows.
-
-```
-[b64 digits][tag][body]
-```
-
-The parser:
-1. Scans b64 digits greedily -> varint bytes
-2. Reads the next byte -> tag
-3. Interprets the varint based on the tag
-4. Reads body if the tag requires one
-
-### Base-64 Digit Alphabet
-
-```
-0-9   values 0-9
-a-z   values 10-35
-A-Z   values 36-61
--     value 62
-_     value 63
-```
-
-Digits form big-endian base-64 unsigned integers. Zero is an empty string (no digits).
-
-### Zigzag Encoding
-
-Signed integers use zigzag: `n >= 0 ? 2n : -2n - 1`
-
-```
- 0 -> 0    -1 -> 1     1 -> 2    -2 -> 3     2 -> 4
-```
+REXC extends RX with: variables, opcodes, calls, control flow, loops, comprehensions, mutation, blocks, and return. This document covers only the extensions. See [rx-format.md](rx-format.md) for the base data format (parsing rule, b64 alphabet, zigzag, scalars, containers, pointers, chains, indexes).
 
 ---
 
-## RX Data Layer
+## Additional Paired Container
 
-See [rx-format.md](rx-format.md) for the full RX spec. Summary of RX tags:
+RX uses `[]` and `{}`. REXC adds one more paired container:
 
-| Tag     | Kind   | Description                              |
-|---------|--------|------------------------------------------|
-| `+`     | scalar | Integer (zigzag)                         |
-| `*`     | prefix | Decimal exponent (followed by `[sig]+`)  |
-| `,`     | sized  | String (varint = byte count)             |
-| `'`     | scalar | Named reference (true, false, null, etc.)|
-| `^`     | scalar | Pointer (delta offset)                   |
-| `.`     | sized  | String chain (varint = byte count)       |
-| `[` `]` | paired | Array                                    |
-| `{` `}` | paired | Object                                   |
-| `#`     | index  | Index header (inside container)          |
+| Open | Close | Name |
+|------|-------|------|
+| `(`  | `)`   | Call |
 
----
-
-## REXC Additions
-
-Everything in RX is valid REXC. REXC adds the following tags for language constructs.
-
-### Scalars
-
-| Tag | Name           | Varint meaning                              |
-|-----|----------------|---------------------------------------------|
-| `$` | Variable       | name (opaque b64 bytes)                     |
-| `%` | Opcode         | mnemonic (opaque b64 bytes)                 |
-| `@` | Self           | depth (0 = current)                         |
-| `\` | Break/Continue | `(depth-1)*2 + kind` (0=break, 1=continue)  |
-
-### Calls
-
-`(callee arg0 arg1 ...)` -- paired delimiters, first child is callee, rest are arguments.
-
-| Callee type | Meaning                                       |
-|-------------|-----------------------------------------------|
-| `%opcode`   | Operation call -- apply opcode to args        |
-| `$variable` | Navigation -- look up args as keys on variable |
-| `'ref`      | Domain navigation                              |
-| other       | Navigation on expression result                |
+Calls evaluate: the first child is the callee, the rest are arguments.
 
 ```
 (ad%2+4+)                -> add(1, 2) = 3
@@ -90,53 +22,60 @@ Everything in RX is valid REXC. REXC adds the following tags for language constr
 (user$7,address6,street) -> user.address.street
 ```
 
+---
+
+## Additional Scalars
+
+| Tag | Name           | Varint meaning                              |
+|-----|----------------|---------------------------------------------|
+| `$` | Variable       | name (opaque b64 bytes, like `'` for refs)  |
+| `%` | Opcode         | mnemonic (opaque b64 bytes)                 |
+| `@` | Self           | depth (unsigned integer, 0 = current)       |
+| `\` | Break/Continue | `(depth-1)*2 + kind` (0=break, 1=continue)  |
+
+These follow the same `[varint][tag]` parsing rule as RX scalars. `$` and `%` use the varint bytes as a name (like `'`), not as a number.
+
+---
+
+## Compound Modifiers
+
+REXC adds modifier tags that appear **before** a paired container's opening delimiter. The modifier + opener + closer form a compound container.
+
 ### Control Flow
 
-Compound tags: modifier before the opening delimiter.
+| Modifier | Container | Name   | Children            |
+|----------|-----------|--------|---------------------|
+| `?`      | `(` `)`   | When   | cond, then [, else] |
+| `!`      | `(` `)`   | Unless | cond, then [, else] |
+| `\|`     | `(` `)`   | Or     | left, right         |
+| `&`      | `(` `)`   | And    | left, right         |
 
-| Tags      | Name   | Children            |
-|-----------|--------|---------------------|
-| `?(` `)`  | When   | cond, then [, else] |
-| `!(` `)`  | Unless | cond, then [, else] |
-| `\|(` `)` | Or     | left, right         |
-| `&(` `)`  | And    | left, right         |
+**When** `?(cond then)` or `?(cond then else)`: evaluate cond. If defined, evaluate then and skip else. If none, skip then and evaluate else (or return none).
 
-**When**: evaluate cond. If defined -> evaluate then, skip else. If none -> skip then, evaluate else (or return none).
+**Unless** `!(cond then)` or `!(cond then else)`: evaluate cond. If none, evaluate then and skip else. If defined, skip then and evaluate else (or return none).
 
-**Or**: evaluate left. If defined -> return left, skip right. If none -> evaluate right.
+**Or** `|(left right)`: evaluate left. If defined, return it and skip right. If none, evaluate right.
 
-**And**: evaluate left. If none -> return none, skip right. If defined -> evaluate right.
-
-### Length Prefixes (Skip Support)
-
-In pure RX data, containers never need length prefixes. In REXC, conditional branches may be skipped at runtime. When a branch child is a container, the encoder adds a varint length prefix before the container opener so the interpreter can jump past it in O(1):
-
-```
-?(cond 4{2+4+} 2{6+})     <- branch blocks are length-prefixed
->(iterable bindings {body}) <- not conditional, no prefix
-?(x$ 1k+)                  <- scalar branch, no prefix needed
-```
-
-The length prefix gives the byte count between the delimiters (excluding opener and closer). Since `[`, `{`, `(` are not b64 digits, the parser always distinguishes a length prefix from an unprefixed container.
-
-**Return is transparent** -- when a return (`;`) appears in a skip position, it passes the skip flag through to its child. The `;` itself never gets a length prefix. Example: `return [1]` in a branch encodes as `;2[2+]` (child array gets the prefix).
+**And** `&(left right)`: evaluate left. If none, return none and skip right. If defined, evaluate right.
 
 ### Loops
 
-| Tags     | Name        | Children                    |
-|----------|-------------|-----------------------------|
-| `>(` `)` | For-in loop | iterable, [$bindings], body |
-| `<(` `)` | For-of loop | iterable, [$bindings], body |
-| `#(` `)` | While loop  | cond, body                  |
+| Modifier | Container     | Name    | Children                    |
+|----------|---------------|---------|-----------------------------|
+| `>`      | `(` `)`       | For-in  | iterable, [$bindings], body |
+| `<`      | `(` `)`       | For-of  | iterable, [$bindings], body |
+| `#`      | `(` `)`       | While   | cond, body                  |
 
 Bindings: 0-2 `$` variables between iterable and body.
 
-| Tag          | 0 bindings | 1 binding  | 2 bindings    |
+| Modifier     | 0 bindings | 1 binding  | 2 bindings    |
 |--------------|------------|------------|---------------|
 | `>` (for-in) | `for in`   | `for v in` | `for k, v in` |
 | `<` (for-of) | `for of`   | `for k of` | --             |
 
 ### Comprehensions
+
+Comprehensions use the same modifiers but with `[]` or `{}` instead of `()`:
 
 | Tags     | Name                        | Children                                    |
 |----------|-----------------------------|---------------------------------------------|
@@ -147,9 +86,61 @@ Bindings: 0-2 `$` variables between iterable and body.
 | `<{` `}` | For-of object comprehension | iterable, [$bindings], key_expr, value_expr |
 | `#{` `}` | While object comprehension  | cond, key_expr, value_expr                  |
 
-### Mutation
+### Modifier Parsing
 
-Fixed-arity operators. No delimiters -- children are self-delimiting.
+The decoder encounters a modifier as a tag byte (after reading the varint, which is always empty for modifiers). It then reads the next byte as the opener and parses children until the matching closer:
+
+```
+// In read_value, after reading raw varint and tag:
+case '?', '!', '|', '&', '>', '<', '#':
+    opener = read_byte(input, pos)          // '(' or '[' or '{'
+    closer = matching_closer(opener)        // ')' or ']' or '}'
+    children = []
+    while input[pos] != closer:
+        children.push(read_value(input, pos))
+    pos += 1   // consume closer
+    return CompoundNode(tag, opener, children)
+```
+
+**Disambiguation of `#`**: as a modifier, `#` always has an empty varint (no b64 digits before it) and is followed by `(`, `[`, or `{`. As an index inside a container, `#` always has a non-empty varint. This is why the index `peek_is_index` check requires at least one b64 digit before `#`.
+
+---
+
+## Length Prefixes (Skip Support)
+
+In pure RX, containers never need length prefixes. In REXC, conditional branches (`?`, `!`, `|`, `&`) may need to skip untaken branches at runtime. When a branch child is a container, the encoder adds a varint before the container's opening delimiter giving the byte count of the body (between delimiters, excluding the delimiters themselves):
+
+```
+?(cond 4{2+4+} 2{6+})     // branch blocks are length-prefixed
+>(iterable bindings {body}) // not conditional, no prefix needed
+?(x$ 1k+)                  // scalar branch, no prefix needed
+```
+
+The length prefix is only added to container-valued children at index > 0 (the condition at index 0 is always evaluated). The interpreter reads the prefix, jumps past the opener + body + closer without parsing:
+
+```
+skip_with_prefix(input, pos):
+    raw = read_b64_digits(input, pos)
+    if raw is non-empty and input[pos] is '[' or '{' or '(':
+        size = b64_to_uint(raw)
+        pos += 1       // skip opener
+        pos += size    // jump past body
+        pos += 1       // skip closer
+    else:
+        // no prefix, skip by recursive parsing
+        pos = saved
+        skip_value(input, pos)
+```
+
+Since `[`, `{`, `(` are not b64 digits, the parser always distinguishes a length prefix from an unprefixed container.
+
+**Return is transparent**: when `;` (return) appears in a skip position, the encoder passes the skip flag through to the return's child. The `;` itself never gets a length prefix. Example: `return [1]` in a branch encodes as `;2[2+]` (the child array gets the prefix).
+
+---
+
+## Fixed-Arity Operators
+
+No delimiters -- children are self-delimiting values that follow the tag.
 
 | Tag | Name     | Children                         |
 |-----|----------|----------------------------------|
@@ -163,33 +154,43 @@ Fixed-arity operators. No delimiters -- children are self-delimiting.
 ~x$              -> delete x
 ```
 
-### Block
+---
 
-`{expr0 expr1 ... exprN}` -- evaluates all expressions sequentially, returns the last result. Uses `{}` delimiters (same as objects; the interpreter distinguishes by context).
+## Block
 
-### Return
+`{expr0 expr1 ... exprN}` -- evaluates all expressions sequentially, returns the last result. Uses the same `{}` delimiters as objects.
 
-`;[value]` -- the `;` tag consumes the next value as the return value. Halts execution and propagates through all enclosing blocks, loops, and conditionals.
+The interpreter distinguishes objects from blocks by peeking at the first child:
+- First child is a string literal (varint + `,`) -> object (key-value pairs)
+- First child resolves to an object/array -> schema-shared object
+- First child is an index (varint + `#`) -> indexed object
+- Otherwise -> code block
+
+---
+
+## Return
+
+`;[value]` -- the `;` tag consumes the next value as the return expression. Halts execution and propagates through all enclosing blocks, loops, and conditionals.
 
 ```
 ;1k+             -> return 42
 ;no'             -> return none (bare return)
 ```
 
-A bare `return` with no value compiles to `;no'` -- the compiler injects `none` as the child.
+A bare `return` compiles to `;no'` -- the compiler injects `none` as the child.
 
-### Tagged Template Literals
+---
+
+## Tagged Template Literals
 
 Template literals compile to string chains (`.`) for untagged, or to calls for tagged.
 
 **Untagged** -- `` `hello ${name}` `` compiles to a string chain:
-
 ```
-.[5,hello name$]     -> chain("hello ", name) -> "hello Ada"
+.[5,hello name$]     -> "hello " + name -> "hello Ada"
 ```
 
 **Tagged** -- `` html`<a>${title}</a>` `` compiles to a call:
-
 ```
 (html%[4,<a >5,</a>]title$)     -> html(["<a>", "</a>"], title)
 ```
@@ -215,37 +216,24 @@ Gas is charged per loop/comprehension iteration. The host sets the limit; 0 = un
 
 ## Tag Summary
 
-### RX (data layer)
+All RX tags (see [rx-format.md](rx-format.md)) plus:
 
-| Tag     | Kind   | Description                                                      |
-|---------|--------|------------------------------------------------------------------|
-| `+`     | scalar | Integer (zigzag)                                                 |
-| `*`     | prefix | Decimal exponent (followed by `[sig]+`)                          |
-| `,`     | sized  | String (varint = byte count)                                     |
-| `'`     | scalar | Named reference                                                  |
-| `^`     | scalar | Pointer (delta offset)                                           |
-| `.`     | sized  | String chain (varint = byte count)                               |
-| `[` `]` | paired | Array                                                            |
-| `{` `}` | paired | Object                                                           |
-| `#`     | index  | Index header: varint = (count << 3 \| width-1), then pointers   |
-
-### REXC (language layer)
-
-| Tag     | Kind     | Description                                    |
-|---------|----------|------------------------------------------------|
-| `$`     | scalar   | Variable                                       |
-| `%`     | scalar   | Opcode                                         |
-| `@`     | scalar   | Self (depth)                                   |
-| `\`     | scalar   | Break/continue                                 |
-| `(` `)` | paired   | Call (optional length prefix in skip position)  |
-| `?`     | modifier | When (before `(`)                              |
-| `!`     | modifier | Unless (before `(`)                            |
-| `\|`    | modifier | Or (before `(`)                                |
-| `&`     | modifier | And (before `(`)                               |
-| `>`     | modifier | For-in (before `(`, `[`, or `{`)               |
-| `<`     | modifier | For-of (before `(`, `[`, or `{`)               |
-| `#`     | modifier | While (before `(`, `[`, or `{`)                |
-| `=`     | fixed    | Set (2 children)                               |
-| `/`     | fixed    | Swap-set (2 children)                          |
-| `~`     | fixed    | Delete (1 child)                               |
-| `;`     | prefix   | Return (consumes next value)                   |
+| Tag     | Kind     | Varint meaning                | Body / children              |
+|---------|----------|-------------------------------|------------------------------|
+| `$`     | scalar   | name (opaque)                 | none                         |
+| `%`     | scalar   | mnemonic (opaque)             | none                         |
+| `@`     | scalar   | depth (unsigned)              | none                         |
+| `\`     | scalar   | break/continue code           | none                         |
+| `(`     | opener   | (length prefix in skip pos)   | values until `)`             |
+| `)`     | closer   | --                            | --                           |
+| `?`     | modifier | (empty)                       | compound: `?(` children `)`  |
+| `!`     | modifier | (empty)                       | compound: `!(` children `)`  |
+| `\|`    | modifier | (empty)                       | compound: `\|(` children `)` |
+| `&`     | modifier | (empty)                       | compound: `&(` children `)`  |
+| `>`     | modifier | (empty)                       | compound with `(`, `[`, `{`  |
+| `<`     | modifier | (empty)                       | compound with `(`, `[`, `{`  |
+| `#`     | modifier | (empty)                       | compound with `(`, `[`, `{`  |
+| `=`     | fixed    | (empty)                       | 2 children                   |
+| `/`     | fixed    | (empty)                       | 2 children                   |
+| `~`     | fixed    | (empty)                       | 1 child                      |
+| `;`     | prefix   | (empty)                       | 1 child (return value)       |
