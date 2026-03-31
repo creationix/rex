@@ -398,7 +398,10 @@ impl<'a> Interpreter<'a> {
             b'>' => self.eval_for_in(),
             b'<' => self.eval_for_of(),
             b'#' => self.eval_while(),
-            b'@' => self.eval_match(),
+            b'@' => {
+                // TODO: eval_match not yet implemented
+                Ok(RexValue::RexNone)
+            }
 
             // Mutation
             b'=' => self.eval_set(),
@@ -667,9 +670,21 @@ impl<'a> Interpreter<'a> {
         // Read iterable
         let iterable = self.eval()?;
 
-        // Read bindings (consecutive $variables before the body)
-        let mut bindings = Vec::new();
+        // Read bindings ($variables between iterable and body).
+        // Count remaining children first to know where bindings end and body begins.
+        // Bindings are $-tagged values; body is the last child.
+        let scan_start = self.pos;
+        let mut child_count = 0;
         while self.peek() != closer && !self.at_end() {
+            self.skip_value()?;
+            child_count += 1;
+        }
+        self.pos = scan_start;
+
+        // All but the last child are bindings (if they're $ variables)
+        let max_bindings = if child_count > 0 { child_count - 1 } else { 0 };
+        let mut bindings = Vec::new();
+        while bindings.len() < max_bindings && self.peek() != closer && !self.at_end() {
             let save = self.pos;
             let raw = self.read_raw();
             if self.peek() == b'$' {
@@ -742,8 +757,18 @@ impl<'a> Interpreter<'a> {
 
         let iterable = self.eval()?;
 
-        let mut bindings = Vec::new();
+        // Count children to find body boundary
+        let scan_start = self.pos;
+        let mut child_count = 0;
         while self.peek() != closer && !self.at_end() {
+            self.skip_value()?;
+            child_count += 1;
+        }
+        self.pos = scan_start;
+
+        let max_bindings = if child_count > 0 { child_count - 1 } else { 0 };
+        let mut bindings = Vec::new();
+        while bindings.len() < max_bindings && self.peek() != closer && !self.at_end() {
             let save = self.pos;
             let raw = self.read_raw();
             if self.peek() == b'$' {
@@ -1648,17 +1673,32 @@ mod tests {
     // ── Regression tests for known bugs ────────────────────────────────
 
     #[test]
-    #[should_panic(expected = "expected 3 items")]
-    fn bug_for_in_range_binding() {
-        // Bug: `for v in 1..3` doesn't bind `v` — loop variable is none
+    fn for_in_range_binding() {
+        // Fixed: for-in binding was eating body as extra binding
         let v = eval("for v in 1..3 do v end");
-        // For loop returns last iteration's value (should be 3)
         assert!(matches!(v, RexValue::Int(3)),
             "expected Int(3), got {:?}", v);
-        // Also test comprehension with range
-        let v2 = eval("[v for v in 1..3]");
-        if let RexValue::Array(items) = v2 {
-            assert_eq!(items.len(), 3, "expected 3 items, got {}", items.len());
+    }
+
+    #[test]
+    fn comprehension_with_bare_variable() {
+        // Fixed: [v for v in items] returned [] because body v$ was consumed as binding
+        let v = eval("[v for v in [10, 20, 30]]");
+        if let RexValue::Array(items) = v {
+            assert_eq!(items.len(), 3);
+        } else {
+            panic!("expected array");
+        }
+    }
+
+    #[test]
+    fn comprehension_filtering() {
+        // Fixed: none values were included instead of excluded
+        let v = eval("[v % 2 == 0 and v for v in [1, 2, 3, 4, 5]]");
+        if let RexValue::Array(items) = v {
+            assert_eq!(items.len(), 2);
+            assert!(matches!(items[0], RexValue::Int(2)));
+            assert!(matches!(items[1], RexValue::Int(4)));
         } else {
             panic!("expected array");
         }
