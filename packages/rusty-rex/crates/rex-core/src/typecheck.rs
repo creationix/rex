@@ -2266,14 +2266,52 @@ impl<'a> TypeEnv<'a> {
     }
 
     fn infer_template(&mut self, node: &SyntaxNode) -> Type {
-        // Infer all interpolation expressions for side effects
+        // Infer child nodes and extract variable references from template tokens
         for child in node.children_with_tokens() {
             match &child {
-                rowan::NodeOrToken::Token(_) => {} // template literal token — skip
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::TemplateLiteral => {
+                    // Extract variable names from ${...} interpolations
+                    self.mark_template_vars(t.text());
+                }
                 rowan::NodeOrToken::Node(n) => { self.infer_node(n); }
+                _ => {}
             }
         }
         Type::Str
+    }
+
+    /// Mark variables referenced inside `${...}` interpolations as read.
+    fn mark_template_vars(&mut self, text: &str) {
+        let bytes = text.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if i + 1 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'{' {
+                i += 2; // skip ${
+                let start = i;
+                let mut depth = 1u32;
+                while i < bytes.len() && depth > 0 {
+                    match bytes[i] {
+                        b'{' => depth += 1,
+                        b'}' => depth -= 1,
+                        _ => {}
+                    }
+                    if depth > 0 { i += 1; }
+                }
+                // Extract the expression between ${ and }
+                let expr = &text[start..i];
+                // Mark all identifier-like tokens as read
+                for part in expr.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+                    if !part.is_empty() && part.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_') {
+                        self.var_reads.insert(part.to_string());
+                    }
+                }
+                i += 1; // skip }
+            } else if bytes[i] == b'\\' {
+                i += 2; // skip escape
+            } else {
+                i += 1;
+            }
+        }
     }
 
     fn infer_return(&mut self, node: &SyntaxNode) -> Type {
