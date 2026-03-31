@@ -83,10 +83,6 @@ Every original pain point was resolved during the project:
 
 ## Remaining Issues
 
-### Encoder dedup delta bug (open)
-
-The `RevEncoder`'s pointer delta calculation produces invalid bytecode for complex programs with many dedup opportunities. The decoder catches it ("unexpected end of input"). Workaround: rex-serve uses `compile_no_dedup()`. A failing test exists in `tests/dedup.rs` (`dedup_complex_handler_with_multiple_branches`). See `AGENT-INSTRUCTIONS-ENCODER-DEDUP-FIX.md` for the fix plan.
-
 ### Namespace indirection for opcodes
 
 The compiler treats `time.uuid()` as `$time.uuid` — variable navigation. Rex-serve creates `OpcodeNamespace` host objects that return `"%tu"` when navigated, which the interpreter then dispatches as an opcode call. With domain-aware compilation (reading `.rexd` declarations), the compiler could emit `%tu` directly — eliminating the runtime indirection.
