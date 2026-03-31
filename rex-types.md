@@ -144,6 +144,7 @@ Internally, all three object forms are a single type: an object with known field
 |------|-------------|
 | `some` | A value exists but its type is opaque — must narrow before use |
 | `T \| U` | Union — value can be `T` or `U` |
+| `T & U` | Intersection — value satisfies both `T` and `U` simultaneously |
 | `unknown` | Alias for `some \| none` |
 | `never` | Function does not return (throws or diverges) |
 | `Name` | Reference to a type alias defined with `type` |
@@ -169,7 +170,27 @@ Inside `type` and `extern` declarations, the right-hand side of `=` is a type ex
 | `{*: T}`        | Map — any string key accepted, lookup returns `T \| none` (key may not exist). The `*` wildcard key is only valid in type expressions, not in regular object literals. |
 | `{key: T, *: U}` | Object with known fields (exact type) and a wildcard fallback (`U \| none`) for other keys |
 | `T \| U`        | Union — value can be `T` or `U`. Uses the `\|` operator syntax but interpreted as union in type context. |
+| `T & U`         | Intersection — value satisfies both `T` and `U`. Uses the `&` operator syntax but interpreted as intersection in type context. |
 | `Name`          | Reference to a type alias defined with `type`       |
+
+### Intersection types (`&`)
+
+An intersection type `T & U` means the value satisfies both `T` and `U` simultaneously. Operations valid on either type are valid on the intersection.
+
+This is useful for host-provided proxy values that implement multiple interfaces:
+
+```rex
+// HTTP headers can be used as strings (single value) or arrays (multiple values)
+type HeaderValue = string & [string]
+
+extern headers = {*: HeaderValue}
+
+headers.host + "/path"              // valid — string operations work
+for v in headers.accept do v end    // valid — array operations work
+headers.host.0                      // valid — array index works
+```
+
+Unlike a union (`string | [string]`), which requires narrowing before use, an intersection allows all operations from both types without narrowing. The host provides a proxy that implements both interfaces.
 
 ### `some`, `none`, and `unknown`
 

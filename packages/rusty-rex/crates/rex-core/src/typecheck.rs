@@ -28,6 +28,7 @@ pub enum Type {
         wildcard: Option<Box<Type>>,
     },
     Union(Vec<Type>),
+    Intersection(Vec<Type>),
     Ref(String),
 }
 
@@ -78,6 +79,7 @@ impl Type {
         match self {
             Type::None => true,
             Type::Union(types) => types.iter().any(|t| t.contains_none()),
+            Type::Intersection(types) => types.iter().all(|t| t.contains_none()),
             _ => false,
         }
     }
@@ -112,6 +114,27 @@ impl Type {
                     _ => Type::Union(seen),
                 }
             }
+            Type::Intersection(types) => {
+                let mut flat = Vec::new();
+                for t in types {
+                    let t = t.simplify();
+                    match t {
+                        Type::Intersection(inner) => flat.extend(inner),
+                        other => flat.push(other),
+                    }
+                }
+                let mut seen = Vec::new();
+                for t in flat {
+                    if !seen.contains(&t) {
+                        seen.push(t);
+                    }
+                }
+                match seen.len() {
+                    0 => Type::Some,
+                    1 => seen.into_iter().next().unwrap(),
+                    _ => Type::Intersection(seen),
+                }
+            }
             other => other,
         }
     }
@@ -135,6 +158,10 @@ impl Type {
             (_, Type::Union(targets)) => targets.iter().any(|t| self.is_assignable_to(t)),
             // Union is assignable if all branches are assignable
             (Type::Union(sources), _) => sources.iter().all(|s| s.is_assignable_to(target)),
+            // Intersection is assignable if ANY member is assignable (it satisfies all)
+            (Type::Intersection(sources), _) => sources.iter().any(|s| s.is_assignable_to(target)),
+            // Assignable to intersection if assignable to ALL members
+            (_, Type::Intersection(targets)) => targets.iter().all(|t| self.is_assignable_to(t)),
             // Array covariance
             (Type::Array(a), Type::Array(b)) => a.is_assignable_to(b),
             // Object structural subtyping — source must have all target fields
@@ -214,18 +241,38 @@ impl Type {
                     PropertyResult::Known(combined)
                 }
             }
+            Type::Intersection(types) => {
+                // Intersection: if ANY member has the property, it's known
+                // (the value satisfies all interfaces)
+                for t in types {
+                    match t.resolve_property(key) {
+                        PropertyResult::Known(ty) => return PropertyResult::Known(ty),
+                        PropertyResult::Wildcard(ty) => return PropertyResult::Wildcard(ty),
+                        _ => {}
+                    }
+                }
+                PropertyResult::Unknown
+            }
             _ => PropertyResult::Unknown,
         }
     }
 
     /// Check if this type is numeric (integer or number).
     pub fn is_numeric(&self) -> bool {
-        matches!(self, Type::Int | Type::Number)
+        match self {
+            Type::Int | Type::Number => true,
+            Type::Intersection(types) => types.iter().any(|t| t.is_numeric()),
+            _ => false,
+        }
     }
 
     /// Check if this type is a string type (string or literal string).
     pub fn is_string(&self) -> bool {
-        matches!(self, Type::Str | Type::LiteralStr(_))
+        match self {
+            Type::Str | Type::LiteralStr(_) => true,
+            Type::Intersection(types) => types.iter().any(|t| t.is_string()),
+            _ => false,
+        }
     }
 
     pub fn display(&self) -> String {
@@ -252,6 +299,9 @@ impl Type {
             }
             Type::Union(types) => {
                 types.iter().map(|t| t.display()).collect::<Vec<_>>().join(" | ")
+            }
+            Type::Intersection(types) => {
+                types.iter().map(|t| t.display()).collect::<Vec<_>>().join(" & ")
             }
             Type::Ref(name) => name.clone(),
         }
@@ -676,26 +726,44 @@ fn interpret_type_node(node: &SyntaxNode) -> Type {
 fn interpret_type_binary(node: &SyntaxNode) -> Type {
     let children: Vec<_> = non_trivia_children(node).collect();
 
-    // Find the operator
+    // Find the operator — | for union, & for intersection
     let op_idx = children.iter().position(|c| {
-        matches!(as_token_kind(c), Some(SyntaxKind::Pipe))
+        matches!(as_token_kind(c), Some(SyntaxKind::Pipe | SyntaxKind::Amp))
     });
 
     if let Some(idx) = op_idx {
+        let op = as_token_kind(&children[idx]);
         let left = interpret_type_expr_from_children(&children[..idx]);
         let right = interpret_type_expr_from_children(&children[idx + 1..]);
 
-        // Flatten nested unions
-        let mut types = Vec::new();
-        match left {
-            Type::Union(ts) => types.extend(ts),
-            other => types.push(other),
+        match op {
+            Some(SyntaxKind::Amp) => {
+                // Intersection: flatten nested intersections
+                let mut types = Vec::new();
+                match left {
+                    Type::Intersection(ts) => types.extend(ts),
+                    other => types.push(other),
+                }
+                match right {
+                    Type::Intersection(ts) => types.extend(ts),
+                    other => types.push(other),
+                }
+                Type::Intersection(types)
+            }
+            _ => {
+                // Union: flatten nested unions
+                let mut types = Vec::new();
+                match left {
+                    Type::Union(ts) => types.extend(ts),
+                    other => types.push(other),
+                }
+                match right {
+                    Type::Union(ts) => types.extend(ts),
+                    other => types.push(other),
+                }
+                Type::Union(types)
+            }
         }
-        match right {
-            Type::Union(ts) => types.extend(ts),
-            other => types.push(other),
-        }
-        Type::Union(types)
     } else {
         Type::unknown()
     }
@@ -939,6 +1007,7 @@ impl<'a> TypeEnv<'a> {
     }
 
     /// Resolve a type reference (e.g., `Headers` → the actual type from type_aliases).
+    /// Recursively resolve type aliases (Ref) throughout a type.
     fn resolve_type(&self, ty: &Type) -> Type {
         match ty {
             Type::Ref(name) => {
@@ -946,6 +1015,13 @@ impl<'a> TypeEnv<'a> {
                     .map(|t| self.resolve_type(t))
                     .unwrap_or_else(|| ty.clone())
             }
+            Type::Array(elem) => Type::Array(Box::new(self.resolve_type(elem))),
+            Type::Union(types) => Type::Union(types.iter().map(|t| self.resolve_type(t)).collect()),
+            Type::Intersection(types) => Type::Intersection(types.iter().map(|t| self.resolve_type(t)).collect()),
+            Type::Object { fields, wildcard } => Type::Object {
+                fields: fields.iter().map(|(k, v)| (k.clone(), self.resolve_type(v))).collect(),
+                wildcard: wildcard.as_ref().map(|w| Box::new(self.resolve_type(w))),
+            },
             _ => ty.clone(),
         }
     }
@@ -1272,7 +1348,9 @@ impl<'a> TypeEnv<'a> {
     fn type_contains_string(&self, ty: &Type) -> bool {
         match ty {
             Type::Str | Type::LiteralStr(_) => true,
-            Type::Union(types) => types.iter().any(|t| self.type_contains_string(t)),
+            Type::Union(types) | Type::Intersection(types) => {
+                types.iter().any(|t| self.type_contains_string(t))
+            }
             Type::Ref(name) => {
                 self.schema.type_aliases.get(name)
                     .map_or(false, |t| self.type_contains_string(t))
@@ -1739,17 +1817,26 @@ impl<'a> TypeEnv<'a> {
                     is_of = true;
                 }
                 rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::IterBinding => {
-                    // Extract binding names and iterable
+                    // Extract binding names (before in/of) and iterable (after in/of)
+                    let mut past_keyword = false;
                     for bc in non_trivia_children(n) {
                         match &bc {
-                            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Ident => {
-                                binding_names.push(t.text().to_string());
-                            }
                             rowan::NodeOrToken::Token(t) if matches!(t.kind(),
-                                SyntaxKind::KwIn | SyntaxKind::KwOf | SyntaxKind::Comma) => {
+                                SyntaxKind::KwIn | SyntaxKind::KwOf) => {
                                 if t.kind() == SyntaxKind::KwOf { is_of = true; }
+                                past_keyword = true;
+                            }
+                            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Comma => {}
+                            _ if !past_keyword => {
+                                // Before in/of — binding name
+                                if let rowan::NodeOrToken::Token(t) = &bc {
+                                    if t.kind() == SyntaxKind::Ident {
+                                        binding_names.push(t.text().to_string());
+                                    }
+                                }
                             }
                             _ => {
+                                // After in/of — iterable expression
                                 iterable_type = self.infer_child(&bc);
                             }
                         }
@@ -2600,5 +2687,71 @@ extern method = HttpMethod"#,
         // for k, v in items → k is integer, v is element type
         let diags = check("for k, v in [1, 2, 3] do\n  k + v\nend");
         assert!(diags.is_empty(), "unexpected errors: {:?}", diags);
+    }
+
+    // ── Intersection type tests ───────────────────────────────────────
+
+    #[test]
+    fn parse_intersection_type() {
+        let schema = parse_rexd("type HeaderValue = string & [string]");
+        let ty = schema.type_aliases.get("HeaderValue").unwrap();
+        match ty {
+            Type::Intersection(types) => {
+                assert_eq!(types.len(), 2);
+                assert!(types.contains(&Type::Str));
+                assert!(types.contains(&Type::Array(Box::new(Type::Str))));
+            }
+            _ => panic!("expected intersection, got {ty:?}"),
+        }
+    }
+
+    #[test]
+    fn intersection_is_string() {
+        let ty = Type::Intersection(vec![Type::Str, Type::Array(Box::new(Type::Str))]);
+        assert!(ty.is_string());
+    }
+
+    #[test]
+    fn intersection_string_concat() {
+        // string & [string] can be used with +
+        let diags = check_with(
+            r#"h + "-suffix""#,
+            "extern h = string & [string]",
+        );
+        assert!(diags.is_empty(), "unexpected errors: {:?}", diags);
+    }
+
+    #[test]
+    fn intersection_assignable_to_member() {
+        // string & [string] is assignable to string
+        let ty = Type::Intersection(vec![Type::Str, Type::Array(Box::new(Type::Str))]);
+        assert!(ty.is_assignable_to(&Type::Str));
+        assert!(ty.is_assignable_to(&Type::Array(Box::new(Type::Str))));
+    }
+
+    #[test]
+    fn intersection_property_resolution() {
+        // string & [string] — .size works (from both), .0 works (from both)
+        let ty = Type::Intersection(vec![Type::Str, Type::Array(Box::new(Type::Str))]);
+        match ty.resolve_property("size") {
+            PropertyResult::Known(Type::Int) => {}
+            other => panic!("expected Known(Int), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn intersection_in_map() {
+        // {*: string & [string]} — map values implement both interfaces
+        let diags = check_with(
+            r#"headers.host + "/path""#,
+            "extern headers = {*: string & [string]}",
+        );
+        assert!(diags.is_empty(), "unexpected errors: {:?}", diags);
+    }
+
+    #[test]
+    fn intersection_display() {
+        let ty = Type::Intersection(vec![Type::Str, Type::Array(Box::new(Type::Str))]);
+        assert_eq!(ty.display(), "string & [string]");
     }
 }
