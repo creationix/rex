@@ -46,6 +46,7 @@ pub enum SyntaxKind {
     DoubleString,
     SingleString,
     TemplateLiteral,
+    Arrow,
     ColonEq,
     EqEq,
     BangEq,

@@ -617,7 +617,8 @@ fn highlight_rex_source(source: &str) -> String {
             | TokenKind::GtEq | TokenKind::LtEq
             | TokenKind::PlusEq | TokenKind::MinusEq
             | TokenKind::StarEq | TokenKind::SlashEq | TokenKind::PercentEq
-            | TokenKind::AmpEq | TokenKind::PipeEq | TokenKind::CaretEq => Some("op"),
+            | TokenKind::AmpEq | TokenKind::PipeEq | TokenKind::CaretEq
+            | TokenKind::Arrow => Some("op"),
 
             // Punctuation
             TokenKind::Dot | TokenKind::DotParen | TokenKind::Comma

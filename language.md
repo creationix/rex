@@ -791,7 +791,7 @@ extern config = unknown
 extern req = {method: HttpMethod, path: string, headers: Headers}
 extern res = {mut status: integer, mut headers: {mut *: string}}
 extern mut status = integer
-extern json.parse(text: string) = some
+extern json.parse(text: string) -> some
 extern log.info(message: some)
 ```
 

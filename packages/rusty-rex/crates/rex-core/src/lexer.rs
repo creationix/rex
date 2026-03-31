@@ -94,6 +94,8 @@ pub enum TokenKind {
     TemplateLiteral,
 
     // ── Multi-char operators (longest-match first) ───────────────────
+    #[token("->")]
+    Arrow,
     #[token(":=")]
     ColonEq,
     #[token("==")]

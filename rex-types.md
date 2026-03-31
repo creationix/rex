@@ -83,14 +83,14 @@ status = 404                        // valid — binding is mut
 ### Function signatures (`extern` with call shape)
 
 ```rex
-extern json.parse(text: string) = some
-extern json.stringify(value: some) = string
+extern json.parse(text: string) -> some
+extern json.stringify(value: some) -> string
 extern log.info(message: some)
-extern res.rewrite(url: string) = never
-extern res.redirect(url: string, status: integer) = never
+extern res.rewrite(url: string) -> never
+extern res.redirect(url: string, status: integer) -> never
 ```
 
-`extern` with a call expression on the left declares a function signature. Return type follows `=`. Functions without `= ReturnType` return `none`.
+`extern` with a call expression on the left declares a function signature. Return type follows `->`. Functions without `-> ReturnType` return `none`.
 
 ### Comments as documentation
 

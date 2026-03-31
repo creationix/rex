@@ -80,9 +80,9 @@ The type checker should live in `packages/rusty-rex/crates/rex-core/src/` as a n
 
 1. **`.rexd` parser** — Parse `.rexd` files into a `DomainSchema` struct. `.rexd` files use standard Rex grammar with `type` and `extern` keywords — parse them with the existing Rex parser, then walk the CST to extract type declarations. See `rex-types.md` for the full syntax.
 
-   **Important:** Function signatures like `extern json.parse(text: string) = some` produce parse errors on the `:` inside the call args (`:` is not an expression operator). This is expected and acceptable — the CST preserves all tokens regardless of parse errors. The `.rexd` walker must extract argument names and types from the raw token sequence inside `CallExpr` nodes, tolerating error tokens.
+   **Important:** Function signatures like `extern json.parse(text: string) -> some` produce parse errors on the `:` inside the call args (`:` is not an expression operator). This is expected and acceptable — the CST preserves all tokens regardless of parse errors. The `.rexd` walker must extract argument names and types from the raw token sequence inside `CallExpr` nodes, tolerating error tokens. The `->` token and return type follow the `CallExpr` as separate children of the `ExternDecl` node.
 
-   **Rest parameters:** The `rex-serve.rexd` file uses `...values: some` for variadic functions (e.g., `extern html(parts: [string], ...values: some) = string`). The lexer tokenizes `...` as `DotDot` + `Dot`. The `.rexd` walker should detect this pattern and mark the parameter as rest/variadic.
+   **Rest parameters:** The `rex-serve.rexd` file uses `...values: some` for variadic functions (e.g., `extern html(parts: [string], ...values: some) -> string`). The lexer tokenizes `...` as `DotDot` + `Dot`. The `.rexd` walker should detect this pattern and mark the parameter as rest/variadic.
 
 2. **Type representation** — An enum:
    ```rust
@@ -176,7 +176,7 @@ The inference walk must cover these composite node kinds (from `syntax.rs`):
 14. **`type Name = T`** — defines a named type alias (uppercase by convention)
 15. **`extern name = T`** — declares a host-provided binding with a type
 16. **`extern mut name = T`** — mutable host binding (`mut` is contextual after `extern`)
-17. **`extern name.fn(arg: T) = R`** — function signature with return type
+17. **`extern name.fn(arg: T) -> R`** — function signature with return type (`->` token)
 18. **`{*: T}` wildcard key** — only valid inside type expressions, not in regular object literals
 19. **Unified Object type** — `Object { fields, wildcard: Option<Type> }`. `{key: T}` = fields + no wildcard, `{*: T}` = no fields + wildcard, `{key: T, *: U}` = fields + wildcard. One match arm, not three.
 20. **`for` loop type** — `typeof(body) | none`, not `typeof(body)`. Empty collection = no iterations = `none`.
