@@ -1,605 +1,350 @@
 # Rex Language Reference
 
-Rex is designed for users who want to configure a system and learn as little new syntax as possible.
+Rex is a small expression language for configuring systems. It's a superset of JSON with variables, control flow, and existence-based logic.
 
-## Guiding Principles
+## Core Idea: Existence, Not Truthiness
 
-Rex uses **existence** instead of truthiness. There is no concept of "falsy" — `false`, `null`, `0`, and `""` are all ordinary values. Only `undefined` represents absence. Control flow checks whether something is defined, not whether it's "truthy."
-
-This single idea drives the entire language:
-
-- **Comparisons** return the left-hand value on success, `undefined` on failure
-- **`when`/`unless`** branch on whether a value is defined
-- **`and`/`or`** short-circuit on existence, not truthiness
-- **Type predicates** return the value if it matches, `undefined` otherwise
-
-Because there's no truthiness, there are no truthiness bugs:
+Rex has no concept of "falsy." `false`, `null`, `0`, and `""` are ordinary values. Only `none` represents absence.
 
 ```rex
-0 or "fallback"        // → 0 (zero is a value, not absence)
-false or "fallback"    // → false (false is a value, not absence)
-null or "fallback"     // → null (null is a value, not absence)
-undefined or "fallback" // → "fallback" (undefined IS absence)
+0 or "fallback"       // 0 — zero is a value
+false or "fallback"   // false — false is a value
+null or "fallback"    // null — null is a value
+none or "fallback"    // "fallback" — none IS absence
 ```
 
-## Runtime Execution
+This drives everything: comparisons return values or `none`, `when` branches on existence, `and`/`or` short-circuit on existence.
 
-Rex evaluation is gas-bounded in host runtimes.
+---
 
-- Each evaluation ends with either a normal value result or a gas-limit failure.
-- Gas is charged per loop/comprehension iteration (`for`, `while`, and their comprehension forms), using one shared budget per evaluation.
-- In the current implementation, REPL default gas is `10_000_000`.
-- Embedded/runtime APIs can set `gasLimit` via `evaluateRexc(..., { gasLimit })` or `evaluateSource(..., { gasLimit })`.
-- A `gasLimit` of `0` (or omitted) disables gas limiting.
-- The exact gas-limit error message text is intentionally unspecified; the failure condition is normative.
+## Data
 
-## Data Types
-
-Same as the core language. Rex is a superset of JSON with a few additions:
+Rex is a superset of JSON:
 
 ```rex
-// JSON types
-42                            // numbers
--3.14
-1e10
-"hello"                       // strings
-'world'
-"\"\\\/\b\f\n\r\t\u1234"      // JSON escape codes
-true                          // booleans
-false
-null                          // null
-[1, 2, 3]                     // arrays
-{"name": "Rex", "age": 65}    // objects
-
-// Rex additions
-undefined                     // absence of value
-0xFF                          // hex number
-0b1010                        // binary number
-"null\0byte"                  // \0 null byte escape
-"\x48\x65\x6c\x6c\x6f"        // \xHH hex byte escapes
-'single quoted strings'       // single quotes allowed
-'escaped \' single'           // escaped single quotes
-[1 2 3]   {a:1 b:2}           // commas are optional
-[1,2,3,]  {a:1,b:2,}          // trailing comma allowed
-{name: "Rex", age: 65}        // bare string keys allowed when [0-9a-zA-Z_-]+
-{404:"Not Found" 500:"Error"} // integer keys allowed (stay as integers)
-{(field): "value"}            // computed key expression
-{("x-" + id): payload}        // any expression can be a key
+42                      // integers
+3.14                    // decimals
+0xFF                    // hex
+0b1010                  // binary
+"hello"                 // double-quoted strings
+'world'                 // single-quoted strings
+true false              // booleans
+null                    // null
+none                    // absence
+[1, 2, 3]              // arrays (commas optional)
+{name: "Rex", age: 65} // objects (bare keys, commas optional, trailing allowed)
 ```
 
-In object syntax, bare identifier-like keys are always literal strings. Use parentheses for computed keys:
+### Computed Keys
+
+Bare keys are literal strings. Parentheses make them expressions:
 
 ```rex
-{name: "Rex"}                 // key is literal string "name"
-{(name): "Rex"}               // key is value of variable name
+{name: "Rex"}          // key is "name"
+{(name): "Rex"}        // key is the value of variable `name`
+{(x + 1): "value"}     // any expression
 ```
 
 ### Template Literals
 
-Backtick-delimited strings with `${expr}` interpolation. No quote escaping needed:
+Backtick strings with `${expr}` interpolation:
 
 ```rex
 `hello ${name}, you have ${count} items`
-`he said "hello" and she said 'goodbye'`
+`no escaping "needed" here`
 ```
 
-Template literals support nesting — backticks inside `${}` are tracked correctly:
+Tagged templates pass string parts and values to a function:
 
 ```rex
-`outer ${`inner ${x}`} end`
+html`<p>${user-input}</p>`    // html receives (["<p>", "</p>"], user-input)
 ```
 
-A template with no interpolations is just a convenient string syntax:
+Tags enable safe patterns — an `html` tag auto-escapes interpolated values to prevent XSS.
+
+### Comments
 
 ```rex
-`no escaping "needed" here`    // equivalent to "no escaping \"needed\" here"
+// line comment
+/* block comment */
 ```
 
-### Tagged Template Literals
+---
 
-An identifier immediately before the backtick creates a tagged template. The tag receives the static string parts as an array and the interpolated values as separate arguments:
+## Expressions
+
+### Navigation
+
+Dots read nested values. `.()` navigates with dynamic keys:
 
 ```rex
-html`<p>${user-input}</p>`     // tag function receives (["<p>", "</p>"], user-input)
-sql`SELECT * FROM ${table}`    // tag function receives (["SELECT * FROM ", ""], table)
+user.name              // static key
+user.address.street    // nested
+map.(key)              // dynamic key (variable)
+table.(x + 1)          // dynamic key (expression)
 ```
 
-Tags enable safe-by-construction patterns: the tag function can escape interpolated values while leaving static parts unchanged. For example, an `html` tag could auto-escape to prevent XSS.
+`foo (a)` is two expressions. `foo.(a)` is navigation.
 
-When composing tagged results, use untagged backticks for the outer template to avoid double-escaping:
+### Assignment
 
 ```rex
-list = ""
-for name in items do
-  list = list + html`<li>${name}</li>`    // escapes user data
-end
-`<ul>${list}</ul>`                         // list is already safe HTML
+x = 42                 // bind and return value
+x: {*: integer} = {}   // with type annotation (for type checker)
+old = x := 2           // swap: returns previous value
+x += 1                 // compound: +=  -=  *=  /=  %=  &=  |=  ^=
 ```
-
-## Comments
-
-```rex
-// Line comment
-
-/* Block comment */
-
-/* Multi-line
-   block comment */
-```
-
-## Navigation
-
-Dots navigate into nested structures:
-
-```rex
-user.name                  // read a key
-user.address.street        // nested navigation
-headers.content-type       // domain built-in navigation
-```
-
-For dynamic keys (when the key is a variable or expression), use `.()`:
-
-```rex
-map.(key)                  // key is a variable
-table.(x + 1)              // key is a computed expression
-config.(headers.x-action)  // key is a dotted path
-
-// Chaining
-foo.bar.(key).baz          // static, dynamic, static
-table.(k1).(k2)            // multiple dynamic keys
-```
-
-Bare `()` is always grouping — `.()` is always navigation. No ambiguity, no significant whitespace:
-
-```rex
-foo (a + b)                // two expressions: foo, then (a + b)
-foo.(a + b)                // one expression: look up (a + b) in foo
-```
-
-## Assignment
-
-`=` binds a value to a place and returns the value:
-
-```rex
-x = 42
-obj.key = "value"
-headers.x-handler = handler
-```
-
-An optional type annotation can follow the name, using `: Type`:
-
-```rex
-lookup: {*: integer} = {a: 1, b: 2, c: 3}
-items: [string] = []
-```
-
-Type annotations are consumed by the type checker only — the compiler and interpreter ignore them.
-
-`:=` is swap assignment: it writes the new value and returns the previous value.
-
-```rex
-x = 1
-old = x := 2   // old = 1, x = 2
-```
-
-Compound assignment operators modify a place using an operator and return the new value:
-
-```rex
-x += 1           // x = x + 1
-x -= 5           // x = x - 5
-x *= 2           // x = x * 2
-x /= 10          // x = x / 10
-x %= 3           // x = x % 3
-x &= 0xFF        // x = x & 0xFF
-x |= 0x80        // x = x | 0x80
-x ^= mask        // x = x ^ mask
-```
-
-## Operators
 
 ### Arithmetic
 
 ```rex
-x + y          // add
-x - y          // subtract
-x * y          // multiply
-x / y          // divide
-x % y          // modulo
--x             // negate
+x + y    x - y    x * y    x / y    x % y    -x
 ```
 
 ### Comparison
 
-All comparisons return the left-hand value on success, `undefined` on failure:
+Returns the left-hand value on success, `none` on failure:
 
 ```rex
-age > 18       // → age if true, undefined if false
-age >= 18      // → age if true, undefined if false
-age < 65       // → age if true, undefined if false
-age <= 65      // → age if true, undefined if false
-x == y         // → x if equal, undefined if not
-x != y         // → x if not equal, undefined if equal
+age > 18     // age if true, none if false
+x == y       // x if equal, none if not
 ```
 
-This means comparisons compose directly with `when` and `and`:
+Composes naturally with `when`:
 
 ```rex
-when age > 18 do
-  allow(age)
-end
-
 when age > 18 and age < 65 do
   process(age)
 end
 ```
 
-### Bitwise / Boolean Value Operators
+### Bitwise / Boolean
 
-Symbol operators that work on the values themselves. On booleans they perform boolean algebra, on numbers they perform bitwise operations:
+**Symbols** (`&`, `|`, `^`, `~`) operate on values. **Words** (`and`, `or`) operate on existence.
 
-| Operator | Booleans    | Numbers     |
-|----------|-------------|-------------|
-| `a & b`  | Boolean AND | Bitwise AND |
-| `a \| b` | Boolean OR  | Bitwise OR  |
-| `a ^ b`  | Boolean XOR | Bitwise XOR |
-| `~a`     | Boolean NOT | Bitwise NOT |
+| Operator | Booleans | Numbers |
+|---|---|---|
+| `&` | AND | Bitwise AND |
+| `\|` | OR | Bitwise OR |
+| `^` | XOR | Bitwise XOR |
+| `~` | NOT | Bitwise NOT |
+
+### Logic (Existence)
+
+`and` and `or` short-circuit on existence, not truthiness. `and` binds tighter than `or`.
+
+| Expression | Returns |
+|---|---|
+| `a or b` | First defined value |
+| `a and b` | `b` if both defined, first `none` otherwise |
 
 ```rex
-// Boolean algebra
-true & false               // false
-true | false               // true
-
-// Bitwise operations
-0xFF & 0x0F                // 15
-0x0F | 0xF0                // 255
-0xFF ^ 0x0F                // 240
-~0x0F                      // bitwise NOT
-
-// Computing with boolean data
-user.can-edit = user.is-admin & ~user.is-suspended
+name or "anonymous"          // nullish coalescing
+user and user.email          // guard chain
+a and b or c                 // (a and b) or c
 ```
-
-The distinction: **words** (`and`, `or`) operate on **existence**. **Symbols** (`&`, `|`, `^`, `~`) operate on **values**.
 
 ### Operator Precedence
 
 Highest to lowest:
 
-| Level | Operators                   | Category                |
-|-------|-----------------------------|-------------------------|
-| 1     | `.` `.()`                   | navigation              |
-| 2     | `-x` `~x`                   | unary                   |
-| 3     | `*` `/` `%`                 | multiplicative          |
-| 4     | `+` `-`                     | additive                |
-| 5     | `..`                        | range                   |
-| 6     | `==` `!=` `>` `>=` `<` `<=` | comparison              |
-| 7     | `&` `^` `\|`                | bitwise / boolean value |
-| 8     | `and`                       | existence and            |
-| 9     | `or`                        | existence or             |
-| 10    | `:=` `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` | assignment |
+| Level | Operators | Category |
+|---|---|---|
+| 1 | `.` `.()` | navigation |
+| 2 | `-x` `~x` | unary |
+| 3 | `*` `/` `%` | multiplicative |
+| 4 | `+` `-` | additive |
+| 5 | `..` | range |
+| 6 | `==` `!=` `>` `>=` `<` `<=` | comparison |
+| 7 | `&` `^` `\|` | bitwise / boolean |
+| 8 | `and` | existence and |
+| 9 | `or` | existence or |
+| 10 | `=` `:=` `+=` etc. | assignment |
 
-Use `()` to override:
+### Type Predicates
+
+Return the value if it matches, `none` otherwise:
 
 ```rex
-(a + b) * c
-a * (b + c)
+string(x)    number(x)    boolean(x)    array(x)    object(x)
 ```
+
+Compose with `when` for type dispatch:
+
+```rex
+when n = number(value) do
+  n + 1
+else when s = string(value) do
+  s + " suffix"
+end
+```
+
+---
 
 ## Control Flow
 
 ### `when` / `unless`
 
-`when` runs its body if the condition is defined (not `undefined`). `unless` is the inverse.
+Branch on existence:
 
 ```rex
-when age > 18 do
-  allow(age)
-end
+when age > 18 do allow(age) end
 
-unless string(value) do
-  handle-non-string()
-end
-```
+unless authorized do deny() end
 
-With else:
-
-```rex
-when authorized == true do
-  proceed()
+when method == "GET" do
+  handle-get()
+else when method == "POST" do
+  handle-post()
 else
-  deny()
-end
-```
-
-Chain with `else when`:
-
-```rex
-when s = string(value) do
-  handle-string(s)
-else when n = number(value) do
-  handle-number(n)
-else
-  handle-other()
+  {error: "method not allowed"}
 end
 ```
 
 ### Binding in Conditions
 
-`=` inside a `when` condition both binds the value and checks existence:
+`=` in a condition binds the value and checks existence:
 
 ```rex
-when x = get-data() do
-  use(x)            // x is the condition value
+when data = get-data() do
+  use(data)
 end
 ```
 
-Named bindings are useful to avoid shadowing in nested scopes:
+### `return`
+
+Halts execution and produces a value:
 
 ```rex
-when x = get-primary() do
-  use(x)
-else when y = get-fallback() do
-  use(y)
-else
-  use-default()
+unless auth do
+  return {error: "unauthorized"}
 end
+// auth is defined here
 ```
 
-### Short Circuit Operators
+### `delete`
 
-`and` and `or` short-circuit based on existence (defined vs `undefined`). They return actual values, not booleans. `and` binds tighter than `or`.
-
-| Operator  | Returns                                          |
-|-----------|--------------------------------------------------|
-| `a and b` | `b` if both defined, first `undefined` otherwise |
-| `a or b`  | first defined value, `undefined` otherwise       |
+Removes a key:
 
 ```rex
-// or — first defined value (nullish coalescing)
-user.preferred-name or user.name or "anonymous"
-
-// and — last value if all defined
-user and user.name and user.email
-
-// mixed — and binds tighter
-a and b or c        // (a and b) or c
-a or b and c        // a or (b and c)
+delete obj.key
 ```
 
-Both are variadic in the bytecode, but in infix they chain naturally left to right.
-
-For boolean conditions, compare explicitly (for example `when flag == true do ... end`) since `when` checks defined-vs-`undefined`, not truthiness.
+---
 
 ## Iteration
 
 ### `for` Loops
 
-`for` iterates over a value and executes a body for each element. Returns the last expression of the last iteration.
-
 ```rex
-// Named value
-for v in [1, 2, 3] do
-  process(v)
-end
-
-// Key and value
-for k, v in [1, 2, 3] do
-  // k = 0, 1, 2  v = 1, 2, 3
-  process(k, v)
-end
-
-// Keys only
-for k of {a: 1, b: 2, c: 3} do
-  // k = "a", "b", "c"
-  log(k)
-end
+for v in [1, 2, 3] do process(v) end        // values
+for k, v in {a: 1, b: 2} do log(k, v) end   // key + value
+for k of {a: 1, b: 2} do log(k) end         // keys only
 ```
-
-### Iteration Order and Mutation
-
-Iteration order is deterministic:
-
-- Arrays and strings iterate in ascending index order.
-- Objects iterate in JavaScript property insertion order.
-
-Strings iterate by Unicode code points.
-
-Iteration uses snapshot semantics: mutating the iterated collection during a loop/comprehension does not change which entries the current iteration visits.
 
 ### Ranges
 
-The `..` operator creates a range that evaluates to an array of integers:
-
 ```rex
-1..5          // → [1, 2, 3, 4, 5]  (inclusive both ends)
-0..4          // → [0, 1, 2, 3, 4]
-5..1          // → [5, 4, 3, 2, 1]  (auto-descending)
-3..3          // → [3]
+1..5       // [1, 2, 3, 4, 5] — inclusive
+5..1       // [5, 4, 3, 2, 1] — auto-descending
 ```
 
-Ranges work in any expression position — iteration, assignment, indexing:
+### `break` / `continue`
 
 ```rex
-for i in 1..10 do
-  process(i)
-end
-
-evens = [v % 2 == 0 and v for v in 1..100]
-digits = 0..9
-```
-
-The `..` operator has lower precedence than arithmetic, so `1 + 2 .. n - 1` means `(1+2)..(n-1)`.
-
-### Iterable Types
-
-`for` works on arrays, objects, and strings:
-
-| Input | Keys (k) | Values (v) |
-|---|---|---|
-| `[10, 20, 30]` | `0, 1, 2` | `10, 20, 30` |
-| `{a: 1, b: 2}` | `"a", "b"` | `1, 2` |
-| `"Hello"` | `0, 1, 2, 3, 4` | `"H", "e", "l", "l", "o"` |
-
-Use `..` to iterate over a range of integers (see above).
-
-Domain extensions can add new iterable types — for example, URL paths that iterate over segments or domain names that iterate over subdomains.
-
-### `break` and `continue`
-
-`break` exits the loop early. `continue` skips to the next iteration:
-
-```rex
-for v in [1, 2, 3, 4, 5] do
+for v in items do
   when v == 4 do break end
-  when v % 2 != 0 do continue end
-  process(v)    // processes 2 only
+  process(v)
 end
 ```
 
 ### Comprehensions
 
-Comprehensions build new collections. The body expression comes first, followed by `for` with a binding clause (using the same `in`/`of` forms as `for` loops).
-
-#### Array Comprehensions
+Body first, then iteration:
 
 ```rex
-[v * 2 for v in [1, 2, 3]]
-// → [2, 4, 6]
-
-// Key and value
-[v + k for k, v in [10, 20, 30]]
-// → [10, 21, 32]
-
-// Keys only
-[k for k of {name: "Rex", age: 65}]
-// → ["name", "age"]
+[v * 2 for v in [1, 2, 3]]                    // [2, 4, 6]
+[v % 2 == 0 and v for v in 1..10]             // [2, 4, 6, 8, 10] — filter
+{(k): v * 10 for k, v in {a: 1, b: 2}}       // {a: 10, b: 20}
 ```
 
-#### Object Comprehensions
+Return `none` to exclude an element.
 
-Object comprehensions use the same `{key: value for binding}` form, with the same key rules as object literals: bare identifier-like keys are literal strings, and computed keys use parentheses.
+### Iterable Types
+
+| Input | Keys | Values |
+|---|---|---|
+| `[10, 20]` | `0, 1` | `10, 20` |
+| `{a: 1}` | `"a"` | `1` |
+| `"Hi"` | `0, 1` | `"H", "i"` |
+
+Iteration is deterministic. Snapshot semantics: mutations during iteration don't affect the current pass.
+
+---
+
+## Methods
+
+### Arrays
 
 ```rex
-{(k): v * 10 for k, v in {a: 1, b: 2}}
-// → {a: 10, b: 20}
-
-{(v): true for v in ["x", "y", "z"]}
-// → {x: true, y: true, z: true}
-
-{("player-" + k): v * 100 for k, v in scores}
-// → {"player-alice": 9500, "player-bob": 8700}
-
-{(v.name): v.score for v in users}
-// → {Alice: 95, Bob: 87}
+[1, 2].push(3)         // [1, 2, 3]
+[1, 2].pop()           // 2
+[1, 2].shift()         // 1
+[1, 2].unshift(0)      // [0, 1, 2]
+[1, 2, 3].slice(1, 3)  // [2, 3]
+[1, 2, 3].join("-")    // "1-2-3"
+[1, 2].size            // 2
 ```
 
-#### Filtering
-
-Return `undefined` to exclude an element from the result:
+### Strings
 
 ```rex
-// Even numbers only
-[v % 2 == 0 and v for v in [1, 2, 3, 4, 5]]
-// → [2, 4]
-
-// Remove null values from an object
-{(k): v != null and v for k, v in data}
-// → new object without null values
+"a,b".split(",")          // ["a", "b"]
+"hello".slice(1, 4)       // "ell"
+"hello".starts-with("he") // true
+"hello".ends-with("lo")   // true
+"hi".size                 // 2
 ```
 
-#### Map/Filter Operations
+---
 
-Array and object comprehensions naturally support both map and filter operations in a single expression:
+## Declarations
 
-- **Map**: Transform values by returning a new value
-```rex
-// Double each number
-[v * 2 for v in [1, 2, 3]]
-// → [2, 4, 6]
-```
+See [rex-types.md](rex-types.md) for full type system documentation.
 
-- **Filter**: Exclude values by returning `undefined`
-```rex
-// Only even numbers
-[v % 2 == 0 and v for v in [1, 2, 3, 4, 5]]
-// → [2, 4]
-```
-
-- **Combined Map/Filter**: Transform and filter in one expression
-```rex
-// Double even numbers only
-[v * 2 % 2 == 0 and v * 2 for v in [1, 2, 3, 4, 5]]
-// → [4, 8]
-```
-
-The key insight is that when a comprehension expression evaluates to `undefined`, the element is excluded from the result. This makes filtering very natural and concise.
-
-## Type Predicates
-
-Type predicates return the value if it matches the type, `undefined` otherwise. They use keyword call syntax:
-
-| Predicate       | Returns                             |
-|-----------------|-------------------------------------|
-| `string(expr)`  | `expr` if string, else `undefined`  |
-| `number(expr)`  | `expr` if number, else `undefined`  |
-| `object(expr)`  | `expr` if object, else `undefined`  |
-| `array(expr)`   | `expr` if array, else `undefined`   |
-| `boolean(expr)` | `expr` if boolean, else `undefined` |
-
-Because they return value-or-undefined, they compose with `when`:
+### `type` — named type alias
 
 ```rex
-when n = number(value) do
-  n + 1
-end
-
-// Type dispatch
-when s = string(value) do
-  handle-string(s)
-else when n = number(value) do
-  handle-number(n)
-else
-  handle-other()
-end
+type Headers = {*: string & [string]}
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE"
 ```
 
-## Array Methods
-
-Arrays expose methods for common operations.
+### `extern` — host-provided binding
 
 ```rex
-[1, 2].push(3)          // → [1 2 3]
-[1, 2].unshift(0)       // → [0 1 2]
-[1, 2].pop()            // → 2
-[1, 2].shift()          // → 1
-[1, 2, 3].slice(1, 3)   // → [2 3]
-[1, 2, 3].join("-")     // → "1-2-3"
-[1, 2].size            // → 2
+extern req = {method: HttpMethod, path: string, headers: Headers}
+extern res = {mut status: integer, mut headers: {mut *: string}}
+extern json.parse(text: string) -> some
+extern log.info(message: some)
 ```
 
-## String Methods
+`mut` controls writability per field. `->` specifies return type. Everything is read-only by default.
 
-Strings expose methods for splitting, slicing, and predicates.
+---
 
-```rex
-"a,b".split(",")        // → ["a" "b"]
-"ab".join("-")         // → "a-b"
-"hello".slice(1, 4)     // → "ell"
-"hello".starts-with("he") // → true
-"hello".ends-with("lo")   // → true
-"hi".size             // → 2
-```
+## Reserved Words
 
-## Delete
+**Literals:** `true`, `false`, `null`, `none`
 
-Removes a key from a place:
+**Control flow:** `when`, `unless`, `for`, `in`, `of`, `do`, `else`, `end`, `break`, `continue`, `and`, `or`, `return`
 
-```rex
-delete obj.key
-delete user.temp
-```
+**Operations:** `delete`, `string`, `number`, `object`, `array`, `boolean`
 
-## Worked Examples
+**Declarations:** `type`, `extern`
+
+---
+
+## Examples
 
 ### Nullish Coalescing
 
@@ -607,252 +352,46 @@ delete user.temp
 user.preferred-name or user.name or "anonymous"
 ```
 
-### Range Check
-
-```rex
-when age > 18 and age < 65 do
-  process(age)
-end
-```
-
-### Object Lookup with Fallback
-
-```rex
-actions = {
-  abc: "/letters"
-  123: "/numbers"
-}
-when handler = actions.(headers.x-action) do
-  headers.x-handler = handler
-end
-```
-
-Or inline:
-
-```rex
-when handler = {
-  abc: "/letters"
-  123: "/numbers"
-}.(headers.x-action) do
-  headers.x-handler = handler
-end
-```
-
-### Type-Safe Processing
-
-```rex
-when n = number(input) do
-  total = total + n
-else when s = string(input) do
-  log("got string: " + s)
-else
-  log("unexpected type")
-end
-```
-
-### Boolean Data with Existence Logic
-
-```rex
-// Compute a boolean value (value operators)
-user.can-edit = user.is-admin & ~user.is-suspended
-
-// Then branch only when it's true
-when user.can-edit == true do
-  show-editor()
-end
-```
-
-### Chained Fallbacks
-
-```rex
-when x = get-primary() do
-  use(x)
-else when y = get-fallback() do
-  use(y)
-else
-  use-default()
-end
-```
-
-### Accumulating Values
-
-```rex
-total = 0
-for v in [10, 20, 30] do
-  total += v
-end
-// total is 60
-```
-
-### Building a Lookup Table
+### Lookup Table
 
 ```rex
 users = [{name: "Alice", id: 1}, {name: "Bob", id: 2}]
 lookup = {(v.name): v for v in users}
-// → {Alice: {name: "Alice", id: 1}, Bob: {name: "Bob", id: 2}}
 ```
 
-### Filtering and Transforming
+### Filtering
 
 ```rex
 scores = {alice: 95, bob: 42, carol: 78}
-
-// Students who passed (score >= 50)
 passed = {(k): v >= 50 and v for k, v in scores}
-// → {alice: 95, carol: 78}
-
-// Just the names
-passed-names = [v >= 50 and k for k, v in scores]
-// → ["alice", "carol"]
+// {alice: 95, carol: 78}
 ```
 
-### HTTP API Router
+### HTTP Router
 
 ```rex
-when path-match("/api/users/*") do
-  when method == "GET" do
-    status = 200
-    headers.content-type = "application/json"
-  else when method == "POST" do
-    when string(headers.content-type) and headers.content-type == "application/json" do
-      status = 201
-      headers.x-created = req.body.id
-    else
-      status = 415
-      headers.x-error = "Expected application/json"
-    end
-  else
-    status = 405
-    headers.x-error = "Method not allowed"
-  end
+when method == "GET" do
+  return {ok: true, data: items}
 end
+when method == "POST" do
+  return {ok: true, created: id}
+end
+res.status = 405
+{ok: false, error: "method not allowed"}
 ```
 
 ### Access Control
 
 ```rex
-when headers.x-api-key and headers.x-api-key == config.api-key do
-  when method == "GET" do
-    headers.x-allowed = "true"
-  else when method == "POST" and user.is-admin do
-    headers.x-allowed = "true"
-  else
-    status = 403
-    headers.x-error = "Forbidden"
-  end
+unless headers.x-api-key and headers.x-api-key == config.api-key do
+  res.status = 401
+  return {error: "invalid API key"}
+end
+
+when method == "POST" and user.is-admin do
+  proceed()
 else
-  status = 401
-  headers.x-error = "Invalid API key"
+  res.status = 403
+  {error: "forbidden"}
 end
 ```
-
-### Request Transformation
-
-```rex
-when path-match("/api/search") do
-  query-term = query.q or query.query or query.search
-
-  when query-term do
-    results = search-index(query-term)
-    headers.x-result-count = results.count
-
-    when results.count > 0 do
-      status = 200
-      headers.content-type = "application/json"
-    else
-      status = 404
-      headers.x-error = "No results"
-    end
-  else
-    status = 400
-    headers.x-error = "Missing search query"
-  end
-end
-```
-
-## Keyword Reference
-
-## Reserved Words
-
-**Literals:** `true`, `false`, `null`, `undefined`
-
-**Control flow:** `when`, `unless`, `for`, `in`, `of`, `do`, `else`, `end`, `break`, `continue`, `and`, `or`, `return`
-
-**Place operations:** `delete`
-
-**Type predicates:** `string`, `number`, `object`, `array`, `boolean`
-
-**Declarations:** `type`, `extern`
-
-### `type` — define a named type alias
-
-```rex
-type Headers = {*: string | [string]}
-type HttpMethod = "GET" | "POST" | "PUT" | "DELETE"
-```
-
-`type` followed by an identifier, `=`, and a type expression. Used in `.rexd` domain interface files. The compiler and interpreter ignore type declarations — they are consumed by the type checker.
-
-### `extern` — declare a host-provided binding
-
-```rex
-extern config = unknown
-extern req = {method: HttpMethod, path: string, headers: Headers}
-extern res = {mut status: integer, mut headers: {mut *: string}}
-extern mut status = integer
-extern json.parse(text: string) -> some
-extern log.info(message: some)
-```
-
-`extern` declares a host-provided binding with a type. Everything is read-only by default. `mut` controls writability — on the binding (`extern mut name`) for reassignment, or on individual fields (`mut field: T`) and map wildcards (`mut *: T`) for property writes. `mut` is contextual — only recognized in declaration positions, otherwise it is a regular identifier.
-
-## Extension Points
-
-Domain extensions are defined in `.rexd` files and expose navigable places/opcodes that the compiler recognizes as keywords. For example, an HTTP routing domain might add:
-
-```rex
-// Domain places — navigable with dot and .()
-headers.content-type
-query.page
-cookies.session-id
-
-// Domain opcodes — keyword call syntax
-path-match("/api/*")
-domain-match("*.example.com")
-
-// Mutations — assignment to domain places
-headers.x-handler = handler
-status = 200
-method = "POST"
-```
-
-Current extension/runtime behavior:
-
-- Extension operation errors are coerced to `undefined`.
-- Evaluation continues using normal existence semantics.
-- Structured error handling is intentionally not part of the current language surface.
-
-Rex is domain-agnostic about outcomes. The embedding domain decides how to use evaluation:
-
-- interpret only the final expression value,
-- use side-effectful extension operations,
-- or combine both models.
-
-## Identifier Resolution and Place Model
-
-Rex resolves unqualified names in a strict order:
-
-1. **Reserved words** (language keywords/literals)
-2. **Local bindings** created in the current lexical scope
-3. **Domain symbols** provided by `.rexd`
-4. **Error** if no match exists
-
-Local bindings intentionally shadow domain symbols with the same name.
-
-All navigable values use one unified **place model**:
-
-- Reading: `x`, `obj.key`, `headers.x-request-id`
-- Writing: `x = 1`, `obj.key = value`, `headers.content-type = "application/json"`
-- Deleting: `delete obj.key`
-
-This keeps read/write/delete semantics consistent across locals and domain-provided symbols.
