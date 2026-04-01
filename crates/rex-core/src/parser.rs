@@ -72,7 +72,7 @@ fn infix_binding_power(kind: SyntaxKind) -> Option<(u8, u8)> {
 /// Returns the right binding power for prefix operators, or `None`.
 fn prefix_binding_power(kind: SyntaxKind) -> Option<u8> {
     match kind {
-        SyntaxKind::Minus | SyntaxKind::Tilde | SyntaxKind::KwNot | SyntaxKind::KwDelete => {
+        SyntaxKind::Minus | SyntaxKind::Tilde | SyntaxKind::KwDelete => {
             Some(17)
         }
         _ => None,

@@ -31,6 +31,8 @@ Rex is a superset of JSON:
 true false              // booleans
 null                    // null
 none                    // absence
+inf                     // infinity
+nan                     // not a number
 [1, 2, 3]              // arrays (commas optional)
 {name: "Rex", age: 65} // objects (bare keys, commas optional, trailing allowed)
 ```
@@ -166,15 +168,15 @@ Highest to lowest:
 Return the value if it matches, `none` otherwise:
 
 ```rex
-string(x)    number(x)    boolean(x)    array(x)    object(x)
+isString(x)    isNumber(x)    isInteger(x)    isBoolean(x)    isArray(x)    isObject(x)
 ```
 
 Compose with `when` for type dispatch:
 
 ```rex
-when n = number(value) do
+when n = isNumber(value) do
   n + 1
-else when s = string(value) do
+else when s = isString(value) do
   s + " suffix"
 end
 ```
@@ -282,32 +284,6 @@ Iteration is deterministic. Snapshot semantics: mutations during iteration don't
 
 ---
 
-## Methods
-
-### Arrays
-
-```rex
-[1, 2].push(3)         // [1, 2, 3]
-[1, 2].pop()           // 2
-[1, 2].shift()         // 1
-[1, 2].unshift(0)      // [0, 1, 2]
-[1, 2, 3].slice(1, 3)  // [2, 3]
-[1, 2, 3].join("-")    // "1-2-3"
-[1, 2].size            // 2
-```
-
-### Strings
-
-```rex
-"a,b".split(",")          // ["a", "b"]
-"hello".slice(1, 4)       // "ell"
-"hello".starts-with("he") // true
-"hello".ends-with("lo")   // true
-"hi".size                 // 2
-```
-
----
-
 ## Declarations
 
 See [rex-types.md](rex-types.md) for full type system documentation.
@@ -334,11 +310,11 @@ extern log.info(message: some)
 
 ## Reserved Words
 
-**Literals:** `true`, `false`, `null`, `none`
+**Literals:** `true`, `false`, `null`, `none`, `inf`, `nan`
 
-**Control flow:** `when`, `unless`, `for`, `in`, `of`, `do`, `else`, `end`, `break`, `continue`, `and`, `or`, `return`
+**Control flow:** `when`, `unless`, `for`, `in`, `of`, `do`, `else`, `end`, `break`, `continue`, `and`, `or`, `return`, `while`
 
-**Operations:** `delete`, `string`, `number`, `object`, `array`, `boolean`
+**Operations:** `delete`
 
 **Declarations:** `type`, `extern`
 

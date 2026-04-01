@@ -35,8 +35,6 @@ pub enum TokenKind {
     KwInf,
     #[token("nan", word_boundary)]
     KwNan,
-    #[token("not", word_boundary)]
-    KwNot,
     #[token("null", word_boundary)]
     KwNull,
     #[token("of", word_boundary)]
