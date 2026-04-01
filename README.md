@@ -12,6 +12,51 @@ Rex is a compact expression language for configuration and data-driven logic. It
 
 Use Rex when JSON alone is too static, but embedding a full scripting runtime is too heavy.
 
+## At a Glance
+
+The same HTTP routing logic — in JavaScript, in Rex, and as compiled bytecode:
+
+**JavaScript** — a full runtime, cold-start overhead, a separate deploy artifact
+
+```js
+export function handle({ headers, method, db, json }) {
+  if (!headers.authorization) {
+    return { status: 401, body: { ok: false, error: "unauthorized" } }
+  }
+  if (method === "GET") {
+    const articles = db.list("article:").map(e => json.parse(e.value))
+    return { status: 200, body: { ok: true, articles } }
+  }
+  return { status: 405, body: { ok: false, error: "method_not_allowed" } }
+}
+```
+
+**Rex** — readable, storable, evaluates against your domain's bindings
+
+```rex
+unless headers.authorization do
+  status = 401
+  return {ok: false, error: "unauthorized"}
+end
+
+when method == "GET" do
+  return {ok: true, articles: [json.parse(e.value) for e in db.list("article:")]}
+end
+
+status = 405
+{ok: false, error: "method_not_allowed"}
+```
+
+**Compiled REXC bytecode** — a single UTF-8 string, ~80 bytes
+
+```
+{?((headers$d,authorization)no'x{=status$cy+;{1Z^f'c,unauthorized}})?((eq%method$3,GET);16{1h^t'8,articles>[((db$4,list)8,article:)e$((json$5,parse)(e$5,value))]})=status$cG+{2,okf'5,errori,method_not_allowed}}
+```
+
+Store this string in a database column, embed it in a JSON config field, diff it in git, and evaluate it anywhere Rex runs — no AST, no bytecode files, no separate runtime.
+
+> **Side-by-side in GitHub Markdown:** GitHub doesn't support multi-column layouts with syntax highlighting. The standard approach (used above) is clearly-labelled sequential blocks. For plain-text comparison without highlighting, an HTML `<table>` with `<pre>` cells works.
+
 ## Core Mental Model: Existence
 
 Rex uses **existence**, not truthiness. Only `none` means "absent." All JSON values — including `0`, `false`, `null`, and `""` — are existing values.
