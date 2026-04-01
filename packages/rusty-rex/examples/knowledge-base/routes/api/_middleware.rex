@@ -12,9 +12,11 @@ end
 key-valid = db.get("keys:" + api-key)
 
 unless key-valid do
+  key-valid
   res.status = 401
   return {ok: false, error: "invalid_api_key"}
 end
+key-valid
 
 /* Authenticated identity — available to downstream handlers */
 log.info(`authenticated: ${api-key}`)
