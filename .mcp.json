@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "rex": {
+      "command": "/Users/tim/Code/rex/packages/rusty-rex/target/release/rex",
+      "args": ["mcp"]
+    }
+  }
+}

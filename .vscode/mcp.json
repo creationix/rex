@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "rex": {
+      "command": "${workspaceFolder}/packages/rusty-rex/target/release/rex",
+      "args": ["mcp"]
+    }
+  }
+}
