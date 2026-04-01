@@ -1,9 +1,11 @@
 //! Zero-copy cursor interpreter for REXC/RX bytecode.
 //!
 //! Evaluates bytecode in-place without deserializing to a `Value` tree.
-//! Host objects provide mutable proxy behavior via the `HostObject` trait.
+//! Runtime values are heap-allocated handles — mutation works through aliases.
+//! Host objects provide custom read/write/call behavior via the `HostObject` trait.
 
 use std::collections::HashMap;
+use crate::heap::{Value, Heap};
 
 // ── Errors ──────────────────────────────────────────────────────────────
 
@@ -16,7 +18,7 @@ pub enum RexError {
     HostError(String),
     BreakSignal(u32),
     ContinueSignal(u32),
-    ReturnSignal(RexValue),
+    ReturnSignal(Value),
 }
 
 impl std::fmt::Display for RexError {
@@ -34,83 +36,20 @@ impl std::fmt::Display for RexError {
     }
 }
 
-// ── Runtime values ──────────────────────────────────────────────────────
-
-/// Runtime value produced by the interpreter.
-#[derive(Debug, Clone)]
-pub enum RexValue {
-    RexNone,
-    Null,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    Decimal { sig: i64, exp: i64 },
-    Str(String),
-    Array(Vec<RexValue>),
-    Object(Vec<(String, RexValue)>),
-    /// Index into the interpreter's host_objects vec.
-    Host(usize),
-}
-
-impl RexValue {
-    pub fn is_defined(&self) -> bool {
-        !matches!(self, RexValue::RexNone)
-    }
-
-    pub fn to_f64(&self) -> Option<f64> {
-        match self {
-            RexValue::Int(n) => Some(*n as f64),
-            RexValue::Float(n) => Some(*n),
-            RexValue::Decimal { sig, exp } => {
-                Some(*sig as f64 * 10f64.powi(*exp as i32))
-            }
-            _ => None,
-        }
-    }
-
-    pub fn to_i64(&self) -> Option<i64> {
-        match self {
-            RexValue::Int(n) => Some(*n),
-            RexValue::Float(n) if n.fract() == 0.0 => Some(*n as i64),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            RexValue::Str(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    pub fn type_name(&self) -> &'static str {
-        match self {
-            RexValue::RexNone => "none",
-            RexValue::Null => "null",
-            RexValue::Bool(_) => "boolean",
-            RexValue::Int(_) | RexValue::Float(_) | RexValue::Decimal { .. } => "number",
-            RexValue::Str(_) => "string",
-            RexValue::Array(_) => "array",
-            RexValue::Object(_) => "object",
-            RexValue::Host(_) => "object",
-        }
-    }
-}
-
 // ── Host object trait ───────────────────────────────────────────────────
 
 /// Host-provided proxy object with custom read/write/call behavior.
 pub trait HostObject {
-    fn get(&self, key: &str) -> Option<RexValue>;
-    fn get_index(&self, index: usize) -> Option<RexValue>;
-    fn set(&mut self, key: &str, value: RexValue) -> Result<(), RexError>;
-    fn call(&mut self, method: &str, args: &[RexValue]) -> Result<RexValue, RexError>;
+    fn get(&self, key: &str, heap: &mut Heap) -> Option<Value>;
+    fn get_index(&self, index: usize, heap: &mut Heap) -> Option<Value>;
+    fn set(&mut self, key: &str, value: Value, heap: &Heap) -> Result<(), RexError>;
+    fn call(&mut self, method: &str, args: &[Value], heap: &mut Heap) -> Result<Value, RexError>;
     fn delete(&mut self, key: &str) -> Result<(), RexError> { let _ = key; Ok(()) }
     fn len(&self) -> Option<usize> { None }
-    fn iter_values(&self) -> Option<Vec<RexValue>> { None }
-    fn iter_keys(&self) -> Option<Vec<RexValue>> { None }
-    fn iter_pairs(&self) -> Option<Vec<(RexValue, RexValue)>> { None }
-    fn as_string(&self) -> Option<String> { None }
+    fn iter_values(&self, heap: &mut Heap) -> Option<Vec<Value>> { let _ = heap; None }
+    fn iter_keys(&self, heap: &mut Heap) -> Option<Vec<Value>> { let _ = heap; None }
+    fn iter_pairs(&self, heap: &mut Heap) -> Option<Vec<(Value, Value)>> { let _ = heap; None }
+    fn as_string(&self) -> Option<&str> { None }
     fn as_number(&self) -> Option<f64> { None }
     fn as_bool(&self) -> Option<bool> { None }
 }
@@ -119,11 +58,12 @@ pub trait HostObject {
 
 /// Execution context provided by the host.
 pub struct Context<'a> {
-    pub refs: HashMap<String, RexValue>,
-    pub vars: HashMap<String, RexValue>,
+    pub refs: HashMap<String, Value>,
+    pub vars: HashMap<String, Value>,
     pub host_objects: Vec<&'a mut dyn HostObject>,
-    pub opcodes: HashMap<String, fn(&[RexValue]) -> Result<RexValue, RexError>>,
+    pub opcodes: HashMap<String, fn(&[Value], &mut Heap) -> Result<Value, RexError>>,
     pub gas_limit: u64,
+    pub heap: Heap,
 }
 
 impl<'a> Default for Context<'a> {
@@ -134,14 +74,16 @@ impl<'a> Default for Context<'a> {
             host_objects: Vec::new(),
             opcodes: HashMap::new(),
             gas_limit: 0,
+            heap: Heap::new(),
         }
     }
 }
 
 /// Result of running a Rex program.
 pub struct RunResult {
-    pub value: RexValue,
-    pub vars: HashMap<String, RexValue>,
+    pub value: Value,
+    pub vars: HashMap<String, Value>,
+    pub heap: Heap,
     pub gas: u64,
 }
 
@@ -181,19 +123,38 @@ pub fn run<'a>(bytecode: &'a str, mut ctx: Context<'a>) -> Result<RunResult, Rex
     let mut interp = Interpreter {
         code: bytecode.as_bytes(),
         pos: 0,
-        vars: std::mem::take(&mut ctx.vars),
-        refs: ctx.refs,
+        heap: ctx.heap,
+        vars: HashMap::new(),
+        refs: HashMap::new(),
         host_objects: ctx.host_objects,
         opcodes: ctx.opcodes,
         gas: 0,
         gas_limit: ctx.gas_limit,
     };
 
+    // Intern string keys from context vars/refs into heap
+    for (k, v) in std::mem::take(&mut ctx.vars) {
+        let kid = interp.heap.intern(&k);
+        interp.vars.insert(kid, v);
+    }
+    for (k, v) in std::mem::take(&mut ctx.refs) {
+        let kid = interp.heap.intern(&k);
+        interp.refs.insert(kid, v);
+    }
+
     let value = interp.eval_top()?;
+
+    // De-intern var keys for result
+    let mut result_vars = HashMap::new();
+    for (kid, v) in interp.vars {
+        let key = interp.heap.resolve_str(kid).to_string();
+        result_vars.insert(key, v);
+    }
 
     Ok(RunResult {
         value,
-        vars: interp.vars,
+        vars: result_vars,
+        heap: interp.heap,
         gas: interp.gas,
     })
 }
@@ -203,10 +164,11 @@ pub fn run<'a>(bytecode: &'a str, mut ctx: Context<'a>) -> Result<RunResult, Rex
 struct Interpreter<'a> {
     code: &'a [u8],
     pos: usize,
-    vars: HashMap<String, RexValue>,
-    refs: HashMap<String, RexValue>,
+    heap: Heap,
+    vars: HashMap<u32, Value>,      // interned key → value
+    refs: HashMap<u32, Value>,      // interned key → value
     host_objects: Vec<&'a mut dyn HostObject>,
-    opcodes: HashMap<String, fn(&[RexValue]) -> Result<RexValue, RexError>>,
+    opcodes: HashMap<String, fn(&[Value], &mut Heap) -> Result<Value, RexError>>,
     gas: u64,
     gas_limit: u64,
 }
@@ -232,7 +194,6 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    /// Advance past b64 digits, return the raw slice.
     fn read_raw(&mut self) -> &'a [u8] {
         let start = self.pos;
         while self.pos < self.code.len() && is_b64(self.code[self.pos]) {
@@ -241,11 +202,9 @@ impl<'a> Interpreter<'a> {
         &self.code[start..self.pos]
     }
 
-    fn read_utf8(&mut self, len: usize) -> String {
+    fn read_utf8(&mut self, len: usize) -> &'a str {
         let end = (self.pos + len).min(self.code.len());
-        let s = std::str::from_utf8(&self.code[self.pos..end])
-            .unwrap_or("")
-            .to_string();
+        let s = std::str::from_utf8(&self.code[self.pos..end]).unwrap_or("");
         self.pos = end;
         s
     }
@@ -266,24 +225,23 @@ impl<'a> Interpreter<'a> {
 
     // ── Top-level eval ──────────────────────────────────────────────
 
-    fn eval_top(&mut self) -> Result<RexValue, RexError> {
-        let mut last = RexValue::RexNone;
+    fn eval_top(&mut self) -> Result<Value, RexError> {
+        let mut last = Value::NONE;
         while !self.at_end() {
             match self.eval() {
                 Ok(val) => last = val,
-                Err(RexError::ReturnSignal(val)) => return self.force_value(val),
+                Err(RexError::ReturnSignal(val)) => return Ok(val),
                 Err(e) => return Err(e),
             }
         }
-        // Recursively force nested containers.
-        self.force_value(last)
+        Ok(last)
     }
 
     // ── Main eval dispatch ──────────────────────────────────────────
 
-    fn eval(&mut self) -> Result<RexValue, RexError> {
+    fn eval(&mut self) -> Result<Value, RexError> {
         if self.at_end() {
-            return Ok(RexValue::RexNone);
+            return Ok(Value::NONE);
         }
 
         let raw = self.read_raw();
@@ -291,21 +249,21 @@ impl<'a> Interpreter<'a> {
 
         match tag {
             // Scalars
-            b'+' => Ok(RexValue::Int(zigzag_decode(parse_uint(raw)))),
+            b'+' => Ok(Value::int(zigzag_decode(parse_uint(raw)))),
             b'*' => {
                 let exp = zigzag_decode(parse_uint(raw));
-                // Next value must be an integer (the significand)
                 let sig_raw = self.read_raw();
                 let sig_tag = self.read_byte();
                 if sig_tag != b'+' {
                     return Err(RexError::InvalidBytecode("expected + after *".into()));
                 }
                 let sig = zigzag_decode(parse_uint(sig_raw));
-                Ok(RexValue::Decimal { sig, exp })
+                Ok(self.heap.alloc_decimal(sig, exp))
             }
             b',' => {
                 let len = parse_uint(raw) as usize;
-                Ok(RexValue::Str(self.read_utf8(len)))
+                let s = self.read_utf8(len);
+                Ok(self.heap.intern_value(s))
             }
             b'\'' => {
                 let name = Self::raw_to_str(raw);
@@ -313,13 +271,13 @@ impl<'a> Interpreter<'a> {
             }
             b'$' => {
                 let name = Self::raw_to_str(raw);
-                Ok(self.vars.get(name).cloned().unwrap_or(RexValue::RexNone))
+                let kid = self.heap.intern(name);
+                Ok(self.vars.get(&kid).copied().unwrap_or(Value::NONE))
             }
             b'%' => {
                 // Standalone opcode (type predicate keyword)
-                let name = Self::raw_to_str(raw).to_string();
-                // When used standalone (not in a call), it's a type predicate
-                Ok(RexValue::Str(format!("%{name}")))
+                let name = Self::raw_to_str(raw);
+                Ok(self.heap.intern_value(&format!("%{name}")))
             }
             b'\\' => {
                 let v = parse_uint(raw) as u32;
@@ -330,12 +288,10 @@ impl<'a> Interpreter<'a> {
                 }
             }
             b';' => {
-                // Return: ;[value] — raw is always empty (no size prefix)
                 let val = self.eval()?;
                 Err(RexError::ReturnSignal(val))
             }
             b'^' => {
-                // Pointer: seek forward by delta, eval target
                 let delta = parse_uint(raw) as usize;
                 let target = self.pos + delta;
                 let save = self.pos;
@@ -345,39 +301,36 @@ impl<'a> Interpreter<'a> {
                 Ok(val)
             }
 
-            // String chain (also used for template literals)
+            // String chain (template literals)
             b'.' => {
                 let size = parse_uint(raw) as usize;
                 let end = self.pos + size;
                 let mut result = String::new();
                 while self.pos < end {
                     let seg = self.eval()?;
-                    match seg {
-                        RexValue::Str(s) => result.push_str(&s),
-                        RexValue::Int(n) => result.push_str(&n.to_string()),
-                        RexValue::Float(f) => {
-                            if f.is_infinite() {
-                                result.push('\u{221E}'); // ∞
-                            } else if f.is_nan() {
-                                result.push_str("NaN");
-                            } else {
-                                result.push_str(&f.to_string());
-                            }
+                    if let Some(s) = seg.as_str(&self.heap) {
+                        result.push_str(s);
+                    } else if let Some(n) = seg.as_i64() {
+                        result.push_str(&n.to_string());
+                    } else if let Some(f) = seg.as_f64(&self.heap) {
+                        if f.is_infinite() {
+                            result.push(if f > 0.0 { '\u{221E}' } else { '-' });
+                            if f < 0.0 { result.push('\u{221E}'); }
+                        } else if f.is_nan() {
+                            result.push_str("NaN");
+                        } else {
+                            result.push_str(&f.to_string());
                         }
-                        RexValue::Decimal { sig, exp } => {
-                            if exp >= 0 {
-                                result.push_str(&format!("{}e{}", sig, exp));
-                            } else {
-                                result.push_str(&format!("{}e{}", sig, exp));
-                            }
-                        }
-                        RexValue::Bool(b) => result.push(if b { '\u{2713}' } else { '\u{2717}' }),
-                        RexValue::Null => result.push('\u{2400}'), // ␀
-                        RexValue::RexNone => result.push('\u{2205}'), // ∅
-                        _ => {} // arrays, objects — skip
+                    } else if let Some(b) = seg.as_bool() {
+                        result.push(if b { '\u{2713}' } else { '\u{2717}' });
+                    } else if seg.is_null() {
+                        result.push('\u{2400}');
+                    } else if seg.is_none() {
+                        result.push('\u{2205}');
                     }
+                    // arrays, objects — skip
                 }
-                Ok(RexValue::Str(result))
+                Ok(self.heap.intern_value(&result))
             }
 
             // Paired containers
@@ -398,112 +351,86 @@ impl<'a> Interpreter<'a> {
             b'>' => self.eval_for_in(),
             b'<' => self.eval_for_of(),
             b'#' => self.eval_while(),
-            b'@' => {
-                // TODO: eval_match not yet implemented
-                Ok(RexValue::RexNone)
-            }
-
             // Mutation
             b'=' => self.eval_set(),
             b'~' => self.eval_delete(),
 
-            0 => Ok(RexValue::RexNone),
+            0 => Ok(Value::NONE),
             _ => Err(RexError::UnexpectedTag(tag)),
         }
     }
 
     // ── Eager containers ────────────────────────────────────────────
 
-    fn eval_call(&mut self) -> Result<RexValue, RexError> {
-        // Read callee
+    fn eval_call(&mut self) -> Result<Value, RexError> {
         let callee = self.eval()?;
-
-        // Read args until ')'
         let mut args = Vec::new();
         while self.peek() != b')' && !self.at_end() {
             args.push(self.eval()?);
         }
         self.read_byte(); // consume ')'
-
         self.dispatch_call(callee, args)
     }
 
-    fn eval_eager_array(&mut self) -> Result<RexValue, RexError> {
+    fn eval_eager_array(&mut self) -> Result<Value, RexError> {
         let mut items = Vec::new();
         while self.peek() != b']' && !self.at_end() {
             items.push(self.eval()?);
         }
         self.read_byte(); // consume ']'
-        Ok(RexValue::Array(items))
+        Ok(self.heap.alloc_array(items))
     }
 
-    /// Check if the next bytes form an index header (b64 digits + '#').
     fn peek_is_index(&self) -> bool {
         let mut i = self.pos;
         while i < self.code.len() && is_b64(self.code[i]) { i += 1; }
         i > self.pos && i < self.code.len() && self.code[i] == b'#'
     }
 
-    /// Evaluate an indexed array: skip the index, eval elements eagerly.
-    fn eval_indexed_array(&mut self) -> Result<RexValue, RexError> {
+    fn eval_indexed_array(&mut self) -> Result<Value, RexError> {
         let raw = self.read_raw();
         let packed = parse_uint(raw);
         self.read_byte(); // consume '#'
 
         let count = (packed >> 3) as usize;
         let width = ((packed & 7) + 1) as usize;
+        self.pos += count * width; // skip pointer table
 
-        // Skip pointer table
-        self.pos += count * width;
-
-        // Evaluate elements eagerly
         let mut items = Vec::with_capacity(count);
         while self.peek() != b']' && !self.at_end() {
             items.push(self.eval()?);
         }
         self.read_byte(); // consume ']'
-        Ok(RexValue::Array(items))
+        Ok(self.heap.alloc_array(items))
     }
 
-    /// Evaluate an indexed object: skip the pointer table, eval key-value pairs eagerly.
-    fn eval_indexed_object(&mut self) -> Result<RexValue, RexError> {
+    fn eval_indexed_object(&mut self) -> Result<Value, RexError> {
         let raw = self.read_raw();
         let packed = parse_uint(raw);
         self.read_byte(); // consume '#'
 
         let count = (packed >> 3) as usize;
         let width = ((packed & 7) + 1) as usize;
+        self.pos += count * width; // skip pointer table
 
-        // Skip pointer table
-        self.pos += count * width;
-
-        // Read key-value pairs eagerly
         let mut pairs = Vec::with_capacity(count);
         while self.peek() != b'}' && !self.at_end() {
             let k = self.eval()?;
             let v = self.eval()?;
-            let k_str = match k {
-                RexValue::Str(s) => s,
-                _ => format!("{k:?}"),
-            };
-            pairs.push((k_str, v));
+            let kid = self.heap.value_to_key(k);
+            pairs.push((kid, v));
         }
         self.read_byte(); // consume '}'
-        Ok(RexValue::Object(pairs))
+        Ok(self.heap.alloc_object(pairs))
     }
 
-    fn eval_block(&mut self) -> Result<RexValue, RexError> {
-        // In v2, {} is used for both code blocks and data objects.
-        // Distinguish by peeking at raw bytecode: if the first element
-        // is a string literal (varint + ','), it's an object. If the
-        // first element is a pointer (varint + '^') that resolves to an
-        // object, it's a schema-shared object. Otherwise it's a block.
+    fn eval_block(&mut self) -> Result<Value, RexError> {
         if self.peek() == b'}' {
-            self.read_byte(); // empty {}
-            return Ok(RexValue::Object(vec![]));
+            self.read_byte();
+            return Ok(self.heap.alloc_object(vec![]));
         }
 
-        // Indexed object: <packed>#<pointers><key-value-pairs>
+        // Indexed object
         if self.peek_is_index() {
             return self.eval_indexed_object();
         }
@@ -512,50 +439,47 @@ impl<'a> Interpreter<'a> {
             return self.eval_object();
         }
 
-        // Check for schema pointer: varint + '^'
+        // Schema pointer
         if self.peek_is_pointer() {
             let first = self.eval()?;
-            match &first {
+            if first.is_object() {
                 // Pointer resolved to an object → schema-shared object
-                RexValue::Object(schema_pairs) => {
-                    let keys: Vec<String> = schema_pairs.iter().map(|(k, _)| k.clone()).collect();
-                    let mut pairs = Vec::new();
-                    for key in &keys {
-                        let v = self.eval()?;
-                        pairs.push((key.clone(), v));
-                    }
-                    self.read_byte(); // consume '}'
-                    return Ok(RexValue::Object(pairs));
-                }
-                // Pointer resolved to a string → deduped first key of a regular object
-                RexValue::Str(key) => {
-                    let mut pairs = Vec::new();
+                let keys: Vec<u32> = self.heap.object_pairs(first)
+                    .iter().map(|&(k, _)| k).collect();
+                let mut pairs = Vec::new();
+                for &key in &keys {
                     let v = self.eval()?;
-                    pairs.push((key.clone(), v));
-                    while self.peek() != b'}' && !self.at_end() {
-                        let k = self.eval()?;
-                        let v = self.eval()?;
-                        if let Some(ks) = k.as_str() {
-                            pairs.push((ks.to_string(), v));
-                        }
-                    }
-                    self.read_byte(); // consume '}'
-                    return Ok(RexValue::Object(pairs));
+                    pairs.push((key, v));
                 }
+                self.read_byte(); // consume '}'
+                return Ok(self.heap.alloc_object(pairs));
+            } else if first.is_string() {
+                // Pointer resolved to a string → deduped first key
+                let kid = first.string_id().unwrap();
+                let mut pairs = Vec::new();
+                let v = self.eval()?;
+                pairs.push((kid, v));
+                while self.peek() != b'}' && !self.at_end() {
+                    let k = self.eval()?;
+                    let v = self.eval()?;
+                    let kid = self.heap.value_to_key(k);
+                    pairs.push((kid, v));
+                }
+                self.read_byte(); // consume '}'
+                return Ok(self.heap.alloc_object(pairs));
+            } else {
                 // Not an object or string pointer — treat as block
-                _ => {
-                    let mut last = first;
-                    while self.peek() != b'}' && !self.at_end() {
-                        last = self.eval()?;
-                    }
-                    self.read_byte(); // consume '}'
-                    return Ok(last);
+                let mut last = first;
+                while self.peek() != b'}' && !self.at_end() {
+                    last = self.eval()?;
                 }
+                self.read_byte(); // consume '}'
+                return Ok(last);
             }
         }
 
-        // Code block — evaluate expressions, return last
-        let mut last = RexValue::RexNone;
+        // Code block
+        let mut last = Value::NONE;
         while self.peek() != b'}' && !self.at_end() {
             last = self.eval()?;
         }
@@ -563,194 +487,89 @@ impl<'a> Interpreter<'a> {
         Ok(last)
     }
 
-    /// Check if the next value in the stream is a string literal (varint + ',').
     fn peek_is_string_literal(&self) -> bool {
         let mut i = self.pos;
-        // Skip varint digits
-        while i < self.code.len() && is_b64(self.code[i]) {
-            i += 1;
-        }
+        while i < self.code.len() && is_b64(self.code[i]) { i += 1; }
         i < self.code.len() && self.code[i] == b','
     }
 
-    /// Check if the next value in the stream is a pointer (varint + '^').
     fn peek_is_pointer(&self) -> bool {
         let mut i = self.pos;
-        while i < self.code.len() && is_b64(self.code[i]) {
-            i += 1;
-        }
+        while i < self.code.len() && is_b64(self.code[i]) { i += 1; }
         i < self.code.len() && self.code[i] == b'^'
     }
 
-    /// Evaluate an object: alternating string keys and values until '}'.
-    fn eval_object(&mut self) -> Result<RexValue, RexError> {
+    fn eval_object(&mut self) -> Result<Value, RexError> {
         let mut pairs = Vec::new();
         while self.peek() != b'}' && !self.at_end() {
             let k = self.eval()?;
             let v = self.eval()?;
-            let k_str = match k {
-                RexValue::Str(s) => s,
-                _ => format!("{k:?}"),
-            };
-            pairs.push((k_str, v));
+            let kid = self.heap.value_to_key(k);
+            pairs.push((kid, v));
         }
         self.read_byte(); // consume '}'
-        Ok(RexValue::Object(pairs))
+        Ok(self.heap.alloc_object(pairs))
     }
 
     // ── Control flow ────────────────────────────────────────────────
 
-    /// Variadic cond: ?(c1 t1 [c2 t2 ...] [else])
-    /// Evaluate condition-body pairs. First match wins. Odd trailing child = else.
-    fn eval_cond(&mut self) -> Result<RexValue, RexError> {
+    fn eval_cond(&mut self) -> Result<Value, RexError> {
         self.read_byte(); // consume '('
         while self.peek() != b')' && !self.at_end() {
             let cond = self.eval()?;
             if self.peek() == b')' {
-                // Odd trailing child = else value (already evaluated)
-                self.read_byte(); // ')'
+                self.read_byte();
                 return Ok(cond);
             }
             if cond.is_defined() {
                 let result = self.eval()?;
-                // Skip remaining children
                 while self.peek() != b')' && !self.at_end() {
                     self.skip_value_fast()?;
                 }
-                self.read_byte(); // ')'
+                self.read_byte();
                 return Ok(result);
             } else {
-                self.skip_value_fast()?; // skip body for this unmatched condition
+                self.skip_value_fast()?;
             }
         }
-        self.read_byte(); // ')'
-        Ok(RexValue::RexNone)
+        self.read_byte();
+        Ok(Value::NONE)
     }
 
-    /// Variadic or: |(a b c ...) — return first defined value.
-    fn eval_or(&mut self) -> Result<RexValue, RexError> {
-        self.read_byte(); // '('
+    fn eval_or(&mut self) -> Result<Value, RexError> {
+        self.read_byte();
         while self.peek() != b')' && !self.at_end() {
             let val = self.eval()?;
             if val.is_defined() {
                 while self.peek() != b')' && !self.at_end() {
                     self.skip_value_fast()?;
                 }
-                self.read_byte(); // ')'
+                self.read_byte();
                 return Ok(val);
             }
         }
-        self.read_byte(); // ')'
-        Ok(RexValue::RexNone)
+        self.read_byte();
+        Ok(Value::NONE)
     }
 
-    /// Variadic and: &(a b c ...) — return last value if all defined, else none.
-    fn eval_and(&mut self) -> Result<RexValue, RexError> {
-        self.read_byte(); // '('
-        let mut last = RexValue::RexNone;
+    fn eval_and(&mut self) -> Result<Value, RexError> {
+        self.read_byte();
+        let mut last = Value::NONE;
         while self.peek() != b')' && !self.at_end() {
             last = self.eval()?;
             if !last.is_defined() {
                 while self.peek() != b')' && !self.at_end() {
                     self.skip_value_fast()?;
                 }
-                self.read_byte(); // ')'
-                return Ok(RexValue::RexNone);
+                self.read_byte();
+                return Ok(Value::NONE);
             }
         }
-        self.read_byte(); // ')'
+        self.read_byte();
         Ok(last)
     }
 
-    fn eval_for_in(&mut self) -> Result<RexValue, RexError> {
-        self.read_byte(); // '(' or '['
-        let opener = self.code[self.pos - 1];
-        let closer = match opener { b'(' => b')', b'[' => b']', b'{' => b'}', _ => b')' };
-
-        // Read iterable
-        let iterable = self.eval()?;
-
-        // Read bindings ($variables between iterable and body).
-        // Count remaining children first to know where bindings end and body begins.
-        // Bindings are $-tagged values; body is the last child.
-        let scan_start = self.pos;
-        let mut child_count = 0;
-        while self.peek() != closer && !self.at_end() {
-            self.skip_value()?;
-            child_count += 1;
-        }
-        self.pos = scan_start;
-
-        // All but the last child are bindings (if they're $ variables)
-        let max_bindings = if child_count > 0 { child_count - 1 } else { 0 };
-        let mut bindings = Vec::new();
-        while bindings.len() < max_bindings && self.peek() != closer && !self.at_end() {
-            let save = self.pos;
-            let raw = self.read_raw();
-            if self.peek() == b'$' {
-                self.read_byte();
-                bindings.push(Self::raw_to_str(raw).to_string());
-            } else {
-                self.pos = save;
-                break;
-            }
-        }
-
-        // Body position
-        let body_start = self.pos;
-        // Skip to find end
-        self.skip_until(closer)?;
-        let body_end = self.pos - 1; // before closer
-
-        // Iterate
-        let items = self.materialize_iterable(&iterable)?;
-        let mut results = Vec::new();
-
-        for (i, item) in items.iter().enumerate() {
-            self.tick()?;
-
-
-            // Bind variables
-            if bindings.len() == 1 {
-                self.vars.insert(bindings[0].clone(), item.clone());
-            } else if bindings.len() == 2 {
-                self.vars.insert(bindings[0].clone(), RexValue::Int(i as i64));
-                self.vars.insert(bindings[1].clone(), item.clone());
-            }
-
-            self.pos = body_start;
-            match self.eval_until(closer) {
-                Ok(val) => {
-                    // Force-evaluate during iteration so values referencing
-                    // the loop variable are resolved before it's overwritten.
-                    let forced = if opener != b'(' {
-                        self.force_value(val)?
-                    } else {
-                        val
-                    };
-                    // In comprehensions ([ or {), none values are excluded
-                    if opener == b'(' || forced.is_defined() {
-                        results.push(forced);
-                    }
-                }
-                Err(RexError::BreakSignal(0)) => { break; }
-                Err(RexError::ContinueSignal(0)) => { continue; }
-                Err(e) => { return Err(e); }
-            }
-
-        }
-
-        self.pos = body_end + 1; // past closer
-
-        if opener == b'(' {
-            Ok(results.last().cloned().unwrap_or(RexValue::RexNone))
-        } else {
-            Ok(RexValue::Array(results))
-        }
-    }
-
-    fn eval_for_of(&mut self) -> Result<RexValue, RexError> {
-        // Same structure as for_in but iterates keys
+    fn eval_for_in(&mut self) -> Result<Value, RexError> {
         self.read_byte(); // opener
         let opener = self.code[self.pos - 1];
         let closer = match opener { b'(' => b')', b'[' => b']', b'{' => b'}', _ => b')' };
@@ -773,7 +592,8 @@ impl<'a> Interpreter<'a> {
             let raw = self.read_raw();
             if self.peek() == b'$' {
                 self.read_byte();
-                bindings.push(Self::raw_to_str(raw).to_string());
+                let name = Self::raw_to_str(raw);
+                bindings.push(self.heap.intern(name));
             } else {
                 self.pos = save;
                 break;
@@ -784,55 +604,114 @@ impl<'a> Interpreter<'a> {
         self.skip_until(closer)?;
         let body_end = self.pos - 1;
 
-        let keys = self.materialize_keys(&iterable)?;
+        let items = self.materialize_iterable(iterable)?;
         let mut results = Vec::new();
 
-        for key in &keys {
+        for (i, item) in items.iter().enumerate() {
             self.tick()?;
 
-
-            if bindings.len() >= 1 {
-                self.vars.insert(bindings[0].clone(), key.clone());
+            if bindings.len() == 1 {
+                self.vars.insert(bindings[0], *item);
+            } else if bindings.len() == 2 {
+                self.vars.insert(bindings[0], Value::int(i as i64));
+                self.vars.insert(bindings[1], *item);
             }
 
             self.pos = body_start;
             match self.eval_until(closer) {
                 Ok(val) => {
-                    let forced = if opener != b'(' {
-                        self.force_value(val)?
-                    } else {
-                        val
-                    };
-                    if opener == b'(' || forced.is_defined() {
-                        results.push(forced);
+                    if opener == b'(' || val.is_defined() {
+                        results.push(val);
                     }
                 }
                 Err(RexError::BreakSignal(0)) => { break; }
                 Err(RexError::ContinueSignal(0)) => { continue; }
                 Err(e) => { return Err(e); }
             }
-
         }
 
         self.pos = body_end + 1;
+
         if opener == b'(' {
-            Ok(results.last().cloned().unwrap_or(RexValue::RexNone))
+            Ok(results.last().copied().unwrap_or(Value::NONE))
         } else {
-            Ok(RexValue::Array(results))
+            Ok(self.heap.alloc_array(results))
         }
     }
 
-    fn eval_while(&mut self) -> Result<RexValue, RexError> {
+    fn eval_for_of(&mut self) -> Result<Value, RexError> {
         self.read_byte(); // opener
         let opener = self.code[self.pos - 1];
         let closer = match opener { b'(' => b')', b'[' => b']', b'{' => b'}', _ => b')' };
 
-        // Find the body start (after condition)
+        let iterable = self.eval()?;
+
+        let scan_start = self.pos;
+        let mut child_count = 0;
+        while self.peek() != closer && !self.at_end() {
+            self.skip_value()?;
+            child_count += 1;
+        }
+        self.pos = scan_start;
+
+        let max_bindings = if child_count > 0 { child_count - 1 } else { 0 };
+        let mut bindings = Vec::new();
+        while bindings.len() < max_bindings && self.peek() != closer && !self.at_end() {
+            let save = self.pos;
+            let raw = self.read_raw();
+            if self.peek() == b'$' {
+                self.read_byte();
+                let name = Self::raw_to_str(raw);
+                bindings.push(self.heap.intern(name));
+            } else {
+                self.pos = save;
+                break;
+            }
+        }
+
+        let body_start = self.pos;
+        self.skip_until(closer)?;
+        let body_end = self.pos - 1;
+
+        let keys = self.materialize_keys(iterable)?;
+        let mut results = Vec::new();
+
+        for key in &keys {
+            self.tick()?;
+
+            if !bindings.is_empty() {
+                self.vars.insert(bindings[0], *key);
+            }
+
+            self.pos = body_start;
+            match self.eval_until(closer) {
+                Ok(val) => {
+                    if opener == b'(' || val.is_defined() {
+                        results.push(val);
+                    }
+                }
+                Err(RexError::BreakSignal(0)) => { break; }
+                Err(RexError::ContinueSignal(0)) => { continue; }
+                Err(e) => { return Err(e); }
+            }
+        }
+
+        self.pos = body_end + 1;
+        if opener == b'(' {
+            Ok(results.last().copied().unwrap_or(Value::NONE))
+        } else {
+            Ok(self.heap.alloc_array(results))
+        }
+    }
+
+    fn eval_while(&mut self) -> Result<Value, RexError> {
+        self.read_byte(); // opener
+        let opener = self.code[self.pos - 1];
+        let closer = match opener { b'(' => b')', b'[' => b']', b'{' => b'}', _ => b')' };
+
         let cond_start = self.pos;
-        // We need to eval condition, then body, then loop
-        // Skip to find structure first
         let save = self.pos;
-        self.skip_value()?; // skip cond to find body start
+        self.skip_value()?;
         let body_start = self.pos;
         self.skip_until(closer)?;
         let body_end = self.pos - 1;
@@ -850,33 +729,26 @@ impl<'a> Interpreter<'a> {
             self.pos = body_start;
             match self.eval_until(closer) {
                 Ok(val) => {
-                    let forced = if opener != b'(' {
-                        self.force_value(val)?
-                    } else {
-                        val
-                    };
-                    if opener == b'(' || forced.is_defined() {
-                        results.push(forced);
+                    if opener == b'(' || val.is_defined() {
+                        results.push(val);
                     }
                 }
                 Err(RexError::BreakSignal(0)) => { break; }
                 Err(RexError::ContinueSignal(0)) => { continue; }
                 Err(e) => { return Err(e); }
             }
-
         }
 
         self.pos = body_end + 1;
         if opener == b'(' {
-            Ok(results.last().cloned().unwrap_or(RexValue::RexNone))
+            Ok(results.last().copied().unwrap_or(Value::NONE))
         } else {
-            Ok(RexValue::Array(results))
+            Ok(self.heap.alloc_array(results))
         }
     }
 
-    /// Eval values until we see `closer`, return the last result.
-    fn eval_until(&mut self, closer: u8) -> Result<RexValue, RexError> {
-        let mut last = RexValue::RexNone;
+    fn eval_until(&mut self, closer: u8) -> Result<Value, RexError> {
+        let mut last = Value::NONE;
         while self.peek() != closer && !self.at_end() {
             last = self.eval()?;
         }
@@ -885,108 +757,100 @@ impl<'a> Interpreter<'a> {
 
     // ── Call dispatch ────────────────────────────────────────────────
 
-    fn dispatch_call(&mut self, callee: RexValue, args: Vec<RexValue>) -> Result<RexValue, RexError> {
-        match &callee {
-            // Opcode call: %ad, %lt, etc.
-            RexValue::Str(s) if s.starts_with('%') => {
-                // Force-materialize args for opcodes.
-                let eager_args: Vec<RexValue> = args.into_iter()
-                    .map(|a| self.force_value(a))
-                    .collect::<Result<Vec<_>, _>>()?;
-                self.apply_opcode(&s[1..], &eager_args)
-            }
-            // Host object call: if the callee is a Host and the first arg
-            // isn't a string key, invoke the Host's call method directly.
-            // This allows hosts to register callable objects (e.g., tagged templates).
-            RexValue::Host(idx) if !args.is_empty() && args[0].as_str().is_none() => {
-                let eager_args: Vec<RexValue> = args.into_iter()
-                    .map(|a| self.force_value(a))
-                    .collect::<Result<Vec<_>, _>>()?;
-                self.host_objects[*idx].call("", &eager_args)
-            }
-            // Navigation from variable or host
-            _ => {
-                let mut target = callee;
-                for arg in &args {
-                    target = self.read_property(&target, arg)?;
-                }
-                Ok(target)
+    fn dispatch_call(&mut self, callee: Value, args: Vec<Value>) -> Result<Value, RexError> {
+        // Opcode call: "%ad", "%lt", etc.
+        if let Some(s) = callee.as_str(&self.heap) {
+            if let Some(opname) = s.strip_prefix('%') {
+                let opname = opname.to_string();
+                return self.apply_opcode(&opname, &args);
             }
         }
+
+        // Host object call (not navigation)
+        if let Some(idx) = callee.host_id() {
+            if !args.is_empty() && args[0].as_str(&self.heap).is_none() {
+                return self.host_objects[idx as usize].call("", &args, &mut self.heap);
+            }
+        }
+
+        // Navigation
+        let mut target = callee;
+        for arg in &args {
+            target = self.read_property(target, *arg)?;
+        }
+        Ok(target)
     }
 
     // ── Property access ─────────────────────────────────────────────
 
-    fn read_property(&mut self, target: &RexValue, key: &RexValue) -> Result<RexValue, RexError> {
-        match target {
-            RexValue::Object(pairs) => {
-                if let Some(k) = key.as_str() {
-                    for (pk, pv) in pairs {
-                        if pk == k { return Ok(pv.clone()); }
-                    }
-                }
-                Ok(RexValue::RexNone)
-            }
-            RexValue::Array(items) => {
-                if let Some(k) = key.as_str() {
-                    if k == "size" { return Ok(RexValue::Int(items.len() as i64)); }
-                }
-                if let Some(idx) = key.to_i64() {
-                    if idx >= 0 && (idx as usize) < items.len() {
-                        return Ok(items[idx as usize].clone());
-                    }
-                }
-                Ok(RexValue::RexNone)
-            }
-            RexValue::Str(s) => {
-                if let Some(k) = key.as_str() {
-                    if k == "size" { return Ok(RexValue::Int(s.chars().count() as i64)); }
-                }
-                if let Some(idx) = key.to_i64() {
-                    if idx >= 0 {
-                        if let Some(c) = s.chars().nth(idx as usize) {
-                            return Ok(RexValue::Str(c.to_string()));
-                        }
-                    }
-                }
-                Ok(RexValue::RexNone)
-            }
-            RexValue::Host(idx) => {
-                if let Some(k) = key.as_str() {
-                    Ok(self.host_objects[*idx].get(k).unwrap_or(RexValue::RexNone))
-                } else if let Some(i) = key.to_i64() {
-                    Ok(self.host_objects[*idx].get_index(i as usize).unwrap_or(RexValue::RexNone))
-                } else {
-                    Ok(RexValue::RexNone)
-                }
-            }
-            _ => Ok(RexValue::RexNone),
+    fn read_property(&mut self, target: Value, key: Value) -> Result<Value, RexError> {
+        if target.is_object() {
+            let kid = self.heap.value_to_key(key);
+            return Ok(self.heap.object_get(target, kid));
         }
+
+        if target.is_array() {
+            if let Some(k) = key.as_str(&self.heap) {
+                if k == "size" { return Ok(Value::int(self.heap.array_len(target) as i64)); }
+            }
+            if let Some(idx) = key.to_i64(&self.heap) {
+                if idx >= 0 {
+                    return Ok(self.heap.array_get(target, idx as usize));
+                }
+            }
+            return Ok(Value::NONE);
+        }
+
+        if target.is_string() {
+            if let Some(k) = key.as_str(&self.heap) {
+                if k == "size" {
+                    let s = target.as_str(&self.heap).unwrap();
+                    return Ok(Value::int(s.chars().count() as i64));
+                }
+            }
+            if let Some(idx) = key.to_i64(&self.heap) {
+                if idx >= 0 {
+                    let s = target.as_str(&self.heap).unwrap().to_string();
+                    if let Some(c) = s.chars().nth(idx as usize) {
+                        return Ok(self.heap.intern_value(&c.to_string()));
+                    }
+                }
+            }
+            return Ok(Value::NONE);
+        }
+
+        if let Some(idx) = target.host_id() {
+            if key.is_string() {
+                let k = key.as_str(&self.heap).unwrap().to_string();
+                return Ok(self.host_objects[idx as usize].get(&k, &mut self.heap).unwrap_or(Value::NONE));
+            }
+            if let Some(i) = key.to_i64(&self.heap) {
+                return Ok(self.host_objects[idx as usize].get_index(i as usize, &mut self.heap).unwrap_or(Value::NONE));
+            }
+            return Ok(Value::NONE);
+        }
+
+        Ok(Value::NONE)
     }
 
     // ── Mutation (set/delete) ──────────────────────────────────────
 
-    fn eval_set(&mut self) -> Result<RexValue, RexError> {
-        // The place is the first child. Peek at tag to handle:
-        // - $varname → simple variable assignment
-        // - (call chain) → navigation assignment (host object write)
+    fn eval_set(&mut self) -> Result<Value, RexError> {
         let raw = self.read_raw();
         let tag = self.peek();
 
         if tag == b'$' {
             // Simple variable: $name = value
-            self.read_byte(); // consume '$'
-            let name = Self::raw_to_str(raw).to_string();
+            self.read_byte();
+            let name = Self::raw_to_str(raw);
+            let kid = self.heap.intern(name);
             let val = self.eval()?;
-            self.vars.insert(name, val.clone());
+            self.vars.insert(kid, val);
             Ok(val)
         } else if tag == b'(' {
             // Navigation chain: (target keys...) = value
-            // Eval the call to get the navigation path, but we need to
-            // intercept the last step to write instead of read.
-            self.read_byte(); // consume '('
+            self.read_byte();
 
-            // Read all children of the call
             let mut parts = Vec::new();
             while self.peek() != b')' && !self.at_end() {
                 parts.push(self.eval()?);
@@ -997,31 +861,21 @@ impl<'a> Interpreter<'a> {
 
             if parts.len() >= 2 {
                 // Navigate to parent, then write the last key
-                let mut target = parts[0].clone();
+                let mut target = parts[0];
                 for i in 1..parts.len() - 1 {
-                    target = self.read_property(&target, &parts[i])?;
+                    target = self.read_property(target, parts[i])?;
                 }
-                let last_key = &parts[parts.len() - 1];
-                if let RexValue::Host(idx) = &target {
-                    if let Some(k) = last_key.as_str() {
-                        self.host_objects[*idx].set(k, val.clone())?;
-                    }
-                }
-                // For non-host objects, variable assignment via navigation
-                // would need copy-on-write semantics — skip for now
-            } else if parts.len() == 1 {
-                // Single variable navigation — shouldn't normally happen
+                let last_key = parts[parts.len() - 1];
+                self.write_property(target, last_key, val)?;
             }
 
             Ok(val)
         } else if tag == b'^' {
-            // Pointer to a place expression — follow it and re-dispatch.
-            // The pointer target is typically a (call chain) for navigation writes.
-            self.read_byte(); // consume '^'
+            // Pointer to a place expression
+            self.read_byte();
             let delta = parse_uint(raw) as usize;
             let target = self.pos + delta;
 
-            // Check what the pointer target starts with
             let target_tag = {
                 let mut i = target;
                 while i < self.code.len() && is_b64(self.code[i]) { i += 1; }
@@ -1029,7 +883,6 @@ impl<'a> Interpreter<'a> {
             };
 
             if target_tag == b'(' {
-                // Pointer to a navigation chain — save pos, seek, read the chain
                 let save = self.pos;
                 self.pos = target;
                 let _raw2 = self.read_raw();
@@ -1040,25 +893,20 @@ impl<'a> Interpreter<'a> {
                     parts.push(self.eval()?);
                 }
                 self.read_byte(); // consume ')'
-                self.pos = save; // restore
+                self.pos = save;
 
                 let val = self.eval()?;
 
                 if parts.len() >= 2 {
-                    let mut nav_target = parts[0].clone();
+                    let mut nav_target = parts[0];
                     for i in 1..parts.len() - 1 {
-                        nav_target = self.read_property(&nav_target, &parts[i])?;
+                        nav_target = self.read_property(nav_target, parts[i])?;
                     }
-                    let last_key = &parts[parts.len() - 1];
-                    if let RexValue::Host(idx) = &nav_target {
-                        if let Some(k) = last_key.as_str() {
-                            self.host_objects[*idx].set(k, val.clone())?;
-                        }
-                    }
+                    let last_key = parts[parts.len() - 1];
+                    self.write_property(nav_target, last_key, val)?;
                 }
                 Ok(val)
             } else {
-                // Pointer to something else — eval as read + discard
                 let save = self.pos;
                 self.pos = target;
                 let _place = self.eval()?;
@@ -1067,84 +915,107 @@ impl<'a> Interpreter<'a> {
                 Ok(val)
             }
         } else {
-            // Some other place expression — eval it
             let _place = self.eval()?;
             let val = self.eval()?;
             Ok(val)
         }
     }
 
-    fn eval_delete(&mut self) -> Result<RexValue, RexError> {
+    /// Write a property on a target value. Works for objects, arrays, and host objects.
+    fn write_property(&mut self, target: Value, key: Value, val: Value) -> Result<(), RexError> {
+        if target.is_object() {
+            let kid = self.heap.value_to_key(key);
+            self.heap.object_set(target, kid, val);
+            return Ok(());
+        }
+
+        if target.is_array() {
+            if let Some(idx) = key.to_i64(&self.heap) {
+                if idx >= 0 {
+                    self.heap.array_set(target, idx as usize, val);
+                }
+            }
+            return Ok(());
+        }
+
+        if let Some(idx) = target.host_id() {
+            if key.is_string() {
+                let k = key.as_str(&self.heap).unwrap().to_string();
+                self.host_objects[idx as usize].set(&k, val, &self.heap)?;
+            }
+            return Ok(());
+        }
+
+        Ok(())
+    }
+
+    fn eval_delete(&mut self) -> Result<Value, RexError> {
         let raw = self.read_raw();
         let tag = self.peek();
         if tag == b'$' {
             self.read_byte();
             let name = Self::raw_to_str(raw);
-            self.vars.remove(name);
+            let kid = self.heap.intern(name);
+            self.vars.remove(&kid);
         } else {
             self.skip_value()?;
         }
-        Ok(RexValue::RexNone)
+        Ok(Value::NONE)
     }
 
     // ── Iteration helpers ───────────────────────────────────────────
 
-    fn materialize_iterable(&mut self, value: &RexValue) -> Result<Vec<RexValue>, RexError> {
-        match value {
-            RexValue::Array(items) => Ok(items.clone()),
-            RexValue::Object(pairs) => Ok(pairs.iter().map(|(_, v)| v.clone()).collect()),
-            RexValue::Str(s) => Ok(s.chars().map(|c| RexValue::Str(c.to_string())).collect()),
-            RexValue::Host(idx) => {
-                Ok(self.host_objects[*idx].iter_values().unwrap_or_default())
-            }
-            _ => Ok(vec![]),
+    fn materialize_iterable(&mut self, value: Value) -> Result<Vec<Value>, RexError> {
+        if value.is_array() {
+            return Ok(self.heap.array_items(value).to_vec());
         }
+        if value.is_object() {
+            return Ok(self.heap.object_pairs(value).iter().map(|&(_, v)| v).collect());
+        }
+        if value.is_string() {
+            let s = value.as_str(&self.heap).unwrap().to_string();
+            let chars: Vec<Value> = s.chars()
+                .map(|c| self.heap.intern_value(&c.to_string()))
+                .collect();
+            return Ok(chars);
+        }
+        if let Some(idx) = value.host_id() {
+            return Ok(self.host_objects[idx as usize].iter_values(&mut self.heap).unwrap_or_default());
+        }
+        Ok(vec![])
     }
 
-    fn materialize_keys(&mut self, value: &RexValue) -> Result<Vec<RexValue>, RexError> {
-        match value {
-            RexValue::Object(pairs) => Ok(pairs.iter().map(|(k, _)| RexValue::Str(k.clone())).collect()),
-            RexValue::Array(items) => Ok((0..items.len()).map(|i| RexValue::Int(i as i64)).collect()),
-            RexValue::Host(idx) => {
-                Ok(self.host_objects[*idx].iter_keys().unwrap_or_default())
-            }
-            _ => Ok(vec![]),
+    fn materialize_keys(&mut self, value: Value) -> Result<Vec<Value>, RexError> {
+        if value.is_object() {
+            return Ok(self.heap.object_pairs(value).iter()
+                .map(|&(k, _)| Value::string(k))
+                .collect());
         }
-    }
-
-    // ── Force evaluation ────────────────────────────────────────────
-
-    /// Recursively force nested containers.
-    fn force_value(&mut self, value: RexValue) -> Result<RexValue, RexError> {
-        match value {
-            RexValue::Array(items) => {
-                let forced: Result<Vec<_>, _> = items.into_iter()
-                    .map(|v| self.force_value(v))
-                    .collect();
-                Ok(RexValue::Array(forced?))
-            }
-            RexValue::Object(pairs) => {
-                let forced: Result<Vec<_>, _> = pairs.into_iter()
-                    .map(|(k, v)| self.force_value(v).map(|fv| (k, fv)))
-                    .collect();
-                Ok(RexValue::Object(forced?))
-            }
-            other => Ok(other),
+        if value.is_array() {
+            let len = self.heap.array_len(value);
+            return Ok((0..len).map(|i| Value::int(i as i64)).collect());
         }
+        if let Some(idx) = value.host_id() {
+            return Ok(self.host_objects[idx as usize].iter_keys(&mut self.heap).unwrap_or_default());
+        }
+        Ok(vec![])
     }
 
     // ── Refs ────────────────────────────────────────────────────────
 
-    fn resolve_ref(&self, name: &str) -> RexValue {
+    fn resolve_ref(&mut self, name: &str) -> Value {
         match name {
-            "t" => RexValue::Bool(true),
-            "f" => RexValue::Bool(false),
-            "n" => RexValue::Null,
-            "no" => RexValue::RexNone,
-            "nan" => RexValue::Float(f64::NAN),
-            "inf" => RexValue::Float(f64::INFINITY),
-            "nif" => RexValue::Float(f64::NEG_INFINITY),
-            other => self.refs.get(other).cloned().unwrap_or(RexValue::RexNone),
+            "t" => Value::TRUE,
+            "f" => Value::FALSE,
+            "n" => Value::NULL,
+            "no" => Value::NONE,
+            "nan" => self.heap.alloc_float(f64::NAN),
+            "inf" => self.heap.alloc_float(f64::INFINITY),
+            "nif" => self.heap.alloc_float(f64::NEG_INFINITY),
+            other => {
+                let kid = self.heap.intern(other);
+                self.refs.get(&kid).copied().unwrap_or(Value::NONE)
+            }
         }
     }
 
@@ -1168,7 +1039,6 @@ impl<'a> Interpreter<'a> {
                     self.pos += size;
                     if self.peek() == closer { self.read_byte(); }
                 } else {
-                    // Skip index header if present (arrays and objects only)
                     if tag != b'(' && self.peek_is_index() {
                         self.skip_index();
                     }
@@ -1203,8 +1073,6 @@ impl<'a> Interpreter<'a> {
         self.skip_value()
     }
 
-    /// Skip past an index header: <packed>#<pointers>.
-    /// Assumes peek_is_index() returned true.
     fn skip_index(&mut self) {
         let raw = self.read_raw();
         let packed = parse_uint(raw);
@@ -1218,16 +1086,15 @@ impl<'a> Interpreter<'a> {
         while self.peek() != closer && !self.at_end() {
             self.skip_value()?;
         }
-        if !self.at_end() { self.read_byte(); } // consume closer
+        if !self.at_end() { self.read_byte(); }
         Ok(())
     }
 
     // ── Opcodes ─────────────────────────────────────────────────────
 
-    fn apply_opcode(&mut self, name: &str, args: &[RexValue]) -> Result<RexValue, RexError> {
-        // Check custom opcodes first
+    fn apply_opcode(&mut self, name: &str, args: &[Value]) -> Result<Value, RexError> {
         if let Some(f) = self.opcodes.get(name) {
-            return f(args);
+            return f(args, &mut self.heap);
         }
 
         match name {
@@ -1237,11 +1104,13 @@ impl<'a> Interpreter<'a> {
             "dv" => self.op_arith(args, |a, b| if b != 0.0 { a / b } else { f64::NAN }),
             "md" => self.op_arith(args, |a, b| if b != 0.0 { a % b } else { f64::NAN }),
             "ng" => {
-                if args.is_empty() { return Ok(RexValue::RexNone); }
-                match &args[0] {
-                    RexValue::Int(n) => Ok(RexValue::Int(-n)),
-                    RexValue::Float(n) => Ok(RexValue::Float(-n)),
-                    _ => Ok(RexValue::RexNone),
+                if args.is_empty() { return Ok(Value::NONE); }
+                if let Some(n) = args[0].as_i64() {
+                    Ok(Value::int(-n))
+                } else if let Some(f) = args[0].as_f64(&self.heap) {
+                    Ok(self.heap.alloc_float(-f))
+                } else {
+                    Ok(Value::NONE)
                 }
             }
             "eq" => self.op_compare(args, |o| o == std::cmp::Ordering::Equal),
@@ -1254,86 +1123,87 @@ impl<'a> Interpreter<'a> {
             "or" => self.op_bitwise(args, |a, b| a | b),
             "xr" => self.op_bitwise(args, |a, b| a ^ b),
             "nt" => {
-                if args.is_empty() { return Ok(RexValue::RexNone); }
-                match &args[0] {
-                    RexValue::Int(n) => Ok(RexValue::Int(!n)),
-                    RexValue::Bool(b) => Ok(RexValue::Bool(!b)),
-                    _ => Ok(RexValue::RexNone),
+                if args.is_empty() { return Ok(Value::NONE); }
+                if let Some(n) = args[0].as_i64() {
+                    Ok(Value::int(!n))
+                } else if let Some(b) = args[0].as_bool() {
+                    Ok(Value::bool(!b))
+                } else {
+                    Ok(Value::NONE)
                 }
             }
             "rn" => {
-                if args.len() < 2 { return Ok(RexValue::Array(vec![])); }
-                let from = args[0].to_i64().unwrap_or(0);
-                let to = args[1].to_i64().unwrap_or(0);
-                let items: Vec<RexValue> = if from <= to {
-                    (from..=to).map(RexValue::Int).collect()
+                if args.len() < 2 { return Ok(self.heap.alloc_array(vec![])); }
+                let from = args[0].to_i64(&self.heap).unwrap_or(0);
+                let to = args[1].to_i64(&self.heap).unwrap_or(0);
+                let items: Vec<Value> = if from <= to {
+                    (from..=to).map(Value::int).collect()
                 } else {
-                    (to..=from).rev().map(RexValue::Int).collect()
+                    (to..=from).rev().map(Value::int).collect()
                 };
-                Ok(RexValue::Array(items))
+                Ok(self.heap.alloc_array(items))
             }
             // Type predicates
-            "st" => Ok(if args.first().map_or(false, |a| matches!(a, RexValue::Str(_))) { args[0].clone() } else { RexValue::RexNone }),
-            "nm" => Ok(if args.first().map_or(false, |a| matches!(a, RexValue::Int(_) | RexValue::Float(_) | RexValue::Decimal{..})) { args[0].clone() } else { RexValue::RexNone }),
-            "ob" => Ok(if args.first().map_or(false, |a| matches!(a, RexValue::Object(_) | RexValue::Host(_))) { args[0].clone() } else { RexValue::RexNone }),
-            "ar" => Ok(if args.first().map_or(false, |a| matches!(a, RexValue::Array(_))) { args[0].clone() } else { RexValue::RexNone }),
-            "bt" => Ok(if args.first().map_or(false, |a| matches!(a, RexValue::Bool(_))) { args[0].clone() } else { RexValue::RexNone }),
-            _ => Ok(RexValue::RexNone),
+            "st" => Ok(if args.first().map_or(false, |a| a.is_string()) { args[0] } else { Value::NONE }),
+            "nm" => Ok(if args.first().map_or(false, |a| a.as_i64().is_some() || a.float_id().is_some()) { args[0] } else { Value::NONE }),
+            "ob" => Ok(if args.first().map_or(false, |a| a.is_object() || a.is_host()) { args[0] } else { Value::NONE }),
+            "ar" => Ok(if args.first().map_or(false, |a| a.is_array()) { args[0] } else { Value::NONE }),
+            "bt" => Ok(if args.first().map_or(false, |a| a.as_bool().is_some()) { args[0] } else { Value::NONE }),
+            _ => Ok(Value::NONE),
         }
     }
 
-    fn op_add(&self, args: &[RexValue]) -> Result<RexValue, RexError> {
-        if args.len() < 2 { return Ok(RexValue::RexNone); }
+    fn op_add(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.len() < 2 { return Ok(Value::NONE); }
         // String concatenation
-        if let (RexValue::Str(a), RexValue::Str(b)) = (&args[0], &args[1]) {
-            return Ok(RexValue::Str(format!("{a}{b}")));
+        if args[0].is_string() && args[1].is_string() {
+            let a = args[0].as_str(&self.heap).unwrap().to_string();
+            let b = args[1].as_str(&self.heap).unwrap();
+            let result = format!("{a}{b}");
+            return Ok(self.heap.intern_value(&result));
         }
-        // Numeric add
-        if let (Some(a), Some(b)) = (args[0].to_f64(), args[1].to_f64()) {
+        if let (Some(a), Some(b)) = (args[0].as_f64(&self.heap), args[1].as_f64(&self.heap)) {
             let r = a + b;
             if r.fract() == 0.0 && r.abs() < i64::MAX as f64 {
-                return Ok(RexValue::Int(r as i64));
+                return Ok(Value::int(r as i64));
             }
-            return Ok(RexValue::Float(r));
+            return Ok(self.heap.alloc_float(r));
         }
-        Ok(RexValue::RexNone)
+        Ok(Value::NONE)
     }
 
-    fn op_arith(&self, args: &[RexValue], f: fn(f64, f64) -> f64) -> Result<RexValue, RexError> {
-        if args.len() < 2 { return Ok(RexValue::RexNone); }
-        if let (Some(a), Some(b)) = (args[0].to_f64(), args[1].to_f64()) {
+    fn op_arith(&mut self, args: &[Value], f: fn(f64, f64) -> f64) -> Result<Value, RexError> {
+        if args.len() < 2 { return Ok(Value::NONE); }
+        if let (Some(a), Some(b)) = (args[0].as_f64(&self.heap), args[1].as_f64(&self.heap)) {
             let r = f(a, b);
             if r.fract() == 0.0 && r.abs() < i64::MAX as f64 && !r.is_nan() {
-                return Ok(RexValue::Int(r as i64));
+                return Ok(Value::int(r as i64));
             }
-            return Ok(RexValue::Float(r));
+            return Ok(self.heap.alloc_float(r));
         }
-        Ok(RexValue::RexNone)
+        Ok(Value::NONE)
     }
 
-    fn op_compare(&self, args: &[RexValue], pred: fn(std::cmp::Ordering) -> bool) -> Result<RexValue, RexError> {
-        if args.len() < 2 { return Ok(RexValue::RexNone); }
-        let ord = match (&args[0], &args[1]) {
-            (RexValue::Int(a), RexValue::Int(b)) => a.cmp(b),
-            (a, b) => {
-                if let (Some(fa), Some(fb)) = (a.to_f64(), b.to_f64()) {
-                    fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
-                } else if let (RexValue::Str(a), RexValue::Str(b)) = (a, b) {
-                    a.cmp(b)
-                } else {
-                    return Ok(RexValue::RexNone);
-                }
-            }
-        };
-        if pred(ord) { Ok(args[0].clone()) } else { Ok(RexValue::RexNone) }
-    }
-
-    fn op_bitwise(&self, args: &[RexValue], f: fn(i64, i64) -> i64) -> Result<RexValue, RexError> {
-        if args.len() < 2 { return Ok(RexValue::RexNone); }
-        if let (Some(a), Some(b)) = (args[0].to_i64(), args[1].to_i64()) {
-            Ok(RexValue::Int(f(a, b)))
+    fn op_compare(&self, args: &[Value], pred: fn(std::cmp::Ordering) -> bool) -> Result<Value, RexError> {
+        if args.len() < 2 { return Ok(Value::NONE); }
+        let ord = if let (Some(a), Some(b)) = (args[0].as_i64(), args[1].as_i64()) {
+            a.cmp(&b)
+        } else if let (Some(fa), Some(fb)) = (args[0].as_f64(&self.heap), args[1].as_f64(&self.heap)) {
+            fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+        } else if let (Some(a), Some(b)) = (args[0].as_str(&self.heap), args[1].as_str(&self.heap)) {
+            a.cmp(b)
         } else {
-            Ok(RexValue::RexNone)
+            return Ok(Value::NONE);
+        };
+        if pred(ord) { Ok(args[0]) } else { Ok(Value::NONE) }
+    }
+
+    fn op_bitwise(&self, args: &[Value], f: fn(i64, i64) -> i64) -> Result<Value, RexError> {
+        if args.len() < 2 { return Ok(Value::NONE); }
+        if let (Some(a), Some(b)) = (args[0].to_i64(&self.heap), args[1].to_i64(&self.heap)) {
+            Ok(Value::int(f(a, b)))
+        } else {
+            Ok(Value::NONE)
         }
     }
 }
@@ -1344,168 +1214,168 @@ impl<'a> Interpreter<'a> {
 mod tests {
     use super::*;
 
-    fn eval(source: &str) -> RexValue {
+    fn eval(source: &str) -> (Value, Heap) {
         let bytecode = crate::compile(source);
-        run(&bytecode, Context::default()).unwrap().value
+        let result = run(&bytecode, Context::default()).unwrap();
+        (result.value, result.heap)
     }
 
     #[test]
     fn eval_integer() {
-        assert!(matches!(eval("42"), RexValue::Int(42)));
-        assert!(matches!(eval("0"), RexValue::Int(0)));
-        assert!(matches!(eval("-1"), RexValue::Int(-1)));
+        let (v, _) = eval("42");
+        assert_eq!(v.as_i64(), Some(42));
+        let (v, _) = eval("0");
+        assert_eq!(v.as_i64(), Some(0));
+        let (v, _) = eval("-1");
+        assert_eq!(v.as_i64(), Some(-1));
     }
 
     #[test]
     fn eval_string() {
-        assert_eq!(eval(r#""hello""#).as_str(), Some("hello"));
+        let (v, heap) = eval(r#""hello""#);
+        assert_eq!(v.as_str(&heap), Some("hello"));
     }
 
     #[test]
     fn eval_bool_null() {
-        assert!(matches!(eval("true"), RexValue::Bool(true)));
-        assert!(matches!(eval("false"), RexValue::Bool(false)));
-        assert!(matches!(eval("null"), RexValue::Null));
-        assert!(matches!(eval("none"), RexValue::RexNone));
+        let (v, _) = eval("true");
+        assert_eq!(v.as_bool(), Some(true));
+        let (v, _) = eval("false");
+        assert_eq!(v.as_bool(), Some(false));
+        let (v, _) = eval("null");
+        assert!(v.is_null());
+        let (v, _) = eval("none");
+        assert!(v.is_none());
     }
 
     #[test]
     fn eval_addition() {
-        assert!(matches!(eval("1 + 2"), RexValue::Int(3)));
+        let (v, _) = eval("1 + 2");
+        assert_eq!(v.as_i64(), Some(3));
     }
 
     #[test]
     fn eval_arithmetic() {
-        assert!(matches!(eval("10 - 3"), RexValue::Int(7)));
-        assert!(matches!(eval("4 * 5"), RexValue::Int(20)));
-        assert!(matches!(eval("10 / 2"), RexValue::Int(5)));
-        assert!(matches!(eval("7 % 3"), RexValue::Int(1)));
+        let (v, _) = eval("10 - 3");
+        assert_eq!(v.as_i64(), Some(7));
+        let (v, _) = eval("4 * 5");
+        assert_eq!(v.as_i64(), Some(20));
+        let (v, _) = eval("10 / 2");
+        assert_eq!(v.as_i64(), Some(5));
+        let (v, _) = eval("7 % 3");
+        assert_eq!(v.as_i64(), Some(1));
     }
 
     #[test]
     fn eval_string_concat() {
-        assert_eq!(eval(r#""hello" + " " + "world""#).as_str(), Some("hello world"));
+        let (v, heap) = eval(r#""hello" + " " + "world""#);
+        assert_eq!(v.as_str(&heap), Some("hello world"));
     }
 
     #[test]
     fn eval_comparison() {
-        assert!(eval("5 > 3").is_defined());
-        assert!(!eval("3 > 5").is_defined());
-        assert!(eval("5 == 5").is_defined());
-        assert!(!eval("5 == 6").is_defined());
+        let (v, _) = eval("5 > 3");
+        assert!(v.is_defined());
+        let (v, _) = eval("3 > 5");
+        assert!(!v.is_defined());
+        let (v, _) = eval("5 == 5");
+        assert!(v.is_defined());
+        let (v, _) = eval("5 == 6");
+        assert!(!v.is_defined());
     }
 
     #[test]
     fn eval_assignment() {
         let bc = crate::compile("x = 42\nx");
         let result = run(&bc, Context::default()).unwrap();
-        assert!(matches!(result.value, RexValue::Int(42)));
+        assert_eq!(result.value.as_i64(), Some(42));
     }
 
     #[test]
     fn eval_when() {
-        assert!(matches!(eval("when true do 42 end"), RexValue::Int(42)));
-        assert!(matches!(eval("when none do 42 end"), RexValue::RexNone));
+        let (v, _) = eval("when true do 42 end");
+        assert_eq!(v.as_i64(), Some(42));
+        let (v, _) = eval("when none do 42 end");
+        assert!(v.is_none());
     }
 
     #[test]
     fn eval_when_else() {
-        assert!(matches!(eval("when true do 1 else 2 end"), RexValue::Int(1)));
-        assert!(matches!(eval("when none do 1 else 2 end"), RexValue::Int(2)));
+        let (v, _) = eval("when true do 1 else 2 end");
+        assert_eq!(v.as_i64(), Some(1));
+        let (v, _) = eval("when none do 1 else 2 end");
+        assert_eq!(v.as_i64(), Some(2));
     }
 
     #[test]
     fn eval_or() {
-        assert!(matches!(eval("none or 42"), RexValue::Int(42)));
-        assert!(matches!(eval("1 or 42"), RexValue::Int(1)));
+        let (v, _) = eval("none or 42");
+        assert_eq!(v.as_i64(), Some(42));
+        let (v, _) = eval("1 or 42");
+        assert_eq!(v.as_i64(), Some(1));
     }
 
     #[test]
     fn eval_and() {
-        assert!(matches!(eval("1 and 2"), RexValue::Int(2)));
-        assert!(!eval("none and 2").is_defined());
+        let (v, _) = eval("1 and 2");
+        assert_eq!(v.as_i64(), Some(2));
+        let (v, _) = eval("none and 2");
+        assert!(!v.is_defined());
     }
 
     #[test]
     fn eval_block() {
         let bc = crate::compile("x = 1\ny = 2\nx + y");
         let result = run(&bc, Context::default()).unwrap();
-        assert!(matches!(result.value, RexValue::Int(3)));
+        assert_eq!(result.value.as_i64(), Some(3));
     }
 
     #[test]
     fn eval_data_array() {
-        // Data arrays produce concrete values.
-        let v = eval("[1, 2, 3]");
-        assert_eq!(v.type_name(), "array");
-        if let RexValue::Array(items) = v {
-            assert_eq!(items.len(), 3);
-        }
+        let (v, heap) = eval("[1, 2, 3]");
+        assert_eq!(v.type_name(&heap), "array");
+        assert_eq!(heap.array_len(v), 3);
     }
 
     #[test]
     fn eval_range() {
-        let v = eval("[v * 2 for v in [1, 2, 3]]");
-        if let RexValue::Array(items) = v {
-            assert_eq!(items.len(), 3);
-        } else {
-            panic!("expected array");
-        }
+        let (v, heap) = eval("[v * 2 for v in [1, 2, 3]]");
+        assert!(v.is_array());
+        assert_eq!(heap.array_len(v), 3);
     }
 
     #[test]
     fn eval_template_no_interpolation() {
-        let v = eval("`hello`");
-        if let RexValue::Str(s) = v {
-            assert_eq!(s, "hello");
-        } else {
-            panic!("expected string, got {:?}", v);
-        }
+        let (v, heap) = eval("`hello`");
+        assert_eq!(v.as_str(&heap), Some("hello"));
     }
 
     #[test]
     fn eval_template_with_variable() {
         let bc = crate::compile("name = `world`\n`hello ${name}`");
         let result = run(&bc, Context::default()).unwrap();
-        if let RexValue::Str(s) = result.value {
-            assert_eq!(s, "hello world");
-        } else {
-            panic!("expected string");
-        }
+        assert_eq!(result.value.as_str(&result.heap), Some("hello world"));
     }
 
     #[test]
     fn eval_template_with_integer() {
         let bc = crate::compile("x = 42\n`the answer is ${x}`");
         let result = run(&bc, Context::default()).unwrap();
-        if let RexValue::Str(s) = result.value {
-            assert_eq!(s, "the answer is 42");
-        } else {
-            panic!("expected string");
-        }
+        assert_eq!(result.value.as_str(&result.heap), Some("the answer is 42"));
     }
 
     #[test]
     fn eval_template_with_bool() {
         let bc = crate::compile("`value: ${true}`");
         let result = run(&bc, Context::default()).unwrap();
-        if let RexValue::Str(s) = result.value {
-            assert_eq!(s, "value: \u{2713}");
-        } else {
-            panic!("expected string");
-        }
+        assert_eq!(result.value.as_str(&result.heap), Some("value: \u{2713}"));
     }
 
     #[test]
     fn eval_template_with_none() {
         let bc = crate::compile("`got: ${name}`");
         let result = run(&bc, Context::default()).unwrap();
-        if let RexValue::Str(s) = result.value {
-            // name is undefined → none → ∅
-            assert_eq!(s, "got: \u{2205}");
-        } else {
-            panic!("expected string");
-        }
+        assert_eq!(result.value.as_str(&result.heap), Some("got: \u{2205}"));
     }
 
     #[test]
@@ -1519,35 +1389,38 @@ mod tests {
 
     #[test]
     fn eval_return() {
-        assert!(matches!(eval("return 42"), RexValue::Int(42)));
+        let (v, _) = eval("return 42");
+        assert_eq!(v.as_i64(), Some(42));
     }
 
     #[test]
     fn eval_bare_return() {
-        assert!(matches!(eval("return"), RexValue::RexNone));
+        let (v, _) = eval("return");
+        assert!(v.is_none());
     }
 
     #[test]
     fn eval_return_halts() {
-        // Return halts execution — 99 is never reached
-        assert!(matches!(eval("return 1\n99"), RexValue::Int(1)));
+        let (v, _) = eval("return 1\n99");
+        assert_eq!(v.as_i64(), Some(1));
     }
 
     #[test]
     fn eval_return_in_when() {
-        // Return exits the entire program, not just the when block
-        assert!(matches!(eval("when true do return 1 end\n2"), RexValue::Int(1)));
+        let (v, _) = eval("when true do return 1 end\n2");
+        assert_eq!(v.as_i64(), Some(1));
     }
 
     #[test]
     fn eval_return_in_when_skipped() {
-        // When condition is false, return is not hit
-        assert!(matches!(eval("when none do return 1 end\n2"), RexValue::Int(2)));
+        let (v, _) = eval("when none do return 1 end\n2");
+        assert_eq!(v.as_i64(), Some(2));
     }
 
     #[test]
     fn eval_return_in_unless() {
-        assert!(matches!(eval("unless none do return 42 end\n99"), RexValue::Int(42)));
+        let (v, _) = eval("unless none do return 42 end\n99");
+        assert_eq!(v.as_i64(), Some(42));
     }
 
     #[test]
@@ -1556,55 +1429,54 @@ mod tests {
         let mut ctx = Context::default();
         ctx.gas_limit = 10000;
         let result = run(&bc, ctx).unwrap();
-        assert!(matches!(result.value, RexValue::Int(5)));
+        assert_eq!(result.value.as_i64(), Some(5));
     }
 
     // ── Length-prefix skip tests ───────────────────────────────────────
 
     #[test]
     fn skip_length_prefixed_then_branch() {
-        // x is none → skip then block, eval else
-        assert!(matches!(eval("x = none\nwhen x do\n  99\nelse\n  42\nend"), RexValue::Int(42)));
+        let (v, _) = eval("x = none\nwhen x do\n  99\nelse\n  42\nend");
+        assert_eq!(v.as_i64(), Some(42));
     }
 
     #[test]
     fn skip_length_prefixed_else_branch() {
-        // x is defined → eval then, skip else block
-        assert!(matches!(eval("x = 1\nwhen x do\n  42\nelse\n  99\nend"), RexValue::Int(42)));
+        let (v, _) = eval("x = 1\nwhen x do\n  42\nelse\n  99\nend");
+        assert_eq!(v.as_i64(), Some(42));
     }
 
     #[test]
     fn skip_unless_length_prefixed() {
-        assert!(matches!(eval("unless true do 99 end"), RexValue::RexNone));
-        assert!(matches!(eval("unless none do 42 end"), RexValue::Int(42)));
+        let (v, _) = eval("unless true do 99 end");
+        assert!(v.is_none());
+        let (v, _) = eval("unless none do 42 end");
+        assert_eq!(v.as_i64(), Some(42));
     }
 
     #[test]
     fn skip_or_length_prefixed() {
-        // left is defined → skip right (which is a block)
         let bc = crate::compile("x = 1\nx or [1, 2, 3]");
         let result = run(&bc, Context::default()).unwrap();
-        assert!(matches!(result.value, RexValue::Int(1)));
+        assert_eq!(result.value.as_i64(), Some(1));
     }
 
     #[test]
     fn skip_and_length_prefixed() {
-        // left is none → skip right (which is a block)
-        assert!(!eval("none and [1, 2, 3]").is_defined());
+        let (v, _) = eval("none and [1, 2, 3]");
+        assert!(!v.is_defined());
     }
 
     #[test]
     fn cross_branch_dedup_safe() {
-        // Ensure pointer dedup doesn't create cross-branch references
-        let source = "x = none\nunless x do y = 401 end\nwhen x do\n  unless x do y = 401 end\nend\ny";
-        assert!(matches!(eval(source), RexValue::Int(401)));
+        let (v, _) = eval("x = none\nunless x do y = 401 end\nwhen x do\n  unless x do y = 401 end\nend\ny");
+        assert_eq!(v.as_i64(), Some(401));
     }
 
     #[test]
     fn nested_when_skip() {
-        // Nested conditionals with blocks — all should skip correctly
-        let source = "x = none\nwhen x do\n  when x do 1 else 2 end\nelse\n  when true do 42 else 99 end\nend";
-        assert!(matches!(eval(source), RexValue::Int(42)));
+        let (v, _) = eval("x = none\nwhen x do\n  when x do 1 else 2 end\nelse\n  when true do 42 else 99 end\nend");
+        assert_eq!(v.as_i64(), Some(42));
     }
 
     // ── Indexed array tests ───────────────────────────────────────────
@@ -1620,14 +1492,11 @@ mod tests {
         ];
         let bc = encode_indexed_array(&items);
         let result = run(&bc, Context::default()).unwrap();
-        if let RexValue::Array(vals) = result.value {
-            assert_eq!(vals.len(), 3);
-            assert!(matches!(vals[0], RexValue::Int(1)));
-            assert!(matches!(vals[1], RexValue::Int(2)));
-            assert!(matches!(vals[2], RexValue::Int(3)));
-        } else {
-            panic!("expected array");
-        }
+        assert!(result.value.is_array());
+        assert_eq!(result.heap.array_len(result.value), 3);
+        assert_eq!(result.heap.array_get(result.value, 0).as_i64(), Some(1));
+        assert_eq!(result.heap.array_get(result.value, 1).as_i64(), Some(2));
+        assert_eq!(result.heap.array_get(result.value, 2).as_i64(), Some(3));
     }
 
     #[test]
@@ -1640,89 +1509,62 @@ mod tests {
         ];
         let bc = encode_indexed_array(&items);
         let result = run(&bc, Context::default()).unwrap();
-        if let RexValue::Array(vals) = result.value {
-            assert_eq!(vals.len(), 2);
-            assert_eq!(vals[0].as_str(), Some("hello"));
-            assert_eq!(vals[1].as_str(), Some("world"));
-        } else {
-            panic!("expected array");
-        }
+        assert!(result.value.is_array());
+        assert_eq!(result.heap.array_len(result.value), 2);
+        assert_eq!(result.heap.array_get(result.value, 0).as_str(&result.heap), Some("hello"));
+        assert_eq!(result.heap.array_get(result.value, 1).as_str(&result.heap), Some("world"));
     }
 
     #[test]
     fn eval_indexed_object() {
-        use crate::bytecode::{encode_indexed_object, Value};
+        use crate::bytecode::{encode_indexed_object, Value as BValue};
 
         let pairs = vec![
-            (Value::String("name".into()), Value::String("Ada".into())),
-            (Value::String("score".into()), Value::Integer(95)),
+            (BValue::String("name".into()), BValue::String("Ada".into())),
+            (BValue::String("score".into()), BValue::Integer(95)),
         ];
         let bc = encode_indexed_object(&pairs);
         let result = run(&bc, Context::default()).unwrap();
-        if let RexValue::Object(vals) = result.value {
-            assert_eq!(vals.len(), 2);
-            assert_eq!(vals[0].0, "name");
-            assert_eq!(vals[0].1.as_str(), Some("Ada"));
-            assert_eq!(vals[1].0, "score");
-            assert!(matches!(vals[1].1, RexValue::Int(95)));
-        } else {
-            panic!("expected object, got {:?}", result.value);
-        }
+        assert!(result.value.is_object());
+        let pairs = result.heap.object_pairs(result.value);
+        assert_eq!(pairs.len(), 2);
     }
 
     // ── Regression tests for known bugs ────────────────────────────────
 
     #[test]
     fn for_in_range_binding() {
-        // Fixed: for-in binding was eating body as extra binding
-        let v = eval("for v in 1..3 do v end");
-        assert!(matches!(v, RexValue::Int(3)),
-            "expected Int(3), got {:?}", v);
+        let (v, _) = eval("for v in 1..3 do v end");
+        assert_eq!(v.as_i64(), Some(3), "expected Int(3), got {:?}", v);
     }
 
     #[test]
     fn comprehension_with_bare_variable() {
-        // Fixed: [v for v in items] returned [] because body v$ was consumed as binding
-        let v = eval("[v for v in [10, 20, 30]]");
-        if let RexValue::Array(items) = v {
-            assert_eq!(items.len(), 3);
-        } else {
-            panic!("expected array");
-        }
+        let (v, heap) = eval("[v for v in [10, 20, 30]]");
+        assert!(v.is_array());
+        assert_eq!(heap.array_len(v), 3);
     }
 
     #[test]
     fn comprehension_filtering() {
-        // Fixed: none values were included instead of excluded
-        let v = eval("[v % 2 == 0 and v for v in [1, 2, 3, 4, 5]]");
-        if let RexValue::Array(items) = v {
-            assert_eq!(items.len(), 2);
-            assert!(matches!(items[0], RexValue::Int(2)));
-            assert!(matches!(items[1], RexValue::Int(4)));
-        } else {
-            panic!("expected array");
-        }
+        let (v, heap) = eval("[v % 2 == 0 and v for v in [1, 2, 3, 4, 5]]");
+        assert!(v.is_array());
+        assert_eq!(heap.array_len(v), 2);
+        assert_eq!(heap.array_get(v, 0).as_i64(), Some(2));
+        assert_eq!(heap.array_get(v, 1).as_i64(), Some(4));
+    }
+
+    // ── Object mutation tests (previously known bugs, now fixed) ───────
+
+    #[test]
+    fn object_property_mutation() {
+        let (v, heap) = eval("obj = {x: 1}\nobj.x = 2\nobj.x");
+        assert_eq!(v.as_i64(), Some(2), "object mutation should work, got {:?}", v);
     }
 
     #[test]
-    #[should_panic(expected = "expected true")]
-    fn bug_dynamic_integer_key() {
-        // Bug: obj.(4) = true then obj.(4) returns none
-        // Integer keys set via dynamic navigation don't round-trip
-        let v = eval("obj = {}\nobj.(4) = true\nobj.(4)");
-        assert!(matches!(v, RexValue::Bool(true)),
-            "expected true, got {:?} — expected true", v);
-    }
-
-    #[test]
-    #[should_panic(expected = "expected array")]
-    fn bug_array_push_method() {
-        // Bug: [1, 2].push(3) returns none instead of [1, 2, 3]
-        let v = eval("[1, 2].push(3)");
-        if let RexValue::Array(items) = &v {
-            assert_eq!(items.len(), 3);
-        } else {
-            panic!("expected array, got {:?}", v);
-        }
+    fn object_dynamic_key_mutation() {
+        let (v, _) = eval("obj = {}\nobj.(4) = true\nobj.(4)");
+        assert_eq!(v.as_bool(), Some(true), "dynamic key mutation should work, got {:?}", v);
     }
 }

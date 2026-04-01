@@ -18,92 +18,96 @@
 use std::collections::HashMap;
 use std::os::raw::c_char;
 
-use rex_core::bytecode::{self, Value};
-use rex_core::interpret::{self, Context, RexValue};
+use rex_core::bytecode::{self, Value as BValue};
+use rex_core::heap::{Value, Heap, FloatValue};
+use rex_core::interpret::Context;
 
-// ── RexValue ↔ bytecode::Value conversion ──────────────────────────────
+// ── Value ↔ bytecode::Value conversion ──────────────────────────────
 
-fn rexvalue_to_value(v: &RexValue) -> Value {
-    match v {
-        RexValue::RexNone => Value::Ref("no".into()),
-        RexValue::Null => Value::Ref("n".into()),
-        RexValue::Bool(true) => Value::Ref("t".into()),
-        RexValue::Bool(false) => Value::Ref("f".into()),
-        RexValue::Int(n) => Value::Integer(*n),
-        RexValue::Float(f) => {
-            if f.is_nan() { return Value::Ref("nan".into()); }
-            if f.is_infinite() {
-                return Value::Ref(if *f > 0.0 { "inf" } else { "nif" }.into());
+fn heap_value_to_bvalue(v: Value, heap: &Heap) -> BValue {
+    if v.is_none() { return BValue::Ref("no".into()); }
+    if v.is_null() { return BValue::Ref("n".into()); }
+    if let Some(true) = v.as_bool() { return BValue::Ref("t".into()); }
+    if let Some(false) = v.as_bool() { return BValue::Ref("f".into()); }
+    if let Some(n) = v.as_i64() { return BValue::Integer(n); }
+    if let Some(id) = v.float_id() {
+        match &heap.floats[id as usize] {
+            FloatValue::Float(f) => {
+                if f.is_nan() { return BValue::Ref("nan".into()); }
+                if f.is_infinite() {
+                    return BValue::Ref(if *f > 0.0 { "inf" } else { "nif" }.into());
+                }
+                let (sig, exp) = split_number(*f);
+                return BValue::Decimal { sig, exp };
             }
-            // Approximate as decimal
-            let (sig, exp) = split_number(*f);
-            Value::Decimal { sig, exp }
+            FloatValue::Decimal { sig, exp } => return BValue::Decimal { sig: *sig, exp: *exp },
         }
-        RexValue::Decimal { sig, exp } => Value::Decimal { sig: *sig, exp: *exp },
-        RexValue::Str(s) => Value::String(s.clone()),
-        RexValue::Array(items) => {
-            Value::Array(items.iter().map(rexvalue_to_value).collect())
-        }
-        RexValue::Object(pairs) => {
-            Value::Object(pairs.iter().map(|(k, v)| {
-                (Value::String(k.clone()), rexvalue_to_value(v))
-            }).collect())
-        }
-        RexValue::Host(_) => Value::Ref("no".into()),
     }
+    if let Some(s) = v.as_str(heap) { return BValue::String(s.to_string()); }
+    if v.is_array() {
+        return BValue::Array(heap.array_items(v).iter().map(|&item| heap_value_to_bvalue(item, heap)).collect());
+    }
+    if v.is_object() {
+        return BValue::Object(heap.object_pairs(v).iter().map(|&(k, val)| {
+            (BValue::String(heap.resolve_str(k).to_string()), heap_value_to_bvalue(val, heap))
+        }).collect());
+    }
+    BValue::Ref("no".into())
 }
 
-fn rx_to_rexvalue(rx: &str) -> RexValue {
+fn rx_to_heap_value(rx: &str, heap: &mut Heap) -> Value {
     let val = match bytecode::decode(rx) {
         Ok(v) => v,
-        Err(_) => return RexValue::RexNone,
+        Err(_) => return Value::NONE,
     };
-    value_to_rexvalue(&val)
+    bvalue_to_heap_value(&val, heap)
 }
 
-fn value_to_rexvalue(v: &Value) -> RexValue {
+fn bvalue_to_heap_value(v: &BValue, heap: &mut Heap) -> Value {
     match v {
-        Value::Integer(n) => RexValue::Int(*n),
-        Value::Decimal { sig, exp } => RexValue::Decimal { sig: *sig, exp: *exp },
-        Value::String(s) => RexValue::Str(s.clone()),
-        Value::Ref(name) => match name.as_str() {
-            "t" => RexValue::Bool(true),
-            "f" => RexValue::Bool(false),
-            "n" => RexValue::Null,
-            "no" => RexValue::RexNone,
-            "nan" => RexValue::Float(f64::NAN),
-            "inf" => RexValue::Float(f64::INFINITY),
-            "nif" => RexValue::Float(f64::NEG_INFINITY),
-            _ => RexValue::RexNone,
+        BValue::Integer(n) => Value::int(*n),
+        BValue::Decimal { sig, exp } => heap.alloc_decimal(*sig, *exp),
+        BValue::String(s) => heap.intern_value(s),
+        BValue::Ref(name) => match name.as_str() {
+            "t" => Value::TRUE,
+            "f" => Value::FALSE,
+            "n" => Value::NULL,
+            "no" => Value::NONE,
+            "nan" => heap.alloc_float(f64::NAN),
+            "inf" => heap.alloc_float(f64::INFINITY),
+            "nif" => heap.alloc_float(f64::NEG_INFINITY),
+            _ => Value::NONE,
         },
-        Value::Array(items) => {
-            RexValue::Array(items.iter().map(value_to_rexvalue).collect())
+        BValue::Array(items) => {
+            let vals: Vec<Value> = items.iter().map(|item| bvalue_to_heap_value(item, heap)).collect();
+            heap.alloc_array(vals)
         }
-        Value::Object(pairs) => {
-            RexValue::Object(pairs.iter().map(|(k, v)| {
+        BValue::Object(pairs) => {
+            let ps: Vec<(u32, Value)> = pairs.iter().map(|(k, v)| {
                 let key = match k {
-                    Value::String(s) => s.clone(),
-                    _ => format!("{k:?}"),
+                    BValue::String(s) => heap.intern(s),
+                    _ => heap.intern(&format!("{k:?}")),
                 };
-                (key, value_to_rexvalue(v))
-            }).collect())
+                (key, bvalue_to_heap_value(v, heap))
+            }).collect();
+            heap.alloc_object(ps)
         }
-        _ => RexValue::RexNone,
+        _ => Value::NONE,
     }
 }
 
-fn rexvalue_to_rx(v: &RexValue) -> String {
-    let val = rexvalue_to_value(v);
-    bytecode::encode_dedup(&val)
+fn heap_value_to_rx(v: Value, heap: &Heap) -> String {
+    let bval = heap_value_to_bvalue(v, heap);
+    bytecode::encode_dedup(&bval)
 }
 
 // ── Context ────────────────────────────────────────────────────────────
 
 pub struct EvalContext {
-    /// Read-only bindings: name → RexValue (decoded once, reused)
-    readonly: HashMap<String, RexValue>,
-    /// Mutable bindings: name → RexValue (decoded once, COW into vars on eval)
-    mutable: HashMap<String, RexValue>,
+    /// Read-only bindings: name → RX string (decoded into heap on eval)
+    readonly: HashMap<String, String>,
+    /// Mutable bindings: name → RX string (decoded into heap on eval)
+    mutable: HashMap<String, String>,
     /// Gas limit for eval
     gas_limit: u64,
 }
@@ -142,7 +146,7 @@ pub extern "C" fn rex_ctx_gas(ctx: *mut EvalContext, limit: u64) {
     ctx.gas_limit = limit;
 }
 
-/// Add a read-only binding. The RX bytes are decoded once and cached.
+/// Add a read-only binding. The RX bytes are stored and decoded on eval.
 #[unsafe(no_mangle)]
 pub extern "C" fn rex_ctx_bind(
     ctx: *mut EvalContext,
@@ -152,11 +156,10 @@ pub extern "C" fn rex_ctx_bind(
     let ctx = unsafe { &mut *ctx };
     let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name as *const u8, name_len)) };
     let rx = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(rx as *const u8, rx_len)) };
-    let val = rx_to_rexvalue(rx);
-    ctx.readonly.insert(name.to_string(), val);
+    ctx.readonly.insert(name.to_string(), rx.to_string());
 }
 
-/// Add a mutable binding. Decoded once. COW: cloned into var table on first write.
+/// Add a mutable binding.
 #[unsafe(no_mangle)]
 pub extern "C" fn rex_ctx_bind_mut(
     ctx: *mut EvalContext,
@@ -166,8 +169,7 @@ pub extern "C" fn rex_ctx_bind_mut(
     let ctx = unsafe { &mut *ctx };
     let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name as *const u8, name_len)) };
     let rx = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(rx as *const u8, rx_len)) };
-    let val = rx_to_rexvalue(rx);
-    ctx.mutable.insert(name.to_string(), val);
+    ctx.mutable.insert(name.to_string(), rx.to_string());
 }
 
 /// Clear all bindings (keeps allocation).
@@ -180,44 +182,41 @@ pub extern "C" fn rex_ctx_reset(ctx: *mut EvalContext) {
 
 // ── Eval ───────────────────────────────────────────────────────────────
 
-/// Evaluate REXC bytecode with the current bindings.
-/// Returns an opaque result handle. The context's mutable bindings are
-/// NOT modified — mutations are captured in the result.
 #[unsafe(no_mangle)]
 pub extern "C" fn rex_ctx_eval(
     ctx: *mut EvalContext,
-    bytecode: *const c_char, bc_len: usize,
+    bytecode_ptr: *const c_char, bc_len: usize,
 ) -> *mut EvalResult {
     let ctx = unsafe { &*ctx };
-    let bc = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytecode as *const u8, bc_len)) };
+    let bc = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytecode_ptr as *const u8, bc_len)) };
 
-    // Build var table: all bindings (readonly + mutable) start in vars.
-    // After eval, we diff the mutable ones to find dirty bindings.
+    let mut heap = Heap::new();
     let mut vars = HashMap::new();
-    for (name, val) in &ctx.readonly {
-        vars.insert(name.clone(), val.clone());
+
+    // Decode bindings into heap
+    for (name, rx) in &ctx.readonly {
+        vars.insert(name.clone(), rx_to_heap_value(rx, &mut heap));
     }
-    for (name, val) in &ctx.mutable {
-        vars.insert(name.clone(), val.clone());
+    for (name, rx) in &ctx.mutable {
+        vars.insert(name.clone(), rx_to_heap_value(rx, &mut heap));
     }
 
     let mut interp_ctx = Context::default();
     interp_ctx.vars = vars;
     interp_ctx.gas_limit = ctx.gas_limit;
+    interp_ctx.heap = heap;
 
-    let (value, mutations_rx, gas) = match interpret::run(bc, interp_ctx) {
+    let (value, mutations_rx, gas) = match rex_core::interpret::run(bc, interp_ctx) {
         Ok(result) => {
             // Find dirty mutable bindings by comparing with originals
-            let mut dirty_pairs: Vec<(Value, Value)> = Vec::new();
-            for (name, original) in &ctx.mutable {
-                if let Some(current) = result.vars.get(name) {
-                    // Compare by serialization (cheap for small values)
-                    let orig_rx = rexvalue_to_rx(original);
-                    let cur_rx = rexvalue_to_rx(current);
-                    if orig_rx != cur_rx {
+            let mut dirty_pairs: Vec<(BValue, BValue)> = Vec::new();
+            for (name, orig_rx) in &ctx.mutable {
+                if let Some(&current) = result.vars.get(name) {
+                    let cur_rx = heap_value_to_rx(current, &result.heap);
+                    if *orig_rx != cur_rx {
                         dirty_pairs.push((
-                            Value::String(name.clone()),
-                            rexvalue_to_value(current),
+                            BValue::String(name.clone()),
+                            heap_value_to_bvalue(current, &result.heap),
                         ));
                     }
                 }
@@ -226,15 +225,14 @@ pub extern "C" fn rex_ctx_eval(
             let mutations = if dirty_pairs.is_empty() {
                 String::new()
             } else {
-                bytecode::encode(&Value::Object(dirty_pairs))
+                bytecode::encode(&BValue::Object(dirty_pairs))
             };
 
-            (rexvalue_to_rx(&result.value), mutations, result.gas)
+            (heap_value_to_rx(result.value, &result.heap), mutations, result.gas)
         }
         Err(e) => {
-            // On error, return none value and empty mutations
             let err_msg = format!("{e}");
-            let err_val = bytecode::encode(&Value::String(err_msg));
+            let err_val = bytecode::encode(&BValue::String(err_msg));
             (err_val, String::new(), 0)
         }
     };

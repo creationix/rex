@@ -2,7 +2,8 @@ use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use rex_core::interpret::{Context, RexValue};
+use rex_core::heap::{Value, Heap};
+use rex_core::interpret::Context;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,7 +19,6 @@ pub async fn handle_request(
     let path = uri.path().to_string();
     let query_string = uri.query().unwrap_or("").to_string();
 
-    // Extract headers before consuming the request
     let req_headers: Vec<(String, String)> = req.headers().iter()
         .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
@@ -33,10 +33,8 @@ pub async fn handle_request(
         .unwrap_or("")
         .to_string();
 
-    // TODO: extract real client IP from X-Forwarded-For or socket
     let client_ip = "127.0.0.1".to_string();
 
-    // Read body
     let body_bytes = match axum::body::to_bytes(req.into_body(), state.config.server.max_body_bytes).await {
         Ok(b) => b,
         Err(_) => {
@@ -48,17 +46,14 @@ pub async fn handle_request(
     };
     let body_str = String::from_utf8_lossy(&body_bytes).to_string();
 
-    // Extract everything we need from the route table, then drop the lock
     let (middleware_bytecodes, handler_bytecode, params, static_file) = {
         let table = state.route_table.read().await;
 
-        // Collect middleware bytecodes (cloned)
         let mw_bytecodes: Vec<String> = table.middlewares_for(&path)
             .iter()
             .map(|mw| mw.bytecode.clone())
             .collect();
 
-        // Try to match a .rex route
         if let Some(route_match) = table.match_route(&path) {
             let params = route_match.params;
             let bytecode = route_match.route.bytecode.clone();
@@ -71,7 +66,6 @@ pub async fn handle_request(
         }
     };
 
-    // No match at all
     if handler_bytecode.is_none() && static_file.is_none() {
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
@@ -80,7 +74,6 @@ pub async fn handle_request(
             .unwrap();
     }
 
-    // For static files: run middleware then serve
     if let Some(sf) = &static_file {
         let (mw_response, mw_headers) = run_middleware_chain(
             &middleware_bytecodes,
@@ -99,8 +92,8 @@ pub async fn handle_request(
 
     let bytecode = handler_bytecode.unwrap();
 
-    // Run middleware chain
-    let mut accumulated_vars: HashMap<String, RexValue> = HashMap::new();
+    let mut accumulated_vars: HashMap<String, Value> = HashMap::new();
+    let mut accumulated_heap = Heap::new();
     let mut res_status: u16;
     let mut accumulated_headers: Vec<(String, String)> = Vec::new();
 
@@ -114,9 +107,7 @@ pub async fn handle_request(
             &state,
         );
 
-        // Merge response state
         res_status = status;
-        // Accumulate headers from middleware (later values override earlier)
         for (k, v) in headers {
             if let Some(entry) = accumulated_headers.iter_mut().find(|(ek, _)| *ek == k) {
                 entry.1 = v;
@@ -127,14 +118,13 @@ pub async fn handle_request(
 
         match result {
             Ok(run_result) => {
-                // Accumulate vars
                 for (k, v) in run_result.vars {
                     accumulated_vars.insert(k, v);
                 }
+                accumulated_heap = run_result.heap;
 
-                // Short-circuit if status >= 400
                 if res_status >= 400 {
-                    return build_response(res_status, &accumulated_headers, &run_result.value);
+                    return build_response(res_status, &accumulated_headers, run_result.value, &accumulated_heap);
                 }
             }
             Err(e) => {
@@ -148,7 +138,6 @@ pub async fn handle_request(
         }
     }
 
-    // Run handler
     let (result, status, headers) = run_rex_program(
         &bytecode,
         &method, &path, &query_string, &req_headers,
@@ -159,7 +148,6 @@ pub async fn handle_request(
     );
 
     let final_status = status;
-    // Merge: middleware headers first, handler headers override
     for (k, v) in headers {
         if let Some(entry) = accumulated_headers.iter_mut().find(|(ek, _)| *ek == k) {
             entry.1 = v;
@@ -171,7 +159,7 @@ pub async fn handle_request(
 
     match result {
         Ok(run_result) => {
-            build_response(final_status, &final_headers, &run_result.value)
+            build_response(final_status, &final_headers, run_result.value, &run_result.heap)
         }
         Err(e) => {
             tracing::error!("handler error: {e}");
@@ -184,7 +172,6 @@ pub async fn handle_request(
     }
 }
 
-/// Returns (short_circuit_response, accumulated_headers).
 fn run_middleware_chain(
     middleware_bytecodes: &[String],
     method: &str, path: &str, query_string: &str,
@@ -193,7 +180,7 @@ fn run_middleware_chain(
     params: &[(String, String)],
     state: &AppState,
 ) -> (Option<Response<Body>>, Vec<(String, String)>) {
-    let mut accumulated_vars: HashMap<String, RexValue> = HashMap::new();
+    let mut accumulated_vars: HashMap<String, Value> = HashMap::new();
     let mut accumulated_headers: Vec<(String, String)> = Vec::new();
 
     for mw_bytecode in middleware_bytecodes {
@@ -206,7 +193,6 @@ fn run_middleware_chain(
             state,
         );
 
-        // Accumulate headers
         for (k, v) in &headers {
             if let Some(entry) = accumulated_headers.iter_mut().find(|(ek, _)| ek == k) {
                 entry.1 = v.clone();
@@ -217,11 +203,12 @@ fn run_middleware_chain(
 
         match result {
             Ok(run_result) => {
+                let heap = &run_result.heap;
                 for (k, v) in run_result.vars {
                     accumulated_vars.insert(k, v);
                 }
                 if status >= 400 {
-                    return (Some(build_response(status, &accumulated_headers, &run_result.value)), accumulated_headers);
+                    return (Some(build_response(status, &accumulated_headers, run_result.value, heap)), accumulated_headers);
                 }
             }
             Err(e) => {
@@ -243,27 +230,17 @@ fn run_rex_program(
     req_headers: &[(String, String)],
     host: &str, cookie_header: &str, client_ip: &str, body_str: &str,
     params: &[(String, String)],
-    accumulated_vars: &HashMap<String, RexValue>,
+    accumulated_vars: &HashMap<String, Value>,
     state: &AppState,
 ) -> (Result<rex_core::interpret::RunResult, rex_core::interpret::RexError>, u16, Vec<(String, String)>) {
-    // Build host objects
-    // Order matters — indices are used as RexValue::Host(idx)
-    // 0: ResponseHeadersObject
-    // 1: ResponseObject (references headers at index 0)
-    // 2: HeadersObject (request headers)
-    // 3: QueryObject
-    // 4: CookieObject
+    let mut heap = Heap::new();
 
     let mut response_headers = ResponseHeadersObject::new();
-    let mut response_obj = ResponseObject::new(0); // headers at idx 0
+    let mut response_obj = ResponseObject::new(0);
     let mut headers_obj = HeadersObject::new(req_headers.to_vec());
     let mut query_obj = QueryObject::from_query_string(query_string);
     let mut cookie_obj = CookieObject::from_header(cookie_header);
 
-    // Opcode namespace objects — allow `time.uuid()`, `json.parse()`, etc.
-    // The compiler compiles `time.uuid()` → call(call($time, "uuid"), args)
-    // The namespace host object returns "%tu" for get("uuid"), which the
-    // interpreter recognizes as an opcode call.
     let mut ns_time = OpcodeNamespace { methods: vec![("now", "tn"), ("uuid", "tu")], tag_opcode: None };
     let mut ns_json = OpcodeNamespace { methods: vec![("parse", "jp"), ("stringify", "js")], tag_opcode: None };
     let mut ns_db = OpcodeNamespace { methods: vec![("get", "dg"), ("set", "ds"), ("delete", "dd"), ("list", "dl")], tag_opcode: None };
@@ -275,58 +252,44 @@ fn run_rex_program(
     let mut ns_kv = OpcodeNamespace { methods: vec![("get", "kg"), ("set", "ks"), ("delete", "kd"), ("keys", "kk"), ("incr", "ki"), ("publish", "kp")], tag_opcode: None };
     let mut ns_html = OpcodeNamespace { methods: vec![("escape", "he"), ("highlight", "hl"), ("highlight-html", "hh"), ("raw", "hr")], tag_opcode: Some("ht") };
 
-    // Host object indices:
-    // 0: ResponseHeadersObject
-    // 1: ResponseObject
-    // 2: HeadersObject (request)
-    // 3: QueryObject
-    // 4: CookieObject
-    // 5: ns_time, 6: ns_json, 7: ns_db, 8: ns_fs
-    // 9: ns_markdown, 10: ns_template, 11: ns_crypto, 12: ns_log, 13: ns_html, 14: ns_kv
-
-    // Build refs (short codes from .config.rex — resolved via 'X syntax)
     let mut refs = HashMap::new();
-    refs.insert("M".into(), RexValue::Str(method.to_string()));
-    refs.insert("P".into(), RexValue::Str(path.to_string()));
-    refs.insert("B".into(), RexValue::Str(body_str.to_string()));
-    refs.insert("I".into(), RexValue::Str(client_ip.to_string()));
-    refs.insert("D".into(), RexValue::Str(host.to_string()));
-    refs.insert("S".into(), RexValue::Host(1));
-    refs.insert("H".into(), RexValue::Host(2));
-    refs.insert("Q".into(), RexValue::Host(3));
-    refs.insert("K".into(), RexValue::Host(4));
+    refs.insert("M".into(), heap.intern_value(method));
+    refs.insert("P".into(), heap.intern_value(path));
+    refs.insert("B".into(), heap.intern_value(body_str));
+    refs.insert("I".into(), heap.intern_value(client_ip));
+    refs.insert("D".into(), heap.intern_value(host));
+    refs.insert("S".into(), Value::host(1));
+    refs.insert("H".into(), Value::host(2));
+    refs.insert("Q".into(), Value::host(3));
+    refs.insert("K".into(), Value::host(4));
 
-    let params_obj = RexValue::Object(
-        params.iter()
-            .map(|(k, v)| (k.clone(), RexValue::Str(v.clone())))
-            .collect()
-    );
-    refs.insert("PA".into(), params_obj.clone());
+    let params_pairs: Vec<(u32, Value)> = params.iter()
+        .map(|(k, v)| (heap.intern(k), heap.intern_value(v)))
+        .collect();
+    let params_obj = heap.alloc_object(params_pairs);
+    refs.insert("PA".into(), params_obj);
 
-    // Build vars — the compiler generates $variable references for bare names
-    let mut vars = accumulated_vars.clone();
-    vars.insert("method".into(), RexValue::Str(method.to_string()));
-    vars.insert("path".into(), RexValue::Str(path.to_string()));
-    vars.insert("body".into(), RexValue::Str(body_str.to_string()));
-    vars.insert("headers".into(), RexValue::Host(2));
-    vars.insert("query".into(), RexValue::Host(3));
-    vars.insert("cookies".into(), RexValue::Host(4));
+    let mut vars: HashMap<String, Value> = accumulated_vars.clone();
+    vars.insert("method".into(), heap.intern_value(method));
+    vars.insert("path".into(), heap.intern_value(path));
+    vars.insert("body".into(), heap.intern_value(body_str));
+    vars.insert("headers".into(), Value::host(2));
+    vars.insert("query".into(), Value::host(3));
+    vars.insert("cookies".into(), Value::host(4));
     vars.insert("params".into(), params_obj);
-    vars.insert("res".into(), RexValue::Host(1));
-    vars.insert("status".into(), RexValue::Int(200));
-    // Namespace vars for opcode dispatch
-    vars.insert("time".into(), RexValue::Host(5));
-    vars.insert("json".into(), RexValue::Host(6));
-    vars.insert("db".into(), RexValue::Host(7));
-    vars.insert("fs".into(), RexValue::Host(8));
-    vars.insert("markdown".into(), RexValue::Host(9));
-    vars.insert("template".into(), RexValue::Host(10));
-    vars.insert("crypto".into(), RexValue::Host(11));
-    vars.insert("log".into(), RexValue::Host(12));
-    vars.insert("html".into(), RexValue::Host(13));
-    vars.insert("kv".into(), RexValue::Host(14));
+    vars.insert("res".into(), Value::host(1));
+    vars.insert("status".into(), Value::int(200));
+    vars.insert("time".into(), Value::host(5));
+    vars.insert("json".into(), Value::host(6));
+    vars.insert("db".into(), Value::host(7));
+    vars.insert("fs".into(), Value::host(8));
+    vars.insert("markdown".into(), Value::host(9));
+    vars.insert("template".into(), Value::host(10));
+    vars.insert("crypto".into(), Value::host(11));
+    vars.insert("log".into(), Value::host(12));
+    vars.insert("html".into(), Value::host(13));
+    vars.insert("kv".into(), Value::host(14));
 
-    // Set up opcodes
     let opcodes = crate::opcodes::build_opcodes(
         state.db.clone(),
         state.project_root.clone(),
@@ -355,10 +318,10 @@ fn run_rex_program(
         ],
         opcodes,
         gas_limit: state.config.server.gas_limit,
+        heap,
     };
 
     let result = rex_core::interpret::run(bytecode, ctx);
-
 
     let status = response_obj.status;
     let headers = response_headers.headers.clone();
@@ -366,34 +329,26 @@ fn run_rex_program(
     (result, status, headers)
 }
 
-fn build_response(status: u16, headers: &[(String, String)], body: &RexValue) -> Response<Body> {
+fn build_response(status: u16, headers: &[(String, String)], body: Value, heap: &Heap) -> Response<Body> {
     let mut builder = Response::builder()
         .status(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR));
 
-    // Add response headers
     for (k, v) in headers {
         builder = builder.header(k.as_str(), v.as_str());
     }
 
-    // Determine body and content type
-    let (body_bytes, default_ct) = match body {
-        RexValue::Object(_) | RexValue::Array(_) => {
-            let json = rex_value_to_json(body);
-            (json.to_string().into_bytes(), Some("application/json"))
-        }
-        RexValue::Str(s) => {
-            (s.as_bytes().to_vec(), None)
-        }
-        RexValue::RexNone => {
-            (Vec::new(), None)
-        }
-        other => {
-            let s = rex_value_to_string(other);
-            (s.into_bytes(), None)
-        }
+    let (body_bytes, default_ct) = if body.is_object() || body.is_array() {
+        let json = value_to_json(body, heap);
+        (json.to_string().into_bytes(), Some("application/json"))
+    } else if let Some(s) = body.as_str(heap) {
+        (s.as_bytes().to_vec(), None)
+    } else if body.is_none() {
+        (Vec::new(), None)
+    } else {
+        let s = value_to_string(body, heap);
+        (s.into_bytes(), None)
     };
 
-    // Set content-type if not already set
     let has_ct = headers.iter().any(|(k, _)| k == "content-type");
     if !has_ct {
         if let Some(ct) = default_ct {

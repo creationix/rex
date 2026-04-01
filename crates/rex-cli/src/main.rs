@@ -446,7 +446,7 @@ fn cmd_run(
         eprintln!("  {} gas used: {}", dim(""), result.gas);
     }
 
-    print_value(result.value, &result.heap);
+    print_runtime_value(result.value, &result.heap);
     println!();
     Ok(())
 }
@@ -528,7 +528,7 @@ fn cmd_repl(gas: u64) -> io::Result<()> {
                 vars = result.vars;
                 if result.value.is_defined() {
                     print!("  ");
-                    print_value(result.value, &result.heap);
+                    print_runtime_value(result.value, &result.heap);
                     println!();
                 }
                 heap = result.heap;
@@ -542,39 +542,44 @@ fn cmd_repl(gas: u64) -> io::Result<()> {
     Ok(())
 }
 
-fn print_rex_value(value: &rex_core::interpret::RexValue) {
-    use rex_core::interpret::RexValue;
-    match value {
-        RexValue::RexNone => print!("{}", dim("none")),
-        RexValue::Null => print!("{}", dim("null")),
-        RexValue::Bool(b) => print!("{}", magenta(&format!("{b}"))),
-        RexValue::Int(n) => print!("{}", yellow(&format!("{n}"))),
-        RexValue::Float(n) => print!("{}", yellow(&format!("{n}"))),
-        RexValue::Decimal { sig, exp } => print!("{}", yellow(&format!("{sig}e{exp}"))),
-        RexValue::Str(s) => print!("{}", green(&format!("{s:?}"))),
-        RexValue::Array(items) => {
-            print!("[");
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    print!(", ");
-                }
-                print_rex_value(item);
-            }
-            print!("]");
+fn print_runtime_value(value: rex_core::heap::Value, heap: &rex_core::heap::Heap) {
+    use rex_core::heap::FloatValue;
+
+    if value.is_none() { print!("{}", dim("none")); return; }
+    if value.is_null() { print!("{}", dim("null")); return; }
+    if let Some(b) = value.as_bool() { print!("{}", magenta(&format!("{b}"))); return; }
+    if let Some(n) = value.as_i64() { print!("{}", yellow(&format!("{n}"))); return; }
+    if let Some(id) = value.float_id() {
+        match &heap.floats[id as usize] {
+            FloatValue::Float(n) => print!("{}", yellow(&format!("{n}"))),
+            FloatValue::Decimal { sig, exp } => print!("{}", yellow(&format!("{sig}e{exp}"))),
         }
-        RexValue::Object(pairs) => {
-            print!("{{");
-            for (i, (k, v)) in pairs.iter().enumerate() {
-                if i > 0 {
-                    print!(", ");
-                }
-                print!("{}: ", green(&format!("{k:?}")));
-                print_rex_value(v);
-            }
-            print!("}}");
-        }
-        RexValue::Host(idx) => print!("{}", dim(&format!("<host:{idx}>"))),
+        return;
     }
+    if let Some(s) = value.as_str(heap) { print!("{}", green(&format!("{s:?}"))); return; }
+    if value.is_array() {
+        let items = heap.array_items(value);
+        print!("[");
+        for (i, &item) in items.iter().enumerate() {
+            if i > 0 { print!(", "); }
+            print_runtime_value(item, heap);
+        }
+        print!("]");
+        return;
+    }
+    if value.is_object() {
+        let pairs = heap.object_pairs(value);
+        print!("{{");
+        for (i, &(k, v)) in pairs.iter().enumerate() {
+            if i > 0 { print!(", "); }
+            print!("{}: ", green(&format!("{:?}", heap.resolve_str(k))));
+            print_runtime_value(v, heap);
+        }
+        print!("}}");
+        return;
+    }
+    if let Some(idx) = value.host_id() { print!("{}", dim(&format!("<host:{idx}>"))); return; }
+    print!("{}", dim(&format!("{value:?}")));
 }
 
 // ── Value → JSON ────────────────────────────────────────────────────────

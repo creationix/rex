@@ -201,13 +201,13 @@ fn tool_eval(args: &Value) -> Value {
     if let Some(input) = args.get("input").and_then(|i| i.as_object()) {
         for (key, val) in input {
             ctx.vars
-                .insert(key.clone(), json_to_rex_value(val));
+                .insert(key.clone(), json_to_heap_value(val, &mut ctx.heap));
         }
     }
 
     match rex_core::interpret::run(&bytecode, ctx) {
         Ok(result) => {
-            let text = format_rex_value(&result.value);
+            let text = format_value(result.value, &result.heap);
             json!({
                 "content": [{ "type": "text", "text": text }]
             })
@@ -221,51 +221,53 @@ fn tool_eval(args: &Value) -> Value {
     }
 }
 
-fn json_to_rex_value(val: &Value) -> rex_core::interpret::RexValue {
-    use rex_core::interpret::RexValue;
+fn json_to_heap_value(val: &Value, heap: &mut rex_core::heap::Heap) -> rex_core::heap::Value {
+    use rex_core::heap::Value as HVal;
     match val {
-        Value::Null => RexValue::Null,
-        Value::Bool(b) => RexValue::Bool(*b),
+        Value::Null => HVal::NULL,
+        Value::Bool(b) => HVal::bool(*b),
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                RexValue::Int(i)
+                HVal::int(i)
             } else if let Some(f) = n.as_f64() {
-                RexValue::Float(f)
+                heap.alloc_float(f)
             } else {
-                RexValue::Null
+                HVal::NULL
             }
         }
-        Value::String(s) => RexValue::Str(s.clone()),
-        Value::Array(arr) => RexValue::Array(arr.iter().map(json_to_rex_value).collect()),
-        Value::Object(obj) => RexValue::Object(
-            obj.iter()
-                .map(|(k, v)| (k.clone(), json_to_rex_value(v)))
-                .collect(),
-        ),
+        Value::String(s) => heap.intern_value(s),
+        Value::Array(arr) => {
+            let items: Vec<HVal> = arr.iter().map(|v| json_to_heap_value(v, heap)).collect();
+            heap.alloc_array(items)
+        }
+        Value::Object(obj) => {
+            let pairs: Vec<(u32, HVal)> = obj.iter()
+                .map(|(k, v)| (heap.intern(k), json_to_heap_value(v, heap)))
+                .collect();
+            heap.alloc_object(pairs)
+        }
     }
 }
 
-fn format_rex_value(val: &rex_core::interpret::RexValue) -> String {
-    use rex_core::interpret::RexValue;
-    match val {
-        RexValue::RexNone => "none".to_string(),
-        RexValue::Null => "null".to_string(),
-        RexValue::Bool(b) => b.to_string(),
-        RexValue::Int(n) => n.to_string(),
-        RexValue::Float(n) => n.to_string(),
-        RexValue::Decimal { sig, exp } => format!("{sig}e{exp}"),
-        RexValue::Str(s) => format!("{s:?}"),
-        RexValue::Array(items) => {
-            let parts: Vec<String> = items.iter().map(format_rex_value).collect();
-            format!("[{}]", parts.join(", "))
-        }
-        RexValue::Object(pairs) => {
-            let parts: Vec<String> = pairs
-                .iter()
-                .map(|(k, v)| format!("{k:?}: {}", format_rex_value(v)))
-                .collect();
-            format!("{{{}}}", parts.join(", "))
-        }
-        RexValue::Host(idx) => format!("<host:{idx}>"),
+fn format_value(val: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> String {
+    if val.is_none() { return "none".to_string(); }
+    if val.is_null() { return "null".to_string(); }
+    if let Some(b) = val.as_bool() { return b.to_string(); }
+    if let Some(n) = val.as_i64() { return n.to_string(); }
+    if let Some(f) = val.as_f64(heap) { return f.to_string(); }
+    if let Some(s) = val.as_str(heap) { return format!("{s:?}"); }
+    if val.is_array() {
+        let parts: Vec<String> = heap.array_items(val).iter()
+            .map(|&item| format_value(item, heap))
+            .collect();
+        return format!("[{}]", parts.join(", "));
     }
+    if val.is_object() {
+        let parts: Vec<String> = heap.object_pairs(val).iter()
+            .map(|&(k, v)| format!("{:?}: {}", heap.resolve_str(k), format_value(v, heap)))
+            .collect();
+        return format!("{{{}}}", parts.join(", "));
+    }
+    if let Some(idx) = val.host_id() { return format!("<host:{idx}>"); }
+    format!("{val:?}")
 }
