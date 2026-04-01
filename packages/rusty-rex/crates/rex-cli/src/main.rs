@@ -27,6 +27,9 @@ enum Command {
         /// Output file (omit for stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Domain interface file (.rexd) for shortcode rewriting
+        #[arg(long)]
+        domain: Option<PathBuf>,
     },
 
     /// Decompile REXC/RX bytecode to Rex source
@@ -99,7 +102,7 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Compile { input, output } => cmd_compile(input, output, cli.time),
+        Command::Compile { input, output, domain } => cmd_compile(input, output, domain, cli.time),
         Command::Decompile { input, output, raw } => cmd_decompile(input, output, raw, cli.time),
         Command::Encode { input, output } => cmd_encode(input, output, cli.time),
         Command::Decode { input, output, pretty } => cmd_decode(input, output, pretty, cli.time),
@@ -168,10 +171,16 @@ fn format_bytes(n: usize) -> String {
 
 // ── Commands ────────────────────────────────────────────────────────────
 
-fn cmd_compile(input: Option<PathBuf>, output: Option<PathBuf>, time: bool) -> io::Result<()> {
+fn cmd_compile(input: Option<PathBuf>, output: Option<PathBuf>, domain: Option<PathBuf>, time: bool) -> io::Result<()> {
     let source = read_input(input)?;
     let t = Instant::now();
-    let bytecode = rex_core::compile(&source);
+    let bytecode = match domain {
+        Some(path) => {
+            let domain_src = std::fs::read_to_string(&path)?;
+            rex_core::compile_with_domain(&source, &domain_src)
+        }
+        None => rex_core::compile(&source),
+    };
     let elapsed = t.elapsed();
 
     if time {
