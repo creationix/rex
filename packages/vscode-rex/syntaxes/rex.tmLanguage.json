@@ -8,13 +8,15 @@
 		"expressions": {
 			"patterns": [
 				{ "include": "#comment" },
+				{ "include": "#template-literal" },
 				{ "include": "#string-single" },
 				{ "include": "#string-double" },
 				{ "include": "#number" },
 				{ "include": "#literal-keyword" },
 				{ "include": "#control-keyword" },
-				{ "include": "#self-depth" },
-				{ "include": "#existence-operator" },
+				{ "include": "#declaration-keyword" },
+				{ "include": "#logical-operator" },
+				{ "include": "#arrow-operator" },
 				{ "include": "#comparison-operator" },
 				{ "include": "#assignment-operator" },
 				{ "include": "#range-operator" },
@@ -44,6 +46,48 @@
 			"begin": "/\\*",
 			"end": "\\*/",
 			"name": "comment.block.rex"
+		},
+		"template-literal": {
+			"begin": "`",
+			"end": "`",
+			"name": "string.template.rex",
+			"beginCaptures": {
+				"0": { "name": "punctuation.definition.string.template.begin.rex" }
+			},
+			"endCaptures": {
+				"0": { "name": "punctuation.definition.string.template.end.rex" }
+			},
+			"patterns": [
+				{ "include": "#template-interpolation" },
+				{
+					"match": "\\\\u[0-9a-fA-F]{4}",
+					"name": "constant.character.escape.unicode.rex"
+				},
+				{
+					"match": "\\\\x[0-9a-fA-F]{2}",
+					"name": "constant.character.escape.hex.rex"
+				},
+				{
+					"match": "\\\\[`$\\\\\\/bfnrt0]",
+					"name": "constant.character.escape.rex"
+				},
+				{
+					"match": "\\\\.",
+					"name": "invalid.illegal.escape.rex"
+				}
+			]
+		},
+		"template-interpolation": {
+			"begin": "\\$\\{",
+			"end": "\\}",
+			"name": "meta.template.expression.rex",
+			"beginCaptures": {
+				"0": { "name": "punctuation.definition.template-expression.begin.rex" }
+			},
+			"endCaptures": {
+				"0": { "name": "punctuation.definition.template-expression.end.rex" }
+			},
+			"patterns": [{ "include": "#expressions" }]
 		},
 		"string-single": {
 			"begin": "'",
@@ -120,20 +164,24 @@
 			]
 		},
 		"literal-keyword": {
-			"match": "\\b(true|false|null|undefined|nan)\\b|-?\\binf\\b",
+			"match": "\\b(true|false|null|none|nan)\\b|-?\\binf\\b",
 			"name": "constant.language.rex"
 		},
 		"control-keyword": {
-			"match": "\\b(when|unless|else|while|for|in|of|do|end|break|continue)\\b",
+			"match": "\\b(when|unless|else|while|for|in|of|do|end|break|continue|return|delete)\\b",
 			"name": "keyword.control.rex"
 		},
-		"self-depth": {
-			"match": "\\bself(?:@[1-9][0-9]*)?\\b",
-			"name": "variable.language.self.rex"
+		"declaration-keyword": {
+			"match": "\\b(type|extern|mut)\\b",
+			"name": "keyword.declaration.rex"
 		},
-		"existence-operator": {
-			"match": "\\b(and|or|nor)\\b",
+		"logical-operator": {
+			"match": "\\b(and|or)\\b",
 			"name": "keyword.operator.logical.rex"
+		},
+		"arrow-operator": {
+			"match": "->",
+			"name": "keyword.operator.arrow.rex"
 		},
 		"comparison-operator": {
 			"match": "==|!=|<=|>=|<|>",

@@ -433,6 +433,11 @@ fn lower_nav(node: &SyntaxNode) -> Value {
                         items.push(Value::String(t.text().to_string()));
                         seen_dot = false;
                     }
+                    kind if seen_dot && kind.is_keyword() => {
+                        // Keyword used as property name after dot (e.g. db.delete)
+                        items.push(Value::String(t.text().to_string()));
+                        seen_dot = false;
+                    }
                     _ => {
                         if let Some(v) = lower_token(&t) {
                             items.push(v);
