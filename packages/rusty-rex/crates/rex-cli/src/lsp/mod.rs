@@ -153,7 +153,13 @@ impl LspState {
         let Some(source) = self.documents.get(uri) else {
             return;
         };
-        let (diags, types) = diagnostics::compute_diagnostics_with_types(source, &self.schema);
+        let is_rexd = uri.as_str().ends_with(".rexd");
+        let (diags, types) = if is_rexd {
+            // .rexd files are type declarations — don't infer expression types
+            (Vec::new(), Vec::new())
+        } else {
+            diagnostics::compute_diagnostics_with_types(source, &self.schema)
+        };
         self.span_types.insert(uri.clone(), types);
         let params = PublishDiagnosticsParams {
             uri: uri.clone(),
@@ -337,44 +343,88 @@ fn handle_hover(state: &LspState, params: HoverParams) -> Option<lsp_types::Hove
         return None;
     }
 
-    // Try dotted word first (e.g., "json.parse") — domain schema lookup
+    let is_rexd = uri.as_str().ends_with(".rexd");
+
+    // In .rex files, check if cursor is in a type annotation position (after : or ->)
+    let is_type_context = is_rexd || {
+        let offset = position_to_offset(source, pos);
+        let before = source[..offset].trim_end();
+        before.ends_with(':') || before.ends_with("->")
+            || before.ends_with("= {") || before.ends_with(", ")
+    };
+
+    // Try dotted word (e.g., "json.parse") — but only if cursor is past the dot,
+    // so hovering on "json" doesn't show the info for "json.parse"
     let dot_word = extract_dotted_word_at(source, pos);
-    if !dot_word.is_empty() && dot_word != word {
-        if let result @ Some(_) = hover::hover(&state.schema, &dot_word) {
+    if !dot_word.is_empty() && dot_word != word && dot_word.ends_with(&word) {
+        if let result @ Some(_) = hover::hover(&state.schema, &dot_word, is_type_context) {
             return result;
         }
     }
 
     // Try domain schema lookup for the simple word
-    if let result @ Some(_) = hover::hover(&state.schema, &word) {
+    if let result @ Some(_) = hover::hover(&state.schema, &word, is_type_context) {
         return result;
+    }
+
+    // In .rexd files, check if the word is a parameter name in a function signature
+    if is_rexd {
+        if let Some(hover) = hover_rexd_param(&state.schema, source, pos, &word) {
+            return Some(hover);
+        }
     }
 
     // Fall back to inferred type from span→type map
     if let Some(span_types) = state.span_types.get(uri) {
         let offset = position_to_offset(source, pos);
-        // Find the smallest span containing the cursor
-        let mut best: Option<&(std::ops::Range<usize>, typecheck::Type)> = None;
+
+        // Compute the exact byte range of the word under cursor
+        let word_start = source[..offset]
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .map(|i| next_char_boundary(source, i))
+            .unwrap_or(0);
+        let word_end = source[offset..]
+            .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .map(|i| i + offset)
+            .unwrap_or(source.len());
+
+        // Skip if cursor is on a namespace prefix (word followed by `.`)
+        // — domain schema lookup above will handle showing namespace members
+        if word_end < source.len() && source.as_bytes()[word_end] == b'.' {
+            // Try domain namespace hover first
+            if let result @ Some(_) = hover::hover(&state.schema, &word, is_type_context) {
+                return result;
+            }
+            return None;
+        }
+
+        // Find span that exactly matches the word's byte range, or smallest enclosing
+        let word_range = word_start..word_end;
+        let mut exact: Option<&typecheck::Type> = None;
+        let mut smallest: Option<&(std::ops::Range<usize>, typecheck::Type)> = None;
         for entry in span_types {
+            if entry.0 == word_range {
+                exact = Some(&entry.1);
+            }
             if entry.0.contains(&offset) {
-                if let Some(prev) = best {
+                if let Some(prev) = smallest {
                     if entry.0.len() < prev.0.len() {
-                        best = Some(entry);
+                        smallest = Some(entry);
                     }
                 } else {
-                    best = Some(entry);
+                    smallest = Some(entry);
                 }
             }
         }
-        if let Some((_, ty)) = best {
+
+        let ty = exact.or(smallest.map(|(_, ty)| ty));
+        if let Some(ty) = ty {
             let type_str = format_type(ty);
-            if type_str != "some" && type_str != "none" {
-                let content = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
-                    kind: lsp_types::MarkupKind::Markdown,
-                    value: format!("```rex\n{word}: {type_str}\n```"),
-                });
-                return Some(lsp_types::Hover { contents: content, range: None });
-            }
+            let content = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value: format!("```rex\n{word}: {type_str}\n```"),
+            });
+            return Some(lsp_types::Hover { contents: content, range: None });
         }
     }
 
@@ -418,6 +468,54 @@ fn handle_definition(
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
+/// Look up a parameter name in a .rexd function declaration.
+/// Searches all function signatures for a parameter matching `word`.
+fn hover_rexd_param(
+    schema: &DomainSchema,
+    source: &str,
+    pos: lsp_types::Position,
+    word: &str,
+) -> Option<lsp_types::Hover> {
+    // Get the current line to find the function name
+    let line_text = source.lines().nth(pos.line as usize)?;
+
+    // Look for "extern name.method(" or "extern name(" pattern
+    let extern_prefix = line_text.trim_start().strip_prefix("extern ")?;
+    let paren_pos = extern_prefix.find('(')?;
+    let func_name_part = extern_prefix[..paren_pos].trim();
+    // Strip "mut " prefix if present
+    let func_name = func_name_part.strip_prefix("mut ").unwrap_or(func_name_part);
+
+    // Look up the function in the schema
+    let sig = schema.functions.get(func_name)?;
+
+    // Find the parameter matching the word
+    for (param_name, param_type) in &sig.args {
+        if param_name == word {
+            let type_str = format_type(param_type);
+            let content = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value: format!("```rex\n{word}: {type_str}\n```\n\n---\n\nParameter of `{func_name}`"),
+            });
+            return Some(lsp_types::Hover { contents: content, range: None });
+        }
+    }
+
+    // Check rest parameter
+    if let Some((rest_name, rest_type)) = &sig.rest {
+        if rest_name == word {
+            let type_str = format_type(rest_type);
+            let content = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value: format!("```rex\n{word}: {type_str}\n```\n\n---\n\nRest parameter of `{func_name}`"),
+            });
+            return Some(lsp_types::Hover { contents: content, range: None });
+        }
+    }
+
+    None
+}
+
 fn cast_request<R: lsp_types::request::Request>(req: Request) -> (RequestId, R::Params) {
     let (id, params) = req.extract::<R::Params>(R::METHOD).unwrap();
     (id, params)
@@ -428,13 +526,22 @@ fn send_response(conn: &Connection, id: RequestId, result: serde_json::Value) {
     let _ = conn.sender.send(Message::Response(resp));
 }
 
+/// Advance a byte index past the current character to the next char boundary.
+fn next_char_boundary(s: &str, i: usize) -> usize {
+    let mut j = i + 1;
+    while j < s.len() && !s.is_char_boundary(j) {
+        j += 1;
+    }
+    j
+}
+
 /// Extract the word (with dots) immediately before the cursor for completions.
 fn extract_word_before(source: &str, pos: lsp_types::Position) -> String {
     let offset = position_to_offset(source, pos);
     let before = &source[..offset];
     let start = before
         .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
-        .map(|i| i + 1)
+        .map(|i| next_char_boundary(source, i))
         .unwrap_or(0);
     before[start..].to_string()
 }
@@ -444,7 +551,7 @@ fn extract_word_at(source: &str, pos: lsp_types::Position) -> String {
     let offset = position_to_offset(source, pos);
     let start = source[..offset]
         .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| i + 1)
+        .map(|i| next_char_boundary(source, i))
         .unwrap_or(0);
     let end = source[offset..]
         .find(|c: char| !c.is_alphanumeric() && c != '_')
@@ -458,7 +565,7 @@ fn extract_dotted_word_at(source: &str, pos: lsp_types::Position) -> String {
     let offset = position_to_offset(source, pos);
     let start = source[..offset]
         .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
-        .map(|i| i + 1)
+        .map(|i| next_char_boundary(source, i))
         .unwrap_or(0);
     let end = source[offset..]
         .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')

@@ -2299,6 +2299,13 @@ impl<'a> TypeEnv<'a> {
                     } else {
                         Type::unknown()
                     };
+                    // Record span for each key token → value type (for hover on object keys)
+                    for key_child in &pair_children[..ci] {
+                        if let rowan::NodeOrToken::Token(t) = key_child {
+                            let range = t.text_range();
+                            self.span_types.push((range.start().into()..range.end().into(), val_type.clone()));
+                        }
+                    }
                     fields.push((key, val_type));
                 }
             }
