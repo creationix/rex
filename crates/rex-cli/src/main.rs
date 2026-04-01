@@ -12,13 +12,20 @@ use color::*;
 #[command(
     name = "rex",
     version,
-    about = "Rex language compiler and bytecode tools"
+    about = "Rex language compiler and bytecode tools",
+    after_help = "\x1b[2mExamples:\x1b[0m
+  rex run -e '1 + 2'                    Evaluate an expression
+  rex run examples/fibonacci.rex n=10   Run a program with variables
+  rex check examples/                   Type-check all .rex files in a directory
+  rex compile app.rex -o app.rexc       Compile to bytecode
+  rex decompile app.rexc                Decompile bytecode back to source
+  echo '{\"a\":1}' | rex encode | rex decode --pretty   JSON ↔ RX roundtrip"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Command,
 
-    /// Show timing information
+    /// Show timing information for the operation
     #[arg(long, global = true)]
     time: bool,
 }
@@ -26,11 +33,15 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Compile Rex source to REXC bytecode
-    #[command(alias = "c")]
+    #[command(alias = "c", after_help = "\x1b[2mExamples:\x1b[0m
+  rex compile app.rex -o app.rexc        Compile file to bytecode
+  echo 'x + 1' | rex compile              Compile an expression from stdin
+  rex compile app.rex --domain api.rexd  Compile with domain shortcodes
+  cat app.rex | rex compile > app.rexc   Pipe stdin to stdout")]
     Compile {
-        /// Input file (- or omit for stdin)
+        /// Input .rex file (reads stdin if omitted or -)
         input: Option<PathBuf>,
-        /// Output file (omit for stdout)
+        /// Output file (prints to stdout if omitted)
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Domain interface file (.rexd) for shortcode rewriting
@@ -38,101 +49,142 @@ enum Command {
         domain: Option<PathBuf>,
     },
 
-    /// Decompile REXC/RX bytecode to Rex source
-    #[command(alias = "d")]
+    /// Decompile REXC/RX bytecode back to readable Rex source
+    #[command(alias = "d", after_help = "\x1b[2mExamples:\x1b[0m
+  rex decompile app.rexc                 Pretty-print bytecode as Rex source
+  rex decompile --raw app.rexc           Show raw bytecode with pointers/chains
+  rex compile app.rex | rex decompile    Roundtrip: source → bytecode → source")]
     Decompile {
-        /// Input file (- or omit for stdin)
+        /// Input .rexc/.rx file (reads stdin if omitted or -)
         input: Option<PathBuf>,
-        /// Output file (omit for stdout)
+        /// Output file (prints to stdout if omitted)
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Raw mode: preserve pointers and chains
+        /// Raw mode: preserve internal pointers and chains (for debugging)
         #[arg(long)]
         raw: bool,
     },
 
-    /// Encode JSON to RX bytecode
-    #[command(alias = "e")]
+    /// Encode JSON data to compact RX bytecode
+    #[command(alias = "e", after_help = "\x1b[2mExamples:\x1b[0m
+  rex encode data.json -o data.rx        Encode JSON file to RX bytecode
+  echo '{\"name\":\"Rex\"}' | rex encode   Encode JSON from stdin
+  rex encode data.json | rex decode      Roundtrip: verify encoding")]
     Encode {
-        /// Input JSON file (- or omit for stdin)
+        /// Input .json file (reads stdin if omitted or -)
         input: Option<PathBuf>,
-        /// Output file (omit for stdout)
+        /// Output file (prints to stdout if omitted)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
 
-    /// Decode RX bytecode to JSON
+    /// Decode RX bytecode back to JSON
+    #[command(after_help = "\x1b[2mExamples:\x1b[0m
+  rex decode data.rx                     Decode to compact JSON
+  rex decode data.rx --pretty            Decode to pretty-printed JSON
+  rex decode data.rx -o data.json        Decode to file")]
     Decode {
-        /// Input RX file (- or omit for stdin)
+        /// Input .rx file (reads stdin if omitted or -)
         input: Option<PathBuf>,
-        /// Output file (omit for stdout)
+        /// Output file (prints to stdout if omitted)
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Pretty-print JSON output
+        /// Pretty-print JSON output with indentation
         #[arg(long)]
         pretty: bool,
     },
 
-    /// Inspect bytecode structure
+    /// Inspect bytecode structure as a human-readable tree (for debugging)
+    #[command(after_help = "\x1b[2mExamples:\x1b[0m
+  rex inspect app.rexc                   Show bytecode tree for compiled Rex
+  rex inspect data.rx                    Show bytecode tree for RX data
+  rex compile app.rex | rex inspect      Compile and inspect in one step")]
     Inspect {
-        /// Input file (- or omit for stdin)
+        /// Input .rexc/.rx file (reads stdin if omitted or -)
         input: Option<PathBuf>,
     },
 
-    /// Run a Rex program
+    /// Run a Rex program and print the result
+    #[command(after_help = "\x1b[2mExamples:\x1b[0m
+  rex run -e '2 ** 10'                   Evaluate an inline expression
+  rex run examples/fibonacci.rex n=10    Run file with variable n=10
+  rex run app.rex name=Alice age=30      Pass multiple typed variables
+  rex run app.rex --gas 1000             Limit execution steps
+  cat program.rex | rex run              Run from stdin")]
     Run {
-        /// Input Rex source file (omit to use -e or stdin)
+        /// Input .rex source file (uses -e or stdin if omitted)
         input: Option<PathBuf>,
-        /// Inline Rex expression to evaluate
+        /// Inline Rex expression to evaluate (instead of a file)
         #[arg(short = 'e', long = "expr")]
         expr: Option<String>,
         /// Domain interface file (.rexd) for shortcode rewriting
         #[arg(long)]
         domain: Option<PathBuf>,
-        /// Gas limit (0 = unlimited)
+        /// Max execution steps, 0 = unlimited
         #[arg(long, default_value = "10000000")]
         gas: u64,
-        /// Variable bindings as key=value pairs (auto-typed)
+        /// Variable bindings as key=value pairs (auto-typed: int, float, bool, null, none, or string)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
 
-    /// Interactive Rex REPL
+    /// Interactive Rex REPL — variables persist across lines
+    #[command(after_help = "\x1b[2mExamples:\x1b[0m
+  rex repl                               Start interactive REPL
+  rex repl --gas 1000                    Start REPL with limited gas per expression")]
     Repl {
-        /// Gas limit per expression (0 = unlimited)
+        /// Max execution steps per expression, 0 = unlimited [default: 10000000]
         #[arg(long, default_value = "10000000")]
         gas: u64,
     },
 
-    /// Type-check Rex files against a domain interface
+    /// Type-check .rex files against a domain interface (.rexd)
+    #[command(after_help = "\x1b[2mExamples:\x1b[0m
+  rex check app.rex                      Check a single file (auto-discovers .rexd)
+  rex check routes/                      Check all .rex files in a directory
+  rex check app.rex --domain api.rexd    Check with explicit domain schema
+
+\x1b[2mDomain auto-discovery:\x1b[0m searches upward from input for any .rexd file.
+\x1b[2mExit code:\x1b[0m 0 if no errors (warnings are OK), 1 if any errors found.")]
     Check {
-        /// Input file or directory
+        /// Input .rex file or directory (directories are searched recursively)
         input: PathBuf,
-        /// Domain interface file (.rexd). Auto-discovered if not specified.
+        /// Domain interface file (.rexd). Auto-discovered by searching upward if not specified
         #[arg(long)]
         domain: Option<PathBuf>,
     },
 
-    /// Format Rex source code
-    #[command(alias = "f")]
+    /// Format Rex source code (note: currently lossy — strips comments and type annotations)
+    #[command(alias = "f", after_help = "\x1b[2mExamples:\x1b[0m
+  rex format app.rex                     Format and print to stdout
+  rex format app.rex -o app.rex          Format in place
+
+\x1b[2mKnown limitation:\x1b[0m round-trips through the compiler, losing comments, extern
+declarations, type annotations, and dynamic navigation. See KNOWN-ISSUES.md.")]
     Format {
-        /// Input file (- or omit for stdin)
+        /// Input .rex file (reads stdin if omitted or -)
         input: Option<PathBuf>,
-        /// Output file (omit for stdout)
+        /// Output file (prints to stdout if omitted)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
 
-    /// Start the Language Server Protocol server over stdio
+    /// Start the Language Server Protocol server over stdio (for editors)
+    #[command(after_help = "\x1b[2mExamples:\x1b[0m
+  rex lsp                                Start LSP (auto-discovers .rexd)
+  rex lsp --domain api.rexd              Start LSP with explicit domain schema")]
     Lsp {
-        /// Domain interface file (.rexd). Auto-discovered if not specified.
+        /// Domain interface file (.rexd). Auto-discovered if not specified
         #[arg(long)]
         domain: Option<PathBuf>,
     },
 
-    /// Start the Model Context Protocol server over stdio
+    /// Start the Model Context Protocol server over stdio (for AI agents)
+    #[command(after_help = "\x1b[2mExamples:\x1b[0m
+  rex mcp                                Start MCP server (auto-discovers .rexd)
+  rex mcp --domain api.rexd              Start MCP with explicit domain schema")]
     Mcp {
-        /// Domain interface file (.rexd). Auto-discovered if not specified.
+        /// Domain interface file (.rexd). Auto-discovered if not specified
         #[arg(long)]
         domain: Option<PathBuf>,
     },
@@ -380,7 +432,7 @@ fn cmd_run(
             let name = &arg[..eq_pos];
             let raw = &arg[eq_pos + 1..];
             if !name.is_empty() {
-                ctx.vars.insert(name.to_string(), auto_type(raw));
+                ctx.vars.insert(name.to_string(), auto_type(raw, &mut ctx.heap));
             }
         }
     }
@@ -394,8 +446,7 @@ fn cmd_run(
         eprintln!("  {} gas used: {}", dim(""), result.gas);
     }
 
-    // Print result
-    print_rex_value(&result.value);
+    print_value(result.value, &result.heap);
     println!();
     Ok(())
 }
@@ -412,31 +463,27 @@ fn cmd_run(
 /// The value is always *also* usable as a string via string comparison,
 /// because `"5" == "5"` works in Rex and the display of `Int(5)` in
 /// comparisons coerces naturally.
-fn auto_type(raw: &str) -> rex_core::interpret::RexValue {
-    use rex_core::interpret::RexValue;
+fn auto_type(raw: &str, heap: &mut rex_core::heap::Heap) -> rex_core::heap::Value {
+    use rex_core::heap::Value;
 
-    // Keywords
     match raw {
-        "true" => return RexValue::Bool(true),
-        "false" => return RexValue::Bool(false),
-        "null" => return RexValue::Null,
-        "none" => return RexValue::RexNone,
-        "" => return RexValue::Str(String::new()),
+        "true" => return Value::TRUE,
+        "false" => return Value::FALSE,
+        "null" => return Value::NULL,
+        "none" => return Value::NONE,
+        "" => return heap.intern_value(""),
         _ => {}
     }
 
-    // Integer
     if let Ok(n) = raw.parse::<i64>() {
-        return RexValue::Int(n);
+        return Value::int(n);
     }
 
-    // Float
     if let Ok(n) = raw.parse::<f64>() {
-        return RexValue::Float(n);
+        return heap.alloc_float(n);
     }
 
-    // Fallback: string
-    RexValue::Str(raw.to_string())
+    heap.intern_value(raw)
 }
 
 fn cmd_repl(gas: u64) -> io::Result<()> {
@@ -453,7 +500,8 @@ fn cmd_repl(gas: u64) -> io::Result<()> {
     eprintln!();
 
     let stdin = io::stdin();
-    let mut vars = std::collections::HashMap::new();
+    let mut vars: std::collections::HashMap<String, rex_core::heap::Value> = std::collections::HashMap::new();
+    let mut heap = rex_core::heap::Heap::new();
 
     loop {
         eprint!("{} ", cyan(">>>"));
@@ -473,17 +521,17 @@ fn cmd_repl(gas: u64) -> io::Result<()> {
         let mut ctx = rex_core::interpret::Context::default();
         ctx.gas_limit = gas;
         ctx.vars = std::mem::take(&mut vars);
+        ctx.heap = std::mem::take(&mut heap);
 
         match rex_core::interpret::run(&bytecode, ctx) {
             Ok(result) => {
-                // Persist variables
                 vars = result.vars;
-                // Print result (skip undefined for assignments)
                 if result.value.is_defined() {
                     print!("  ");
-                    print_rex_value(&result.value);
+                    print_value(result.value, &result.heap);
                     println!();
                 }
+                heap = result.heap;
             }
             Err(e) => {
                 eprintln!("  {}: {e}", red("error"));

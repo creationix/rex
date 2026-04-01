@@ -9,7 +9,7 @@ alwaysApply: false
 The Rex compiler is in Rust under `crates/`. Use `cargo` for building and `rex` CLI for compiling/checking.
 
 ```sh
-rex compile --expr "when x do y end"
+rex run -e "1 + 2"
 rex check examples/case-studies/gradebook.rex
 rex run examples/fibonacci.rex
 ```
