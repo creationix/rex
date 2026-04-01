@@ -995,6 +995,20 @@ pub fn check_source(source: &str, schema: &DomainSchema) -> Vec<Diagnostic> {
     env.diagnostics
 }
 
+/// Type-check and return both diagnostics and a span→type map for hover.
+pub fn check_source_with_types(
+    source: &str,
+    schema: &DomainSchema,
+) -> (Vec<Diagnostic>, Vec<(std::ops::Range<usize>, Type)>) {
+    let tokens = crate::lexer::lex(source);
+    let (green, _errors) = crate::parser::parse(source, &tokens);
+    let root = SyntaxNode::new_root(green);
+    let mut env = TypeEnv::new(schema);
+    env.infer_program(&root);
+    env.check_unused_vars();
+    (env.diagnostics, env.span_types)
+}
+
 /// A narrowing constraint extracted from a condition expression.
 #[derive(Debug, Clone)]
 enum Narrowing {
@@ -1021,6 +1035,8 @@ struct TypeEnv<'a> {
     /// Track which variables have been read.
     var_reads: std::collections::HashSet<String>,
     diagnostics: Vec<Diagnostic>,
+    /// Map from source spans to inferred types (for hover).
+    span_types: Vec<(std::ops::Range<usize>, Type)>,
 }
 
 impl<'a> TypeEnv<'a> {
@@ -1038,6 +1054,7 @@ impl<'a> TypeEnv<'a> {
             var_assignments: HashMap::new(),
             var_reads: std::collections::HashSet::new(),
             diagnostics: Vec::new(),
+            span_types: Vec::new(),
         }
     }
 
@@ -1140,7 +1157,7 @@ impl<'a> TypeEnv<'a> {
     }
 
     fn infer_node(&mut self, node: &SyntaxNode) -> Type {
-        match node.kind() {
+        let ty = match node.kind() {
             SyntaxKind::BinaryExpr => self.infer_binary(node),
             SyntaxKind::UnaryExpr => self.infer_unary(node),
             SyntaxKind::AssignExpr => self.infer_assign(node),
@@ -1162,11 +1179,14 @@ impl<'a> TypeEnv<'a> {
             SyntaxKind::Block => self.infer_block(node),
             SyntaxKind::SelfExpr => Type::Some, // TODO: track self type through scopes
             _ => Type::unknown(),
-        }
+        };
+        let range = node.text_range();
+        self.span_types.push((range.start().into()..range.end().into(), ty.clone()));
+        ty
     }
 
     fn infer_token(&mut self, token: &SyntaxToken) -> Type {
-        match token.kind() {
+        let ty = match token.kind() {
             SyntaxKind::DecimalNumber => {
                 let text = token.text();
                 if text.contains('.') || text.contains('e') || text.contains('E') {
@@ -1191,7 +1211,10 @@ impl<'a> TypeEnv<'a> {
             SyntaxKind::KwString | SyntaxKind::KwNumber | SyntaxKind::KwObject
             | SyntaxKind::KwArray | SyntaxKind::KwBoolean => Type::Some,
             _ => Type::unknown(),
-        }
+        };
+        let range = token.text_range();
+        self.span_types.push((range.start().into()..range.end().into(), ty.clone()));
+        ty
     }
 
     // ── Specific expression types ─────────────────────────────────────

@@ -1,11 +1,13 @@
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use rex_core::typecheck::{self, DiagnosticKind, DomainSchema};
 
-/// Run parse + typecheck on source and return LSP diagnostics.
-pub fn compute_diagnostics(source: &str, schema: &DomainSchema) -> Vec<Diagnostic> {
+/// Run parse + typecheck and return both LSP diagnostics and a span→type map.
+pub fn compute_diagnostics_with_types(
+    source: &str,
+    schema: &DomainSchema,
+) -> (Vec<Diagnostic>, Vec<(std::ops::Range<usize>, typecheck::Type)>) {
     let mut diagnostics = Vec::new();
 
-    // Parse errors
     let tokens = rex_core::lexer::lex(source);
     let (_, parse_errors) = rex_core::parser::parse(source, &tokens);
     for e in &parse_errors {
@@ -18,8 +20,7 @@ pub fn compute_diagnostics(source: &str, schema: &DomainSchema) -> Vec<Diagnosti
         });
     }
 
-    // Type-check errors (only if parsing produced something)
-    let type_diags = typecheck::check_source(source, schema);
+    let (type_diags, span_types) = typecheck::check_source_with_types(source, schema);
     for d in &type_diags {
         let severity = match d.kind {
             DiagnosticKind::Error => DiagnosticSeverity::ERROR,
@@ -34,7 +35,7 @@ pub fn compute_diagnostics(source: &str, schema: &DomainSchema) -> Vec<Diagnosti
         });
     }
 
-    diagnostics
+    (diagnostics, span_types)
 }
 
 /// Convert byte offsets to an LSP Range (0-indexed line/col).

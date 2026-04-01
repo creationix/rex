@@ -113,6 +113,8 @@ struct LspState {
     rexd_path: Option<PathBuf>,
     rexd_source: Option<String>,
     rexd_uri: Option<Uri>,
+    /// Cached span→type map per document URI (updated on each diagnostics pass).
+    span_types: std::collections::HashMap<Uri, Vec<(std::ops::Range<usize>, typecheck::Type)>>,
 }
 
 impl LspState {
@@ -127,6 +129,7 @@ impl LspState {
             rexd_path,
             rexd_source,
             rexd_uri,
+            span_types: std::collections::HashMap::new(),
         }
     }
 
@@ -146,11 +149,12 @@ impl LspState {
         }
     }
 
-    fn publish_diagnostics(&self, uri: &Uri, conn: &Connection) {
+    fn publish_diagnostics(&mut self, uri: &Uri, conn: &Connection) {
         let Some(source) = self.documents.get(uri) else {
             return;
         };
-        let diags = diagnostics::compute_diagnostics(source, &self.schema);
+        let (diags, types) = diagnostics::compute_diagnostics_with_types(source, &self.schema);
+        self.span_types.insert(uri.clone(), types);
         let params = PublishDiagnosticsParams {
             uri: uri.clone(),
             diagnostics: diags,
@@ -333,7 +337,7 @@ fn handle_hover(state: &LspState, params: HoverParams) -> Option<lsp_types::Hove
         return None;
     }
 
-    // Try dotted word first (e.g., "json.parse")
+    // Try dotted word first (e.g., "json.parse") — domain schema lookup
     let dot_word = extract_dotted_word_at(source, pos);
     if !dot_word.is_empty() && dot_word != word {
         if let result @ Some(_) = hover::hover(&state.schema, &dot_word) {
@@ -341,7 +345,40 @@ fn handle_hover(state: &LspState, params: HoverParams) -> Option<lsp_types::Hove
         }
     }
 
-    hover::hover(&state.schema, &word)
+    // Try domain schema lookup for the simple word
+    if let result @ Some(_) = hover::hover(&state.schema, &word) {
+        return result;
+    }
+
+    // Fall back to inferred type from span→type map
+    if let Some(span_types) = state.span_types.get(uri) {
+        let offset = position_to_offset(source, pos);
+        // Find the smallest span containing the cursor
+        let mut best: Option<&(std::ops::Range<usize>, typecheck::Type)> = None;
+        for entry in span_types {
+            if entry.0.contains(&offset) {
+                if let Some(prev) = best {
+                    if entry.0.len() < prev.0.len() {
+                        best = Some(entry);
+                    }
+                } else {
+                    best = Some(entry);
+                }
+            }
+        }
+        if let Some((_, ty)) = best {
+            let type_str = format_type(ty);
+            if type_str != "some" && type_str != "none" {
+                let content = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                    kind: lsp_types::MarkupKind::Markdown,
+                    value: format!("```rex\n{word}: {type_str}\n```"),
+                });
+                return Some(lsp_types::Hover { contents: content, range: None });
+            }
+        }
+    }
+
+    None
 }
 
 fn handle_definition(
