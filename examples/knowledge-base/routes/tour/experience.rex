@@ -1,7 +1,10 @@
 /* Tour Stop 6: Developer Experience Report */
 res.headers.content-type = "text/html"
 layout = fs.read("routes/_layouts/page.html")
-unless layout do status = 500; "layout not found" end
+unless layout do
+  status = 500
+  return "layout not found"
+end
 
 /* Pre-highlight all code snippets */
 snippet-1 = "/* This just works. No truthiness bugs. */\napi-key = headers.authorization\n\nunless api-key do       /* only fires if truly absent */\n  res.status = 401\nend\n\nmax = query.limit or 100  /* 0 is a valid limit, won't fall through */"

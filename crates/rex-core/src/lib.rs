@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod bytecode;
 pub mod decompile;
+pub mod format;
 pub mod heap;
 pub mod interpret;
 pub mod json_fast;
@@ -103,13 +104,10 @@ fn rewrite_domain_calls(value: &mut bytecode::Value, map: &std::collections::Has
     }
 }
 
-/// Format Rex source code by round-tripping through the compiler pipeline.
+/// Format Rex source code using the CST-based formatter.
+/// Preserves comments, type annotations, extern declarations, and dynamic navigation.
 pub fn format(source: &str) -> String {
-    let tokens = lexer::lex(source);
-    let (green, _errors) = parser::parse(source, &tokens);
-    let root = syntax::SyntaxNode::new_root(green);
-    let value = lower::lower(&root);
-    decompile::decompile(&value)
+    format::format(source)
 }
 
 /// Encode a JSON/data value to RX bytecode with deduplication.

@@ -1,7 +1,10 @@
 /* Tour Stop: Live Cursors — real-time collaboration demo */
 res.headers.content-type = "text/html"
 layout = fs.read("routes/_layouts/page.html")
-unless layout do status = 500; "layout not found" end
+unless layout do
+  status = 500
+  return "layout not found"
+end
 
 body = html`<h1>Live Cursors</h1>
 <p>Move your mouse in the area below. Every connected browser sees everyone else's

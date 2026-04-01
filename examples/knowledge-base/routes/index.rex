@@ -1,7 +1,10 @@
 /* Homepage — guided tour entry point */
 res.headers.content-type = "text/html"
 layout = fs.read("routes/_layouts/page.html")
-unless layout do status = 500; "layout not found" end
+unless layout do
+  status = 500
+  return "layout not found"
+end
 self-source = fs.read("routes/index.rex")
 highlighted = when self-source do html.raw(html.highlight(self-source)) end
 
