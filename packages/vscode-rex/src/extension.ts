@@ -73,12 +73,7 @@ function findRexBinary(): string | undefined {
 			if (existsSync(releasePath)) return releasePath;
 			const debugPath = join(dir, "target/debug/rex");
 			if (existsSync(debugPath)) return debugPath;
-			// Also check packages/rusty-rex/ subdirectory
-			const pkgRelease = join(dir, "packages/rusty-rex/target/release/rex");
-			if (existsSync(pkgRelease)) return pkgRelease;
-			const pkgDebug = join(dir, "packages/rusty-rex/target/debug/rex");
-			if (existsSync(pkgDebug)) return pkgDebug;
-			const parent = dirname(dir);
+				const parent = dirname(dir);
 			if (parent === dir) break;
 			dir = parent;
 		}

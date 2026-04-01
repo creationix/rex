@@ -67,9 +67,23 @@
 		},
 		"configurationDefaults": {
 			"[rex]": {
-				"editor.wordSeparators": "`~!@#$%^&*()=+[{]}\\|;:'\",.<>/?"
+				"editor.wordSeparators": "`~!@#$%^&*()=+[{]}\\|;:'\",.<>/?",
+				"editor.semanticHighlighting.enabled": true
 			}
 		},
+		"semanticTokenScopes": [
+			{
+				"language": "rex",
+				"scopes": {
+					"variable": ["variable.other.rex"],
+					"property": ["variable.other.property.rex"],
+					"function": ["entity.name.function.rex"],
+					"function.defaultLibrary": ["support.function.rex"],
+					"type": ["entity.name.type.rex"],
+					"parameter": ["variable.parameter.rex"]
+				}
+			}
+		],
 		"grammars": [
 			{
 				"language": "rex",
@@ -104,21 +118,15 @@
 		]
 	},
 	"scripts": {
-		"build:webview": "cd ../web-viewer && bun vite build --config vite.webview.config.ts",
 		"build:extension": "npx esbuild src/extension.ts --bundle --outfile=dist/extension.js --format=cjs --platform=node --external:vscode --target=node18",
-		"build:browser": "bun build src/browser.ts --outfile dist/browser.js --external vscode --format esm --target browser",
-		"build:server-browser": "bun build src/server-browser.ts --outfile dist/server-browser.js --format esm --target browser",
-		"build:wasm": "cd ../rusty-rex && wasm-pack build crates/rex-wasm --target no-modules --out-dir ../../../vscode-rex/wasm",
-		"build": "bun run build:webview && bun run build:extension && bun run build:browser && bun run build:server-browser",
+		"build": "bun run build:extension",
 		"test": "bun test",
 		"package": "bun run build && bunx @vscode/vsce package --no-dependencies",
 		"reinstall": "bun run package && code --install-extension ./rex-vscode-0.9.0.vsix --force",
 		"publish": "bun run build && bunx @vscode/vsce publish --no-dependencies"
 	},
 	"dependencies": {
-		"vscode-languageclient": "^9.0.0",
-		"vscode-languageserver": "^9.0.0",
-		"vscode-languageserver-textdocument": "^1.0.0"
+		"vscode-languageclient": "^9.0.0"
 	},
 	"devDependencies": {
 		"@types/vscode": "^1.75.0"

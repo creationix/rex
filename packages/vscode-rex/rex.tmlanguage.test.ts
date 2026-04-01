@@ -17,22 +17,30 @@ describe("rex TextMate grammar", () => {
 				.filter((include): include is string => Boolean(include)),
 		);
 
-		// Required includes
+		// Core syntax — things TM grammar handles unambiguously
+		expect(includes.has("#comment")).toBe(true);
+		expect(includes.has("#template-literal")).toBe(true);
+		expect(includes.has("#string-single")).toBe(true);
+		expect(includes.has("#string-double")).toBe(true);
+		expect(includes.has("#number")).toBe(true);
+		expect(includes.has("#literal-keyword")).toBe(true);
 		expect(includes.has("#control-keyword")).toBe(true);
+		expect(includes.has("#storage-type")).toBe(true);
+		expect(includes.has("#storage-modifier")).toBe(true);
 		expect(includes.has("#logical-operator")).toBe(true);
+		expect(includes.has("#arrow-operator")).toBe(true);
 		expect(includes.has("#comparison-operator")).toBe(true);
 		expect(includes.has("#assignment-operator")).toBe(true);
 		expect(includes.has("#value-operator")).toBe(true);
-		expect(includes.has("#declaration-keyword")).toBe(true);
-		expect(includes.has("#template-literal")).toBe(true);
-		expect(includes.has("#arrow-operator")).toBe(true);
-		expect(includes.has("#navigation-dynamic")).toBe(true);
-		expect(includes.has("#navigation-static")).toBe(true);
-		expect(includes.has("#object-key")).toBe(true);
 
-		// Removed patterns should not exist
-		expect(includes.has("#self-depth")).toBe(false);
-		expect(includes.has("#existence-operator")).toBe(false);
+		// Context-dependent patterns removed — LSP semantic tokens handle these
+		expect(includes.has("#object-key")).toBe(false);
+		expect(includes.has("#function-call")).toBe(false);
+		expect(includes.has("#identifier")).toBe(false);
+		expect(includes.has("#navigation-static")).toBe(false);
+		expect(includes.has("#navigation-dynamic")).toBe(false);
+		expect(includes.has("#type-keyword")).toBe(false);
+		expect(includes.has("#type-predicate")).toBe(false);
 	});
 
 	test("control keywords include return and delete", async () => {
@@ -49,20 +57,30 @@ describe("rex TextMate grammar", () => {
 		expect(match).toContain("break");
 	});
 
-	test("declaration keywords: type, extern, mut", async () => {
+	test("storage type: extern, type", async () => {
 		const grammarPath = new URL("./syntaxes/rex.tmLanguage.json", import.meta.url);
 		const raw = await Bun.file(grammarPath).text();
 		const grammar = JSON.parse(raw) as {
 			repository: Record<string, { match?: string }>;
 		};
 
-		const match = grammar.repository["declaration-keyword"]?.match ?? "";
+		const match = grammar.repository["storage-type"]?.match ?? "";
 		expect(match).toContain("type");
 		expect(match).toContain("extern");
+	});
+
+	test("storage modifier: mut", async () => {
+		const grammarPath = new URL("./syntaxes/rex.tmLanguage.json", import.meta.url);
+		const raw = await Bun.file(grammarPath).text();
+		const grammar = JSON.parse(raw) as {
+			repository: Record<string, { match?: string }>;
+		};
+
+		const match = grammar.repository["storage-modifier"]?.match ?? "";
 		expect(match).toContain("mut");
 	});
 
-	test("logical operators: and, or (no nor)", async () => {
+	test("logical operators: and, or, not", async () => {
 		const grammarPath = new URL("./syntaxes/rex.tmLanguage.json", import.meta.url);
 		const raw = await Bun.file(grammarPath).text();
 		const grammar = JSON.parse(raw) as {
@@ -72,7 +90,7 @@ describe("rex TextMate grammar", () => {
 		const match = grammar.repository["logical-operator"]?.match ?? "";
 		expect(match).toContain("and");
 		expect(match).toContain("or");
-		expect(match).not.toContain("nor");
+		expect(match).toContain("not");
 	});
 
 	test("literal keywords: no undefined, has none", async () => {
@@ -114,27 +132,5 @@ describe("rex TextMate grammar", () => {
 
 		const match = grammar.repository["arrow-operator"]?.match ?? "";
 		expect(match).toBe("->");
-	});
-
-	test("self and nor patterns are removed", async () => {
-		const grammarPath = new URL("./syntaxes/rex.tmLanguage.json", import.meta.url);
-		const raw = await Bun.file(grammarPath).text();
-		const grammar = JSON.parse(raw) as {
-			repository: Record<string, unknown>;
-		};
-
-		expect(grammar.repository["self-depth"]).toBeUndefined();
-	});
-
-	test("no legacy patterns", async () => {
-		const grammarPath = new URL("./syntaxes/rex.tmLanguage.json", import.meta.url);
-		const raw = await Bun.file(grammarPath).text();
-		const grammar = JSON.parse(raw) as {
-			repository: Record<string, unknown>;
-		};
-
-		expect(grammar.repository["paren-expression"]).toBeUndefined();
-		expect(grammar.repository["paren-expression-generic"]).toBeUndefined();
-		expect(grammar.repository["interpolation"]).toBeUndefined();
 	});
 });

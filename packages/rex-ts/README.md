@@ -1,6 +1,6 @@
 # rex-ts
 
-TypeScript tagged template literals for generating [Rex](../../language.md) middleware. Compile Rex source at build time with interpolated values, optional domain type checking, and REXC bytecode output.
+TypeScript tagged template literals for generating [Rex](../../docs/language.md) middleware. Compile Rex source at build time with interpolated values, optional domain type checking, and REXC bytecode output.
 
 ## Quick Start
 
@@ -201,7 +201,6 @@ Domain features (`createDomain`) require the `rex-node` native module for Rust-p
 Build the native module:
 
 ```sh
-cd packages/rusty-rex
 cargo build -p rex-node --release
 cp target/release/librex_node.dylib crates/rex-node/rex-node.darwin-arm64.node
 ```

@@ -21,7 +21,7 @@
  *   // Throws at build time if the Rex code doesn't type-check
  */
 
-import { compile } from "../rex-lang/rex.ts";
+import { compile } from "../../crates/rex-node";
 
 // ── Value interpolation ────────────────────────────────────────────────
 
@@ -176,7 +176,7 @@ let nativeBindings: {
 
 try {
 	// rex-node is a native module — may not be available in all environments
-	const mod = await import("../rusty-rex/crates/rex-node");
+	const mod = await import("../../crates/rex-node");
 	nativeBindings = {
 		compileWithDomain: mod.compileWithDomain,
 		check: mod.check,
@@ -285,4 +285,4 @@ export function route(
 
 // ── Re-exports ─────────────────────────────────────────────────────────
 
-export { compile } from "../rex-lang/rex.ts";
+export { compile } from "../../crates/rex-node";

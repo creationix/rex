@@ -1,0 +1,802 @@
+mod completion;
+mod definition;
+mod diagnostics;
+mod document;
+mod hover;
+
+use std::io;
+use std::path::PathBuf;
+
+use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
+use lsp_types::notification::{
+    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
+    Notification as _, PublishDiagnostics,
+};
+use lsp_types::request::{Completion, Formatting, GotoDefinition, HoverRequest, SemanticTokensFullRequest, Request as _};
+use lsp_types::{
+    CompletionOptions, CompletionParams, GotoDefinitionResponse, HoverParams,
+    HoverProviderCapability, InitializeParams, PublishDiagnosticsParams, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    SemanticTokenModifier, SemanticTokenType,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensServerCapabilities,
+};
+use rex_core::typecheck::{self, DomainSchema};
+
+use self::document::DocumentStore;
+
+/// Format a Rex Type as a human-readable string.
+fn format_type(ty: &typecheck::Type) -> String {
+    use typecheck::Type;
+    match ty {
+        Type::Some => "some".to_string(),
+        Type::None => "none".to_string(),
+        Type::Never => "never".to_string(),
+        Type::Null => "null".to_string(),
+        Type::Bool => "bool".to_string(),
+        Type::Int => "int".to_string(),
+        Type::Num => "num".to_string(),
+        Type::Str => "str".to_string(),
+        Type::LiteralStr(s) => format!("\"{s}\""),
+        Type::Array(elem) => format!("[{}]", format_type(elem)),
+        Type::Object { fields, wildcard } => {
+            let mut parts: Vec<String> = fields
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", format_type(v)))
+                .collect();
+            if let Some(w) = wildcard {
+                parts.push(format!("*: {}", format_type(w)));
+            }
+            format!("{{{}}}", parts.join(", "))
+        }
+        Type::Union(types) => {
+            let parts: Vec<String> = types.iter().map(format_type).collect();
+            parts.join(" | ")
+        }
+        Type::Intersection(types) => {
+            let parts: Vec<String> = types.iter().map(format_type).collect();
+            parts.join(" & ")
+        }
+        Type::Ref(name) => name.clone(),
+    }
+}
+
+/// Extract a file path from a file:// URI string.
+fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
+    let s = uri.as_str();
+    if let Some(rest) = s.strip_prefix("file://") {
+        // Decode percent-encoding
+        let decoded = percent_decode(rest);
+        Some(PathBuf::from(decoded))
+    } else {
+        None
+    }
+}
+
+/// Create a file:// URI from a path.
+fn path_to_uri(path: &std::path::Path) -> Option<Uri> {
+    let s = format!("file://{}", path.display());
+    s.parse().ok()
+}
+
+/// Simple percent-decoding for file URIs.
+fn percent_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let h1 = chars.next().unwrap_or(0);
+            let h2 = chars.next().unwrap_or(0);
+            if let (Some(d1), Some(d2)) = (hex_digit(h1), hex_digit(h2)) {
+                result.push((d1 << 4 | d2) as char);
+            } else {
+                result.push('%');
+                result.push(h1 as char);
+                result.push(h2 as char);
+            }
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+struct LspState {
+    documents: DocumentStore,
+    schema: DomainSchema,
+    rexd_path: Option<PathBuf>,
+    rexd_source: Option<String>,
+    rexd_uri: Option<Uri>,
+    /// Cached span→type map per document URI (updated on each diagnostics pass).
+    span_types: std::collections::HashMap<Uri, Vec<(std::ops::Range<usize>, typecheck::Type)>>,
+}
+
+impl LspState {
+    fn new(domain: Option<PathBuf>) -> Self {
+        let (schema, rexd_path, rexd_source, rexd_uri) = match domain {
+            Some(path) => load_rexd(&path),
+            None => (DomainSchema::default(), None, None, None),
+        };
+        Self {
+            documents: DocumentStore::new(),
+            schema,
+            rexd_path,
+            rexd_source,
+            rexd_uri,
+            span_types: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Try to discover and load a .rexd file from a document URI.
+    fn discover_rexd(&mut self, doc_uri: &Uri) {
+        if self.rexd_path.is_some() {
+            return;
+        }
+        if let Some(path) = uri_to_path(doc_uri) {
+            if let Some(rexd_path) = crate::find_rexd(&path) {
+                let (schema, path, source, uri) = load_rexd(&rexd_path);
+                self.schema = schema;
+                self.rexd_path = path;
+                self.rexd_source = source;
+                self.rexd_uri = uri;
+            }
+        }
+    }
+
+    fn publish_diagnostics(&mut self, uri: &Uri, conn: &Connection) {
+        let Some(source) = self.documents.get(uri) else {
+            return;
+        };
+        let is_rexd = uri.as_str().ends_with(".rexd");
+        let (diags, types) = if is_rexd {
+            // .rexd files are type declarations — don't infer expression types
+            (Vec::new(), Vec::new())
+        } else {
+            diagnostics::compute_diagnostics_with_types(source, &self.schema)
+        };
+        self.span_types.insert(uri.clone(), types);
+        let params = PublishDiagnosticsParams {
+            uri: uri.clone(),
+            diagnostics: diags,
+            version: None,
+        };
+        let notif = Notification::new(PublishDiagnostics::METHOD.to_string(), params);
+        let _ = conn.sender.send(Message::Notification(notif));
+    }
+
+    fn reload_rexd(&mut self) {
+        if let Some(path) = &self.rexd_path.clone() {
+            let (schema, rexd_path, source, uri) = load_rexd(path);
+            self.schema = schema;
+            self.rexd_path = rexd_path;
+            self.rexd_source = source;
+            self.rexd_uri = uri;
+        }
+    }
+}
+
+fn load_rexd(
+    path: &std::path::Path,
+) -> (DomainSchema, Option<PathBuf>, Option<String>, Option<Uri>) {
+    match std::fs::read_to_string(path) {
+        Ok(source) => {
+            let schema = typecheck::parse_rexd(&source);
+            let uri = path_to_uri(path);
+            (schema, Some(path.to_path_buf()), Some(source), uri)
+        }
+        Err(_) => (DomainSchema::default(), None, None, None),
+    }
+}
+
+pub fn run(domain: Option<PathBuf>) -> io::Result<()> {
+    let (conn, io_threads) = Connection::stdio();
+
+    // Only classify identifiers — TM grammar handles keywords, operators,
+    // literals, strings, comments (matching how the TS/JS LSP works).
+    let token_types = vec![
+        SemanticTokenType::VARIABLE,     // 0
+        SemanticTokenType::PROPERTY,     // 1
+        SemanticTokenType::FUNCTION,     // 2
+        SemanticTokenType::TYPE,         // 3
+        SemanticTokenType::PARAMETER,    // 4 — for-loop bindings
+    ];
+    let token_modifiers = vec![
+        SemanticTokenModifier::DECLARATION,      // bit 0
+        SemanticTokenModifier::DEFAULT_LIBRARY,  // bit 1
+    ];
+
+    let capabilities = ServerCapabilities {
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec![".".to_string()]),
+            ..Default::default()
+        }),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(lsp_types::OneOf::Left(true)),
+        // TODO: formatting is lossy (strips comments, extern decls, type annotations,
+        // and converts dynamic nav to static). Needs a CST-based formatter.
+        // document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                legend: SemanticTokensLegend {
+                    token_types,
+                    token_modifiers,
+                },
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+                range: None,
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    };
+
+    let server_capabilities = serde_json::to_value(capabilities).unwrap();
+    let init_params = conn
+        .initialize(server_capabilities)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let init_params: InitializeParams = serde_json::from_value(init_params).unwrap();
+
+    // Check initializationOptions for domain path
+    let domain = domain.or_else(|| {
+        init_params
+            .initialization_options
+            .as_ref()
+            .and_then(|opts| opts.get("domain"))
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+    });
+
+    // If no explicit domain, try auto-discovery from workspace folders or rootUri
+    let domain = domain.or_else(|| {
+        // Try workspace folders first
+        if let Some(folders) = &init_params.workspace_folders {
+            for folder in folders {
+                if let Some(path) = uri_to_path(&folder.uri) {
+                    if let Some(rexd) = crate::find_rexd(&path) {
+                        return Some(rexd);
+                    }
+                }
+            }
+        }
+        // Fallback to rootUri
+        #[allow(deprecated)]
+        init_params
+            .root_uri
+            .as_ref()
+            .and_then(|uri| uri_to_path(uri))
+            .and_then(|path| crate::find_rexd(&path))
+    });
+
+    let mut state = LspState::new(domain);
+
+    for msg in &conn.receiver {
+        match msg {
+            Message::Request(req) => {
+                if conn
+                    .handle_shutdown(&req)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+                {
+                    break;
+                }
+                handle_request(&mut state, &conn, req);
+            }
+            Message::Notification(notif) => {
+                handle_notification(&mut state, &conn, notif);
+            }
+            Message::Response(_) => {}
+        }
+    }
+
+    io_threads.join()?;
+    Ok(())
+}
+
+fn handle_request(state: &mut LspState, conn: &Connection, req: Request) {
+    if req.method == Completion::METHOD {
+        let (id, params) = cast_request::<Completion>(req);
+        let items = handle_completion(state, params);
+        let result = serde_json::to_value(items).unwrap();
+        send_response(conn, id, result);
+    } else if req.method == HoverRequest::METHOD {
+        let (id, params) = cast_request::<HoverRequest>(req);
+        let result = handle_hover(state, params);
+        let result = serde_json::to_value(result).unwrap();
+        send_response(conn, id, result);
+    } else if req.method == GotoDefinition::METHOD {
+        let (id, params) = cast_request::<GotoDefinition>(req);
+        let result = handle_definition(state, params);
+        let result = serde_json::to_value(result).unwrap();
+        send_response(conn, id, result);
+    } else if req.method == Formatting::METHOD {
+        let (id, params) = cast_request::<Formatting>(req);
+        let result = handle_format(state, params);
+        let result = serde_json::to_value(result).unwrap();
+        send_response(conn, id, result);
+    } else if req.method == SemanticTokensFullRequest::METHOD {
+        let (id, params) = cast_request::<SemanticTokensFullRequest>(req);
+        let result = handle_semantic_tokens(state, params);
+        let result = serde_json::to_value(result).unwrap();
+        send_response(conn, id, result);
+    }
+}
+
+fn handle_notification(state: &mut LspState, conn: &Connection, notif: Notification) {
+    if notif.method == DidOpenTextDocument::METHOD {
+        let params: lsp_types::DidOpenTextDocumentParams =
+            serde_json::from_value(notif.params).unwrap();
+        let uri = params.text_document.uri.clone();
+        state.documents.open(uri.clone(), params.text_document.text);
+        state.discover_rexd(&uri);
+        state.publish_diagnostics(&uri, conn);
+    } else if notif.method == DidChangeTextDocument::METHOD {
+        let params: lsp_types::DidChangeTextDocumentParams =
+            serde_json::from_value(notif.params).unwrap();
+        let uri = params.text_document.uri.clone();
+        // We use full sync, so take the last content change
+        if let Some(change) = params.content_changes.into_iter().last() {
+            state.documents.change(&uri, change.text);
+        }
+        state.publish_diagnostics(&uri, conn);
+    } else if notif.method == DidSaveTextDocument::METHOD {
+        let params: lsp_types::DidSaveTextDocumentParams =
+            serde_json::from_value(notif.params).unwrap();
+        let uri = params.text_document.uri;
+        // Reload .rexd in case it changed on disk
+        state.reload_rexd();
+        state.publish_diagnostics(&uri, conn);
+    } else if notif.method == DidCloseTextDocument::METHOD {
+        let params: lsp_types::DidCloseTextDocumentParams =
+            serde_json::from_value(notif.params).unwrap();
+        state.documents.close(&params.text_document.uri);
+    }
+}
+
+fn handle_completion(
+    state: &LspState,
+    params: CompletionParams,
+) -> Vec<lsp_types::CompletionItem> {
+    let uri = &params.text_document_position.text_document.uri;
+    let pos = params.text_document_position.position;
+    let Some(source) = state.documents.get(uri) else {
+        return vec![];
+    };
+
+    let prefix = extract_word_before(source, pos);
+    completion::completions(&state.schema, &prefix)
+}
+
+fn handle_hover(state: &LspState, params: HoverParams) -> Option<lsp_types::Hover> {
+    let uri = &params.text_document_position_params.text_document.uri;
+    let pos = params.text_document_position_params.position;
+    let source = state.documents.get(uri)?;
+
+    let word = extract_word_at(source, pos);
+    if word.is_empty() {
+        return None;
+    }
+
+    let is_rexd = uri.as_str().ends_with(".rexd");
+
+    // In .rex files, check if cursor is in a type annotation position (after : or ->)
+    let is_type_context = is_rexd || {
+        let offset = position_to_offset(source, pos);
+        let before = source[..offset].trim_end();
+        before.ends_with(':') || before.ends_with("->")
+            || before.ends_with("= {") || before.ends_with(", ")
+    };
+
+    // Try dotted word (e.g., "json.parse") — but only if cursor is past the dot,
+    // so hovering on "json" doesn't show the info for "json.parse"
+    let dot_word = extract_dotted_word_at(source, pos);
+    if !dot_word.is_empty() && dot_word != word && dot_word.ends_with(&word) {
+        if let result @ Some(_) = hover::hover(&state.schema, &dot_word, is_type_context) {
+            return result;
+        }
+    }
+
+    // Try domain schema lookup for the simple word
+    if let result @ Some(_) = hover::hover(&state.schema, &word, is_type_context) {
+        return result;
+    }
+
+    // In .rexd files, check if the word is a parameter name in a function signature
+    if is_rexd {
+        if let Some(hover) = hover_rexd_param(&state.schema, source, pos, &word) {
+            return Some(hover);
+        }
+    }
+
+    // Fall back to inferred type from span→type map
+    if let Some(span_types) = state.span_types.get(uri) {
+        let offset = position_to_offset(source, pos);
+
+        // Compute the exact byte range of the word under cursor
+        let word_start = source[..offset]
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .map(|i| next_char_boundary(source, i))
+            .unwrap_or(0);
+        let word_end = source[offset..]
+            .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .map(|i| i + offset)
+            .unwrap_or(source.len());
+
+        // Skip if cursor is on a namespace prefix (word followed by `.`)
+        // — domain schema lookup above will handle showing namespace members
+        if word_end < source.len() && source.as_bytes()[word_end] == b'.' {
+            // Try domain namespace hover first
+            if let result @ Some(_) = hover::hover(&state.schema, &word, is_type_context) {
+                return result;
+            }
+            return None;
+        }
+
+        // Find span that exactly matches the word's byte range, or smallest enclosing
+        let word_range = word_start..word_end;
+        let mut exact: Option<&typecheck::Type> = None;
+        let mut smallest: Option<&(std::ops::Range<usize>, typecheck::Type)> = None;
+        for entry in span_types {
+            if entry.0 == word_range {
+                exact = Some(&entry.1);
+            }
+            if entry.0.contains(&offset) {
+                if let Some(prev) = smallest {
+                    if entry.0.len() < prev.0.len() {
+                        smallest = Some(entry);
+                    }
+                } else {
+                    smallest = Some(entry);
+                }
+            }
+        }
+
+        let ty = exact.or(smallest.map(|(_, ty)| ty));
+        if let Some(ty) = ty {
+            let type_str = format_type(ty);
+            let content = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value: format!("```rex\n{word}: {type_str}\n```"),
+            });
+            return Some(lsp_types::Hover { contents: content, range: None });
+        }
+    }
+
+    None
+}
+
+fn handle_definition(
+    state: &LspState,
+    params: lsp_types::GotoDefinitionParams,
+) -> Option<GotoDefinitionResponse> {
+    let uri = &params.text_document_position_params.text_document.uri;
+    let pos = params.text_document_position_params.position;
+    let source = state.documents.get(uri)?;
+
+    let word = extract_word_at(source, pos);
+    if word.is_empty() {
+        return None;
+    }
+
+    // Try dotted word first
+    let dot_word = extract_dotted_word_at(source, pos);
+    if !dot_word.is_empty() {
+        if let Some(loc) = definition::definition(
+            &state.schema,
+            &dot_word,
+            state.rexd_uri.as_ref(),
+            state.rexd_source.as_deref(),
+        ) {
+            return Some(GotoDefinitionResponse::Scalar(loc));
+        }
+    }
+
+    let loc = definition::definition(
+        &state.schema,
+        &word,
+        state.rexd_uri.as_ref(),
+        state.rexd_source.as_deref(),
+    )?;
+    Some(GotoDefinitionResponse::Scalar(loc))
+}
+
+fn handle_format(
+    state: &LspState,
+    params: lsp_types::DocumentFormattingParams,
+) -> Option<Vec<lsp_types::TextEdit>> {
+    let source = state.documents.get(&params.text_document.uri)?;
+    let formatted = rex_core::format(source);
+    if formatted == *source {
+        return Some(vec![]);
+    }
+    // Replace the entire document
+    let line_count = source.lines().count().max(1);
+    let last_line = source.lines().last().unwrap_or("");
+    Some(vec![lsp_types::TextEdit {
+        range: lsp_types::Range {
+            start: lsp_types::Position { line: 0, character: 0 },
+            end: lsp_types::Position {
+                line: line_count as u32,
+                character: last_line.len() as u32,
+            },
+        },
+        new_text: formatted,
+    }])
+}
+
+fn handle_semantic_tokens(
+    state: &LspState,
+    params: lsp_types::SemanticTokensParams,
+) -> Option<lsp_types::SemanticTokensResult> {
+    let uri = &params.text_document.uri;
+    let source = state.documents.get(uri)?;
+    let tokens = rex_core::lexer::lex(source);
+
+    use rex_core::lexer::TokenKind;
+
+    // Token type indices — must match legend order
+    const TT_VARIABLE: u32 = 0;
+    const TT_PROPERTY: u32 = 1;
+    const TT_FUNCTION: u32 = 2;
+    const TT_TYPE: u32 = 3;
+    const TT_PARAMETER: u32 = 4;
+
+    // Modifier bits
+    const MOD_DEFAULT_LIBRARY: u32 = 1 << 1;
+
+    let mut data = Vec::new();
+    let mut prev_line = 0u32;
+    let mut prev_start = 0u32;
+
+    // Track whether we're between `for` and `in`/`of` to detect loop bindings
+    let mut in_for_binding = false;
+
+    for (i, tok) in tokens.iter().enumerate() {
+        // Track for-loop binding state across all tokens
+        match tok.kind {
+            TokenKind::KwFor => { in_for_binding = true; continue; }
+            TokenKind::KwIn | TokenKind::KwOf => { in_for_binding = false; continue; }
+            // Commas between bindings are fine, everything else exits
+            _ if in_for_binding && tok.kind != TokenKind::Ident
+                && tok.kind != TokenKind::Whitespace
+                && tok.kind != TokenKind::Comma
+                && tok.kind != TokenKind::Colon => {
+                in_for_binding = false;
+            }
+            _ => {}
+        }
+
+        // Only classify identifiers — TM grammar handles everything else
+        if tok.kind != TokenKind::Ident {
+            continue;
+        }
+
+        let text = &source[tok.span.clone()];
+
+        // Skip whitespace to find contextual neighbors
+        let next_nonws = tokens[i + 1..].iter()
+            .find(|t| t.kind != TokenKind::Whitespace).map(|t| t.kind);
+        let prev_nonws = tokens[..i].iter().rev()
+            .find(|t| t.kind != TokenKind::Whitespace).map(|t| t.kind);
+
+        // Skip `mut` — TM grammar handles it as storage.modifier
+        if text == "mut" { continue; }
+
+        let (token_type, modifiers) = match text {
+            // Built-in type predicates → function + defaultLibrary (like console.log in TS)
+            "isString" | "isNumber" | "isInteger" | "isBoolean"
+            | "isArray" | "isObject" => (TT_FUNCTION, MOD_DEFAULT_LIBRARY),
+
+            // Built-in type names → type
+            "str" | "int" | "num" | "bool" | "some"
+            | "never" | "unknown" => (TT_TYPE, 0),
+
+            // Everything else: classify by context
+            _ => {
+                if in_for_binding {
+                    // Between `for` and `in`/`of`: loop binding parameter
+                    (TT_PARAMETER, 0)
+                } else if prev_nonws == Some(TokenKind::Dot) {
+                    // After dot: property access (obj.field)
+                    (TT_PROPERTY, 0)
+                } else if next_nonws == Some(TokenKind::LParen) {
+                    // Before paren: function call
+                    (TT_FUNCTION, 0)
+                } else if next_nonws == Some(TokenKind::Colon) {
+                    // Before colon: object key inside {}, variable outside
+                    if is_in_braces(source, tok.span.start) {
+                        (TT_PROPERTY, 0)
+                    } else {
+                        (TT_VARIABLE, 0)
+                    }
+                } else {
+                    (TT_VARIABLE, 0)
+                }
+            }
+        };
+
+        let (line, col) = offset_to_line_col_0(source, tok.span.start);
+        let delta_line = line - prev_line;
+        let delta_start = if delta_line == 0 { col - prev_start } else { col };
+
+        data.push(lsp_types::SemanticToken {
+            delta_line,
+            delta_start,
+            length: text.len() as u32,
+            token_type,
+            token_modifiers_bitset: modifiers,
+        });
+
+        prev_line = line;
+        prev_start = col;
+    }
+
+    Some(lsp_types::SemanticTokensResult::Tokens(lsp_types::SemanticTokens {
+        result_id: None,
+        data,
+    }))
+}
+
+/// Check if a byte offset is inside curly braces (for distinguishing object keys from typed vars).
+fn is_in_braces(source: &str, offset: usize) -> bool {
+    let mut depth = 0i32;
+    for ch in source[..offset].chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    depth > 0
+}
+
+/// Convert byte offset to 0-indexed (line, col) pair.
+fn offset_to_line_col_0(source: &str, offset: usize) -> (u32, u32) {
+    let mut line = 0u32;
+    let mut col = 0u32;
+    for (i, ch) in source.char_indices() {
+        if i >= offset { break; }
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+/// Look up a parameter name in a .rexd function declaration.
+/// Searches all function signatures for a parameter matching `word`.
+fn hover_rexd_param(
+    schema: &DomainSchema,
+    source: &str,
+    pos: lsp_types::Position,
+    word: &str,
+) -> Option<lsp_types::Hover> {
+    // Get the current line to find the function name
+    let line_text = source.lines().nth(pos.line as usize)?;
+
+    // Look for "extern name.method(" or "extern name(" pattern
+    let extern_prefix = line_text.trim_start().strip_prefix("extern ")?;
+    let paren_pos = extern_prefix.find('(')?;
+    let func_name_part = extern_prefix[..paren_pos].trim();
+    // Strip "mut " prefix if present
+    let func_name = func_name_part.strip_prefix("mut ").unwrap_or(func_name_part);
+
+    // Look up the function in the schema
+    let sig = schema.functions.get(func_name)?;
+
+    // Find the parameter matching the word
+    for (param_name, param_type) in &sig.args {
+        if param_name == word {
+            let type_str = format_type(param_type);
+            let content = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value: format!("```rex\n{word}: {type_str}\n```\n\n---\n\nParameter of `{func_name}`"),
+            });
+            return Some(lsp_types::Hover { contents: content, range: None });
+        }
+    }
+
+    // Check rest parameter
+    if let Some((rest_name, rest_type)) = &sig.rest {
+        if rest_name == word {
+            let type_str = format_type(rest_type);
+            let content = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value: format!("```rex\n{word}: {type_str}\n```\n\n---\n\nRest parameter of `{func_name}`"),
+            });
+            return Some(lsp_types::Hover { contents: content, range: None });
+        }
+    }
+
+    None
+}
+
+fn cast_request<R: lsp_types::request::Request>(req: Request) -> (RequestId, R::Params) {
+    let (id, params) = req.extract::<R::Params>(R::METHOD).unwrap();
+    (id, params)
+}
+
+fn send_response(conn: &Connection, id: RequestId, result: serde_json::Value) {
+    let resp = Response::new_ok(id, result);
+    let _ = conn.sender.send(Message::Response(resp));
+}
+
+/// Advance a byte index past the current character to the next char boundary.
+fn next_char_boundary(s: &str, i: usize) -> usize {
+    let mut j = i + 1;
+    while j < s.len() && !s.is_char_boundary(j) {
+        j += 1;
+    }
+    j
+}
+
+/// Extract the word (with dots) immediately before the cursor for completions.
+fn extract_word_before(source: &str, pos: lsp_types::Position) -> String {
+    let offset = position_to_offset(source, pos);
+    let before = &source[..offset];
+    let start = before
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
+        .map(|i| next_char_boundary(source, i))
+        .unwrap_or(0);
+    before[start..].to_string()
+}
+
+/// Extract the word at the cursor position (no dots).
+fn extract_word_at(source: &str, pos: lsp_types::Position) -> String {
+    let offset = position_to_offset(source, pos);
+    let start = source[..offset]
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .map(|i| next_char_boundary(source, i))
+        .unwrap_or(0);
+    let end = source[offset..]
+        .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .map(|i| i + offset)
+        .unwrap_or(source.len());
+    source[start..end].to_string()
+}
+
+/// Extract a dotted identifier at the cursor (e.g., "json.parse").
+fn extract_dotted_word_at(source: &str, pos: lsp_types::Position) -> String {
+    let offset = position_to_offset(source, pos);
+    let start = source[..offset]
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
+        .map(|i| next_char_boundary(source, i))
+        .unwrap_or(0);
+    let end = source[offset..]
+        .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
+        .map(|i| i + offset)
+        .unwrap_or(source.len());
+    source[start..end].to_string()
+}
+
+fn position_to_offset(source: &str, pos: lsp_types::Position) -> usize {
+    let mut line = 0u32;
+    let mut col = 0u32;
+    for (i, ch) in source.char_indices() {
+        if line == pos.line && col == pos.character {
+            return i;
+        }
+        if ch == '\n' {
+            if line == pos.line {
+                return i;
+            }
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    source.len()
+}
