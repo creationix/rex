@@ -1,7 +1,10 @@
 /* Tour Stop 4: Templates & Markdown */
 res.headers.content-type = "text/html"
 layout = fs.read("routes/_layouts/page.html")
-unless layout do status = 500; "layout not found" end
+unless layout do
+  status = 500
+  return "layout not found"
+end
 
 /* Render the sample article to demonstrate the pipeline */
 sample-md = fs.read("routes/_content/sample-article.md")

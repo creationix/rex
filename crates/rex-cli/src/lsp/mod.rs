@@ -222,9 +222,7 @@ pub fn run(domain: Option<PathBuf>) -> io::Result<()> {
         }),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
-        // TODO: formatting is lossy (strips comments, extern decls, type annotations,
-        // and converts dynamic nav to static). Needs a CST-based formatter.
-        // document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
+        document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
                 legend: SemanticTokensLegend {

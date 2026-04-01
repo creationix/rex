@@ -1,7 +1,10 @@
 /* Tour Stop 2: Filesystem Routing */
 res.headers.content-type = "text/html"
 layout = fs.read("routes/_layouts/page.html")
-unless layout do status = 500; "layout not found" end
+unless layout do
+  status = 500
+  return "layout not found"
+end
 self-source = fs.read("routes/tour/routing.rex")
 highlighted = when self-source do html.raw(html.highlight(self-source)) end
 
