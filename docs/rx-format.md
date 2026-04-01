@@ -90,11 +90,17 @@ Signed integers: `n >= 0 ? 2n : -2n - 1`. Small magnitudes use few digits.
 
 `[delta]^` — forward reference. Delta = bytes from after `^` to target's first byte.
 
-Enables deduplication: emit a pointer instead of repeating an identical value. Targets always appear later in the stream (encoder writes right-to-left, then reverses).
+Enables deduplication: emit a pointer instead of repeating an identical value. Targets always appear later in the stream (the encoder writes in reverse order, then reverses the output — see Encoding Strategy below).
 
-### String Chain (`.`)
+Pointers can chain: a pointer may resolve to another pointer. Decoders must follow the chain until reaching a concrete value. (The current Rust encoder never emits chained pointers, but decoders must handle them.)
 
-`[size].[seg0 seg1 ...]` — concatenated string from segments. Size = total byte count. Each segment is a value (string or pointer). Enables prefix deduplication.
+A pointer's target must be the same type as the value it replaces. Invalid deltas (pointing outside the stream or into the middle of a value) are encoder bugs — decoders may treat them as errors.
+
+### Chain (`.`)
+
+`[size].[seg0 seg1 ...]` — concatenated value from segments. Size = total byte count of all segments. Each segment is a value or pointer.
+
+Chains can contain strings, arrays, or objects — but all segments in a chain must be the same type. String chains enable prefix deduplication. Array and object chains concatenate their contents.
 
 ---
 
@@ -180,6 +186,17 @@ An **optimizing encoder** may additionally:
 - Share schemas for same-shape objects
 - Chain strings with common prefixes (`.`)
 - Index containers for random access (`#`)
+
+### Encoding Strategy
+
+The key insight is that pointers are forward references — they point to values that appear later in the stream. This is easy to produce with a reverse-order encoding pass:
+
+1. **Walk the value tree depth-first.** On the way back up (post-order), emit each value's bytes and push them onto an output array.
+2. **Track cumulative byte count.** After pushing each value, record the running total of bytes in the output array (including the value just pushed).
+3. **Deduplicate.** When you encounter a value you've already emitted, emit a pointer instead. Calculate the delta *before* writing the pointer: `delta = current_total_bytes - target_total_bytes_when_written`. Then encode the pointer (`[delta]^`) and push it. This ordering matters — the pointer is a varint whose size depends on the delta, so the delta must be known first.
+4. **Write the chunks in reverse order.** Each chunk is already in normal forward byte order — just reverse the chunk list, not the bytes within them.
+
+Container headers (arrays, objects) are emitted after their children in this scheme, which means they naturally appear before their children in the final output — exactly the right order.
 
 ---
 
