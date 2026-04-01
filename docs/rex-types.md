@@ -51,7 +51,7 @@ All three object forms are one internal type with optional wildcard. `{key: T}` 
 extern config = some
 config.timeout         // some | none
 
-when number(config.timeout) do
+when isNumber(config.timeout) do
   config.timeout + 1   // valid — narrowed to number
 end
 ```
@@ -250,7 +250,7 @@ end
 ### Type predicates
 
 ```rex
-when number(value) do
+when isNumber(value) do
   value + 1    // value: number
 end
 ```

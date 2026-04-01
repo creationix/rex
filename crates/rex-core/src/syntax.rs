@@ -21,7 +21,6 @@ pub enum SyntaxKind {
     KwIn,
     KwInf,
     KwNan,
-    KwNot,
     KwNull,
     KwOf,
     KwOr,
@@ -130,7 +129,7 @@ impl SyntaxKind {
             | SyntaxKind::KwDo | SyntaxKind::KwElse | SyntaxKind::KwEnd
             | SyntaxKind::KwExtern | SyntaxKind::KwFalse | SyntaxKind::KwFor
             | SyntaxKind::KwIn | SyntaxKind::KwInf | SyntaxKind::KwNan
-            | SyntaxKind::KwNot | SyntaxKind::KwNull
+            | SyntaxKind::KwNull
             | SyntaxKind::KwOf | SyntaxKind::KwOr
             | SyntaxKind::KwReturn | SyntaxKind::KwTrue
             | SyntaxKind::KwType | SyntaxKind::KwNone | SyntaxKind::KwUnless

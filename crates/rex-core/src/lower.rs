@@ -301,9 +301,6 @@ fn lower_unary(node: &SyntaxNode) -> Value {
         Some(SyntaxKind::Tilde) => {
             Value::Call(vec![Value::Opcode("nt".into()), operand])
         }
-        Some(SyntaxKind::KwNot) => {
-            Value::Call(vec![Value::Opcode("nt".into()), operand])
-        }
         Some(SyntaxKind::KwDelete) => Value::Delete(Box::new(operand)),
         _ => operand,
     }

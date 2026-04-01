@@ -189,12 +189,6 @@ fn unary_bitwise_not() {
 }
 
 #[test]
-fn unary_logical_not() {
-    assert_parses("not value");
-    assert_parses("not true");
-}
-
-#[test]
 fn unary_delete() {
     assert_parses("delete x");
 }

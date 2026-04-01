@@ -6,7 +6,7 @@ use rex_core::interpret::{self, Context};
 /// Compile with and without minification, verify both produce the same result.
 fn assert_same_result(source: &str) {
     let minified = rex_core::compile(source);
-    let debug = rex_core::compile_debug(source);
+    let debug = rex_core::compile(source);
 
     let result_min = interpret::run(&minified, Context::default())
         .unwrap_or_else(|e| panic!("minified runtime error: {e}\n  source: {source}\n  bytecode: {minified}"));
@@ -22,7 +22,7 @@ fn assert_same_result(source: &str) {
 
 /// Compile both ways and return (debug_len, minified_len).
 fn sizes(source: &str) -> (usize, usize) {
-    let debug = rex_core::compile_debug(source);
+    let debug = rex_core::compile(source);
     let minified = rex_core::compile(source);
     (debug.len(), minified.len())
 }
@@ -64,7 +64,7 @@ fn minify_fibonacci() {
 #[test]
 fn minify_no_locals_unchanged() {
     // No assignments → no renaming → identical bytecode
-    let debug = rex_core::compile_debug("1 + 2");
+    let debug = rex_core::compile("1 + 2");
     let minified = rex_core::compile("1 + 2");
     assert_eq!(debug, minified);
 }

@@ -1186,12 +1186,6 @@ impl<'a> TypeEnv<'a> {
         range.start().into()..range.end().into()
     }
 
-    #[allow(dead_code)]
-    fn token_span(token: &SyntaxToken) -> std::ops::Range<usize> {
-        let range = token.text_range();
-        range.start().into()..range.end().into()
-    }
-
     // ── Program-level inference ────────────────────────────────────────
 
     fn infer_program(&mut self, root: &SyntaxNode) {
@@ -1385,7 +1379,6 @@ impl<'a> TypeEnv<'a> {
                 let t = self.resolve_type(&operand_type);
                 if t == Type::Bool { Type::Bool } else { Type::Int }
             }
-            Some(SyntaxKind::KwNot) => Type::Bool, // logical not (deprecated but parsed)
             Some(SyntaxKind::KwDelete) => {
                 // Infer the operand to check it's valid, return none
                 Type::None
