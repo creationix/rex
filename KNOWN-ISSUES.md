@@ -16,7 +16,7 @@ composites.(4) = true
 composites.(4)  // none — not set
 ```
 
-**Impact:** The primes sieve sample (`samples/primes.rex`) doesn't work. Any algorithm that builds up an object with mutations in a loop is broken.
+**Impact:** The primes sieve sample (`examples/primes.rex`) doesn't work. Any algorithm that builds up an object with mutations in a loop is broken.
 
 **Workaround:** Use comprehensions to build objects in one pass instead of mutating:
 ```rex
@@ -47,7 +47,7 @@ result = {(k): v * 2 for k, v in data}
 
 `.split()`, `.slice()`, `.starts-with()`, `.ends-with()`, `.size` are documented but not implemented.
 
-**Note:** These methods work in the TypeScript/bun Rex implementation (`packages/rex-lang`). The Rust interpreter is newer and hasn't caught up on built-in methods yet.
+**Note:** These methods are not yet implemented in the Rust interpreter.
 
 ## Domain-Aware Compilation (remaining items)
 
@@ -116,3 +116,18 @@ end
 **Open problem:** the desugaring requires referencing the indexed object twice (once for `in`, once for `.(key)`), which needs either a temporary variable (undesirable as compiler-generated hidden state) or a new bytecode opcode (`@`) that combines the check + lazy eval + fallback in one operation.
 
 **Path routing:** not built into core `match`. Instead, nested matches + host-provided `path.split()` form a userspace prefix trie. Each nesting level matches one path segment. Static segments are match keys, captures fall through to `else`.
+
+## Formatter is lossy
+
+`rex format` round-trips through the compiler pipeline (lex -> parse -> lower -> decompile), which loses information:
+
+- Comments are stripped
+- `extern` declarations are stripped (no bytecode representation)
+- Type annotations are lost (`bonus: int = 10` -> `bonus = int`)
+- Dynamic navigation becomes static (`grades.(subj)` -> `grades.subj`)
+- No trailing newline
+
+The LSP formatting provider is disabled until this is fixed.
+
+**Fix:** Implement a CST-based formatter that operates directly on the parse tree, adjusting only whitespace and indentation while preserving all tokens.
+

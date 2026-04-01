@@ -14,7 +14,8 @@
 				{ "include": "#number" },
 				{ "include": "#literal-keyword" },
 				{ "include": "#control-keyword" },
-				{ "include": "#declaration-keyword" },
+				{ "include": "#storage-type" },
+				{ "include": "#storage-modifier" },
 				{ "include": "#logical-operator" },
 				{ "include": "#arrow-operator" },
 				{ "include": "#comparison-operator" },
@@ -24,12 +25,7 @@
 				{ "include": "#comma-separator" },
 				{ "include": "#container-paren" },
 				{ "include": "#container-bracket" },
-				{ "include": "#container-brace" },
-				{ "include": "#object-key" },
-				{ "include": "#navigation-dynamic" },
-				{ "include": "#navigation-static" },
-				{ "include": "#function-call" },
-				{ "include": "#identifier" }
+				{ "include": "#container-brace" }
 			]
 		},
 		"comment": {
@@ -171,13 +167,17 @@
 			"match": "\\b(when|unless|else|while|for|in|of|do|end|break|continue|return|delete)\\b",
 			"name": "keyword.control.rex"
 		},
-		"declaration-keyword": {
-			"match": "\\b(type|extern|mut)\\b",
-			"name": "keyword.declaration.rex"
+		"storage-type": {
+			"match": "\\b(type|extern)\\b",
+			"name": "storage.type.rex"
+		},
+		"storage-modifier": {
+			"match": "\\bmut\\b",
+			"name": "storage.modifier.rex"
 		},
 		"logical-operator": {
-			"match": "\\b(and|or)\\b",
-			"name": "keyword.operator.logical.rex"
+			"match": "\\b(and|or|not)\\b",
+			"name": "keyword.operator.expression.rex"
 		},
 		"arrow-operator": {
 			"match": "->",
@@ -235,29 +235,6 @@
 				"0": { "name": "punctuation.section.braces.end.rex" }
 			},
 			"patterns": [{ "include": "#expressions" }]
-		},
-		"object-key": {
-			"match": "((?:[a-zA-Z_][a-zA-Z0-9_-]*|-?[0-9]+)|'(?:\\\\.|[^'\\\\])*'|\"(?:\\\\.|[^\"\\\\])*\")\\s*(:)",
-			"captures": {
-				"1": { "name": "support.type.property-name.rex" },
-				"2": { "name": "punctuation.separator.key-value.rex" }
-			}
-		},
-		"navigation-dynamic": {
-			"match": "\\.\\(",
-			"name": "meta.navigation.dynamic.rex"
-		},
-		"navigation-static": {
-			"match": "\\.[a-zA-Z_][a-zA-Z0-9_-]*",
-			"name": "meta.navigation.static.rex"
-		},
-		"function-call": {
-			"match": "\\b[a-zA-Z_][a-zA-Z0-9_-]*\\s*(?=\\()",
-			"name": "entity.name.function.rex"
-		},
-		"identifier": {
-			"match": "\\b[a-zA-Z_][a-zA-Z0-9_-]*\\b",
-			"name": "variable.other.rex"
 		}
 	}
 }

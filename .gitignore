@@ -1,46 +1,43 @@
-# dependencies (bun install)
+# Rust
+target
+
+# Dependencies
 node_modules
 
-# output
+# Output
 out
 *.tgz
 *.vsix
 
-# generated JS bundles (rebuilt by `bun run build` / prepublishOnly)
-packages/rex-lang/rex.js
-packages/rex-lang/rex-cli.js
-packages/rex-lang/rex-repl.js
-packages/rex-lang/rex.ohm-bundle.js
-packages/rex-lang/rex.ohm-bundle.cjs
-packages/rex-lang/rex.ohm-bundle.d.ts
-
-# code coverage
+# Code coverage
 coverage
 *.lcov
 
-# logs
+# Logs
 logs
-_.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+*.log
 
-# dotenv environment variable files
+# Environment
 .env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
+.env.*.local
 
-# caches
+# Caches
 .eslintcache
 .cache
 *.tsbuildinfo
 
-# IntelliJ based IDEs
+# IDE
 .idea
-
-# Finder (MacOS) folder config
 .DS_Store
 .vercel
-case-study.md
+
+# Generated data files
 *.rx
 *.rexc
+
+# Build config/artifacts
+.cargo
+*.node
+*.dylib
+*.so
+*.cpuprofile

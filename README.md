@@ -114,7 +114,7 @@ res.status = 405
 ### Rust CLI (recommended)
 
 ```sh
-cd packages/rusty-rex
+# from repo root
 cargo run -p rex-cli -- run fibonacci.rex
 cargo run -p rex-cli -- compile --expr "when x do y end"
 cargo run -p rex-cli -- check routes/ --domain server.rexd
@@ -141,17 +141,17 @@ RX is to REXC what JSON is to JavaScript: a pure data format that happens to be 
 
 ## Rex in Practice: rex-serve
 
-The [rex-serve](packages/rusty-rex/crates/rex-serve) demo embeds Rex as the scripting layer for an HTTP server. Every page is a `.rex` file. Run the self-guided tour:
+The [rex-serve](crates/rex-serve) demo embeds Rex as the scripting layer for an HTTP server. Every page is a `.rex` file. Run the self-guided tour:
 
 ```sh
-cd packages/rusty-rex
+# from repo root
 cargo run -p rex-serve -- --dir examples/knowledge-base --port 4000
 # Open http://localhost:4000
 ```
 
 Features: filesystem routing, middleware chains, tagged template literals with auto-escaping, domain-aware compilation, in-memory KV store with pub/sub, WebSocket channels with Rex transform scripts, hot reload with type checking, Tokyo Night syntax highlighting, and a live multi-user cursor demo.
 
-For a detailed review of what worked well during development, see [rex-serve/REVIEW.md](packages/rusty-rex/crates/rex-serve/REVIEW.md).
+For a detailed review of what worked well during development, see [rex-serve/REVIEW.md](crates/rex-serve/REVIEW.md).
 
 ## Packages
 
@@ -159,31 +159,28 @@ For a detailed review of what worked well during development, see [rex-serve/REV
 
 | Crate | Description |
 |---|---|
-| [rex-core](packages/rusty-rex/crates/rex-core) | Lexer, parser, CST, lowerer, bytecode encoder/decoder, interpreter, type checker |
-| [rex-cli](packages/rusty-rex/crates/rex-cli) | CLI: `compile`, `run`, `inspect`, `decompile`, `check`, REPL |
-| [rex-serve](packages/rusty-rex/crates/rex-serve) | HTTP server with filesystem routing, WebSocket pub/sub, KV store ([tour app](packages/rusty-rex/examples/knowledge-base)) |
-| [rex-node](packages/rusty-rex/crates/rex-node) | Node.js native addon via NAPI |
-| [rex-luajit](packages/rusty-rex/crates/rex-luajit) | LuaJIT FFI bindings |
+| [rex-core](crates/rex-core) | Lexer, parser, CST, lowerer, bytecode encoder/decoder, interpreter, type checker |
+| [rex-cli](crates/rex-cli) | CLI: `compile`, `run`, `inspect`, `decompile`, `check`, REPL |
+| [rex-serve](crates/rex-serve) | HTTP server with filesystem routing, WebSocket pub/sub, KV store ([tour app](examples/knowledge-base)) |
+| [rex-node](crates/rex-node) | Node.js native addon via NAPI |
+| [rex-luajit](crates/rex-luajit) | LuaJIT FFI bindings |
 
-### TypeScript (legacy — predates the Rust rewrite)
-
-> **Note:** These packages are from the original TypeScript implementation. The Rust crates above are the active, canonical implementation. The TS packages may not support all current language features.
+### TypeScript
 
 | Package | Description |
 |---|---|
-| [rex-lang](packages/rex-lang) | Original TS compiler (Ohm grammar, parser, encoder) |
-| [vscode-rex](packages/vscode-rex) | VS Code extension (syntax highlighting, diagnostics) |
-| [rex-ts](packages/rex-ts) | TypeScript API bindings |
+| [vscode-rex](packages/vscode-rex) | VS Code extension (LSP client, syntax highlighting) |
+| [rex-ts](packages/rex-ts) | TypeScript tagged template utilities for Rex |
 
 ## Documentation
 
 | Document | Description |
 |---|---|
-| [Language Reference](language.md) | Complete syntax and semantics |
-| [REXC Bytecode](rexc-bytecode.md) | Bytecode format specification |
-| [RX Data Format](rx-format.md) | JSON-compatible data encoding |
-| [Type System](rex-types.md) | Type inference, `.rexd` declarations, diagnostics |
-| [rex-serve Review](packages/rusty-rex/crates/rex-serve/REVIEW.md) | Lessons from embedding Rex in a real HTTP server |
+| [Language Reference](docs/language.md) | Complete syntax and semantics |
+| [REXC Bytecode](docs/rexc-bytecode.md) | Bytecode format specification |
+| [RX Data Format](docs/rx-format.md) | JSON-compatible data encoding |
+| [Type System](docs/rex-types.md) | Type inference, `.rexd` declarations, diagnostics |
+| [rex-serve Review](crates/rex-serve/REVIEW.md) | Lessons from embedding Rex in a real HTTP server |
 | [Contributing](CONTRIBUTING.md) | Repo layout, development workflow |
 
 ## Example Programs

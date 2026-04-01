@@ -1,0 +1,17 @@
+// Todo API — domain interface for a simple task manager
+// rex check --domain todo-api.rexd todo-api.rex
+
+type Todo = {id: int, title: str, done: bool}
+
+extern method: str
+extern body: str
+extern mut status: int
+
+extern db.get(key: str) -> str
+extern db.set(key: str, value: str) -> bool
+extern db.delete(key: str) -> bool
+extern db.list(prefix: str) -> [{key: str, value: str}]
+
+extern json.parse(text: str) -> some
+extern json.stringify(value: some) -> str
+extern time.now() -> int
