@@ -31,7 +31,18 @@ export function handle({ headers, method, db, json }) {
 }
 ```
 
-**Rex** — readable, storable, evaluates against your domain's bindings
+**Domain file** (`articles.rexd`) — declares host bindings; enables shortcode rewriting at compile time
+
+```rex
+extern method = string
+extern mut status = integer
+extern headers = {*: string}
+
+extern db.list(prefix: string) -> [{key: string, value: string}]
+extern json.parse(text: string) -> some
+```
+
+**Rex** (`articles.rex`) — readable, storable, evaluates against your domain's bindings
 
 ```rex
 unless headers.authorization do
@@ -47,10 +58,14 @@ status = 405
 {ok: false, error: "method_not_allowed"}
 ```
 
-**Compiled REXC bytecode** — a single UTF-8 string, ~80 bytes
+**Compiled REXC bytecode** — a single UTF-8 string (~190 bytes); `db.list` → `dl`, `json.parse` → `jp`
+
+```sh
+rex compile --domain articles.rexd articles.rex
+```
 
 ```
-{?((headers$d,authorization)no'x{=status$cy+;{1Z^f'c,unauthorized}})?((eq%method$3,GET);16{1h^t'8,articles>[((db$4,list)8,article:)e$((json$5,parse)(e$5,value))]})=status$cG+{2,okf'5,errori,method_not_allowed}}
+{?((headers$d,authorization)no'x{=status$cy+;{1E^f'c,unauthorized}})?((eq%method$3,GET);O{-^t'8,articles>[(dl%8,article:)e$(jp%(e$5,value))]})=status$cG+{2,okf'5,errori,method_not_allowed}}
 ```
 
 Store this string in a database column, embed it in a JSON config field, diff it in git, and evaluate it anywhere Rex runs — no AST, no bytecode files, no separate runtime.
