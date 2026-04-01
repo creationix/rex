@@ -5,7 +5,7 @@ items = [1 2 3 4 5]
 squares = [v * v for v in items]
 evens = [v % 2 == 0 and v for v in items]
 
-users = [
+users: [{name: str, score: int}] = [
   {name: "Ada" score: 95}
   {name: "Ben" score: 72}
   {name: "Cia" score: 88}
