@@ -2,27 +2,50 @@
 //! These test that compile() (with dedup) produces bytecode that the interpreter
 //! evaluates to the same result as compile_no_dedup() (without dedup).
 
-use rex_core::interpret::{self, Context, RexValue};
+use rex_core::heap::{Value, Heap};
+use rex_core::interpret::{self, Context};
 
-/// Compile source with dedup, verify decode roundtrip, run, return the value.
-fn eval_dedup(source: &str) -> RexValue {
+/// Serialize a heap Value to a comparable string representation.
+fn value_to_string(v: Value, heap: &Heap) -> String {
+    if v.is_none() { return "none".into(); }
+    if v.is_null() { return "null".into(); }
+    if let Some(b) = v.as_bool() { return format!("{b}"); }
+    if let Some(n) = v.as_i64() { return format!("{n}"); }
+    if let Some(f) = v.as_f64(heap) { return format!("{f}"); }
+    if let Some(s) = v.as_str(heap) { return format!("{s:?}"); }
+    if v.is_array() {
+        let items: Vec<String> = heap.array_items(v).iter()
+            .map(|&item| value_to_string(item, heap))
+            .collect();
+        return format!("[{}]", items.join(", "));
+    }
+    if v.is_object() {
+        let pairs: Vec<String> = heap.object_pairs(v).iter()
+            .map(|&(k, val)| format!("{:?}: {}", heap.resolve_str(k), value_to_string(val, heap)))
+            .collect();
+        return format!("{{{}}}", pairs.join(", "));
+    }
+    format!("{v:?}")
+}
+
+/// Compile source with dedup, verify decode roundtrip, run, return string repr.
+fn eval_dedup(source: &str) -> String {
     let bytecode = rex_core::compile(source);
-    // Verify the bytecode is valid by decoding it
     rex_core::bytecode::decode(&bytecode)
         .unwrap_or_else(|e| panic!("decode failed (dedup): {e}\n  source: {source}\n  bytecode: {bytecode}"));
     let ctx = Context::default();
-    interpret::run(&bytecode, ctx)
-        .unwrap_or_else(|e| panic!("runtime error (dedup): {e}\n  source: {source}\n  bytecode: {bytecode}"))
-        .value
+    let result = interpret::run(&bytecode, ctx)
+        .unwrap_or_else(|e| panic!("runtime error (dedup): {e}\n  source: {source}\n  bytecode: {bytecode}"));
+    value_to_string(result.value, &result.heap)
 }
 
-/// Compile source without dedup, run, return the value.
-fn eval_no_dedup(source: &str) -> RexValue {
+/// Compile source without dedup, run, return string repr.
+fn eval_no_dedup(source: &str) -> String {
     let bytecode = rex_core::compile_no_dedup(source);
     let ctx = Context::default();
-    interpret::run(&bytecode, ctx)
-        .unwrap_or_else(|e| panic!("runtime error (no dedup): {e}\n  source: {source}\n  bytecode: {bytecode}"))
-        .value
+    let result = interpret::run(&bytecode, ctx)
+        .unwrap_or_else(|e| panic!("runtime error (no dedup): {e}\n  source: {source}\n  bytecode: {bytecode}"));
+    value_to_string(result.value, &result.heap)
 }
 
 /// Assert that dedup and no-dedup produce the same result.
@@ -30,8 +53,8 @@ fn assert_dedup_matches(source: &str) {
     let with = eval_dedup(source);
     let without = eval_no_dedup(source);
     assert_eq!(
-        format!("{with:?}"), format!("{without:?}"),
-        "dedup mismatch!\n  source: {source}\n  dedup:    {with:?}\n  no_dedup: {without:?}"
+        with, without,
+        "dedup mismatch!\n  source: {source}\n  dedup:    {with}\n  no_dedup: {without}"
     );
 }
 

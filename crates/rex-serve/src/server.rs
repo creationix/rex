@@ -231,27 +231,32 @@ async fn ws_pubsub_connection(
 /// The script receives `event.data` (the raw message string).
 /// Returns the transformed message string, or None to suppress.
 fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<String> {
-    use rex_core::interpret::{Context, RexValue};
+    use rex_core::heap::{Value, Heap};
+    use rex_core::interpret::Context;
     use crate::refs::OpcodeNamespace;
     use std::collections::HashMap;
 
-    let mut vars = HashMap::new();
-    vars.insert("event".into(), RexValue::Object(vec![
-        ("data".into(), RexValue::Str(data.to_string())),
-    ]));
+    let mut heap = Heap::new();
 
-    // Set up opcode namespaces so json.parse, kv.*, log.*, etc. work
+    // Build event object
+    let k_data = heap.intern("data");
+    let v_data = heap.intern_value(data);
+    let event_obj = heap.alloc_object(vec![(k_data, v_data)]);
+
+    let mut vars = HashMap::new();
+    vars.insert("event".into(), event_obj);
+
     let mut ns_json = OpcodeNamespace { methods: vec![("parse", "jp"), ("stringify", "js")], tag_opcode: None };
     let mut ns_log = OpcodeNamespace { methods: vec![("info", "li"), ("warning", "lw"), ("error", "le")], tag_opcode: None };
     let mut ns_kv = OpcodeNamespace { methods: vec![("get", "kg"), ("set", "ks"), ("delete", "kd"), ("keys", "kk"), ("incr", "ki"), ("publish", "kp")], tag_opcode: None };
     let mut ns_db = OpcodeNamespace { methods: vec![("get", "dg"), ("set", "ds"), ("delete", "dd"), ("list", "dl")], tag_opcode: None };
     let mut ns_time = OpcodeNamespace { methods: vec![("now", "tn"), ("uuid", "tu")], tag_opcode: None };
 
-    vars.insert("json".into(), RexValue::Host(0));
-    vars.insert("log".into(), RexValue::Host(1));
-    vars.insert("kv".into(), RexValue::Host(2));
-    vars.insert("db".into(), RexValue::Host(3));
-    vars.insert("time".into(), RexValue::Host(4));
+    vars.insert("json".into(), Value::host(0));
+    vars.insert("log".into(), Value::host(1));
+    vars.insert("kv".into(), Value::host(2));
+    vars.insert("db".into(), Value::host(3));
+    vars.insert("time".into(), Value::host(4));
 
     let opcodes = crate::opcodes::build_opcodes(
         state.db.clone(),
@@ -271,18 +276,22 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
         ],
         opcodes,
         gas_limit: state.config.server.gas_limit,
+        heap,
     };
 
     match rex_core::interpret::run(bytecode, ctx) {
         Ok(result) => {
-            match &result.value {
-                RexValue::RexNone => None,
-                RexValue::Str(s) => Some(s.clone()),
-                RexValue::Object(_) | RexValue::Array(_) => {
-                    let json = crate::refs::rex_value_to_json(&result.value);
-                    Some(json.to_string())
-                }
-                other => Some(crate::refs::rex_value_to_string(other)),
+            let v = result.value;
+            let heap = &result.heap;
+            if v.is_none() {
+                None
+            } else if let Some(s) = v.as_str(heap) {
+                Some(s.to_string())
+            } else if v.is_object() || v.is_array() {
+                let json = crate::refs::value_to_json(v, heap);
+                Some(json.to_string())
+            } else {
+                Some(crate::refs::value_to_string(v, heap))
             }
         }
         Err(e) => {

@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod bytecode;
 pub mod decompile;
+pub mod heap;
 pub mod interpret;
 pub mod json_fast;
 pub mod lexer;
@@ -19,13 +20,7 @@ pub fn compile(source: &str) -> String {
     bytecode::encode_dedup(&value)
 }
 
-/// Compile Rex source without local variable renaming (readable bytecode).
-pub fn compile_debug(source: &str) -> String {
-    compile(source)
-}
-
 /// Compile Rex source to REXC bytecode without pointer deduplication.
-/// Use this when dedup causes issues with pointers across conditional branches.
 pub fn compile_no_dedup(source: &str) -> String {
     let tokens = lexer::lex(source);
     let (green, _errors) = parser::parse(source, &tokens);

@@ -1,71 +1,72 @@
-use rex_core::interpret::{RexError, RexValue};
+use rex_core::heap::{Value, Heap};
+use rex_core::interpret::RexError;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::refs::rex_value_to_string;
+use crate::refs::value_to_string;
 
 /// Build the opcodes map for a handler invocation.
 pub fn build_opcodes(
     db: Arc<Mutex<rusqlite::Connection>>,
     project_root: PathBuf,
     kv: Arc<std::sync::Mutex<crate::kv::KvStore>>,
-) -> HashMap<String, fn(&[RexValue]) -> Result<RexValue, RexError>> {
+) -> HashMap<String, fn(&[Value], &mut Heap) -> Result<Value, RexError>> {
     DB_CONN.with(|cell| { *cell.borrow_mut() = Some(db); });
     let canonical = project_root.canonicalize().unwrap_or_else(|_| project_root.clone());
     PROJECT_ROOT.with(|cell| { *cell.borrow_mut() = Some(project_root); });
     PROJECT_ROOT_CANONICAL.with(|cell| { *cell.borrow_mut() = Some(canonical); });
     KV_STORE.with(|cell| { *cell.borrow_mut() = Some(kv); });
 
-    let mut opcodes = HashMap::new();
+    let mut opcodes: HashMap<String, fn(&[Value], &mut Heap) -> Result<Value, RexError>> = HashMap::new();
 
     // JSON
-    opcodes.insert("jp".to_string(), op_json_parse as fn(&[RexValue]) -> Result<RexValue, RexError>);
-    opcodes.insert("js".to_string(), op_json_stringify as fn(&[RexValue]) -> _);
+    opcodes.insert("jp".into(), op_json_parse);
+    opcodes.insert("js".into(), op_json_stringify);
 
     // Logging
-    opcodes.insert("li".to_string(), op_log_info as fn(&[RexValue]) -> _);
-    opcodes.insert("lw".to_string(), op_log_warning as fn(&[RexValue]) -> _);
-    opcodes.insert("le".to_string(), op_log_error as fn(&[RexValue]) -> _);
+    opcodes.insert("li".into(), op_log_info);
+    opcodes.insert("lw".into(), op_log_warning);
+    opcodes.insert("le".into(), op_log_error);
 
     // Database
-    opcodes.insert("dg".to_string(), op_db_get as fn(&[RexValue]) -> _);
-    opcodes.insert("ds".to_string(), op_db_set as fn(&[RexValue]) -> _);
-    opcodes.insert("dd".to_string(), op_db_delete as fn(&[RexValue]) -> _);
-    opcodes.insert("dl".to_string(), op_db_list as fn(&[RexValue]) -> _);
+    opcodes.insert("dg".into(), op_db_get);
+    opcodes.insert("ds".into(), op_db_set);
+    opcodes.insert("dd".into(), op_db_delete);
+    opcodes.insert("dl".into(), op_db_list);
 
     // Filesystem
-    opcodes.insert("fr".to_string(), op_fs_read as fn(&[RexValue]) -> _);
-    opcodes.insert("fg".to_string(), op_fs_glob as fn(&[RexValue]) -> _);
-    opcodes.insert("fm".to_string(), op_fs_meta as fn(&[RexValue]) -> _);
+    opcodes.insert("fr".into(), op_fs_read);
+    opcodes.insert("fg".into(), op_fs_glob);
+    opcodes.insert("fm".into(), op_fs_meta);
 
     // Content transformation
-    opcodes.insert("mr".to_string(), op_markdown_render as fn(&[RexValue]) -> _);
-    opcodes.insert("tr".to_string(), op_template_render as fn(&[RexValue]) -> _);
+    opcodes.insert("mr".into(), op_markdown_render);
+    opcodes.insert("tr".into(), op_template_render);
 
     // Time
-    opcodes.insert("tn".to_string(), op_time_now as fn(&[RexValue]) -> _);
-    opcodes.insert("tu".to_string(), op_time_uuid as fn(&[RexValue]) -> _);
+    opcodes.insert("tn".into(), op_time_now);
+    opcodes.insert("tu".into(), op_time_uuid);
 
     // Crypto
-    opcodes.insert("ch".to_string(), op_crypto_hash as fn(&[RexValue]) -> _);
-    opcodes.insert("cm".to_string(), op_crypto_hmac as fn(&[RexValue]) -> _);
-    opcodes.insert("cr".to_string(), op_crypto_random as fn(&[RexValue]) -> _);
+    opcodes.insert("ch".into(), op_crypto_hash);
+    opcodes.insert("cm".into(), op_crypto_hmac);
+    opcodes.insert("cr".into(), op_crypto_random);
 
     // KV store
-    opcodes.insert("kg".to_string(), op_kv_get as fn(&[RexValue]) -> _);
-    opcodes.insert("ks".to_string(), op_kv_set as fn(&[RexValue]) -> _);
-    opcodes.insert("kd".to_string(), op_kv_delete as fn(&[RexValue]) -> _);
-    opcodes.insert("kk".to_string(), op_kv_keys as fn(&[RexValue]) -> _);
-    opcodes.insert("ki".to_string(), op_kv_incr as fn(&[RexValue]) -> _);
-    opcodes.insert("kp".to_string(), op_kv_publish as fn(&[RexValue]) -> _);
+    opcodes.insert("kg".into(), op_kv_get);
+    opcodes.insert("ks".into(), op_kv_set);
+    opcodes.insert("kd".into(), op_kv_delete);
+    opcodes.insert("kk".into(), op_kv_keys);
+    opcodes.insert("ki".into(), op_kv_incr);
+    opcodes.insert("kp".into(), op_kv_publish);
 
     // Text
-    opcodes.insert("he".to_string(), op_html_escape as fn(&[RexValue]) -> _);
-    opcodes.insert("hl".to_string(), op_highlight_rex as fn(&[RexValue]) -> _);
-    opcodes.insert("hh".to_string(), op_highlight_html as fn(&[RexValue]) -> _);
-    opcodes.insert("ht".to_string(), op_html_tag as fn(&[RexValue]) -> _);
-    opcodes.insert("hr".to_string(), op_html_raw as fn(&[RexValue]) -> _);
+    opcodes.insert("he".into(), op_html_escape);
+    opcodes.insert("hl".into(), op_highlight_rex);
+    opcodes.insert("hh".into(), op_highlight_html);
+    opcodes.insert("ht".into(), op_html_tag);
+    opcodes.insert("hr".into(), op_html_raw);
 
     opcodes
 }
@@ -75,7 +76,6 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static PROJECT_ROOT: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
-    /// Pre-canonicalized project root — computed once, reused for every sandbox check.
     static PROJECT_ROOT_CANONICAL: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
     static KV_STORE: std::cell::RefCell<Option<Arc<std::sync::Mutex<crate::kv::KvStore>>>> =
@@ -101,170 +101,178 @@ where F: FnOnce(&Path) -> Result<R, RexError> {
     })
 }
 
-fn arg_str(args: &[RexValue], idx: usize) -> Result<&str, RexError> {
+fn arg_str<'a>(args: &'a [Value], idx: usize, heap: &'a Heap) -> Result<&'a str, RexError> {
     args.get(idx)
-        .and_then(|v| v.as_str())
+        .and_then(|v| v.as_str(heap))
         .ok_or_else(|| RexError::HostError(format!("expected string argument at position {idx}")))
 }
 
 /// Call a registered opcode by name. Used by HostObject::call for tagged templates.
-pub fn call_opcode(name: &str, args: &[RexValue]) -> Result<RexValue, RexError> {
+pub fn call_opcode(name: &str, args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
     match name {
-        "ht" => op_html_tag(args),
+        "ht" => op_html_tag(args, heap),
         _ => Err(RexError::HostError(format!("unknown tag opcode: {name}"))),
     }
 }
 
 // ── JSON ──────────────────────────────────────────────────────────────
 
-fn op_json_parse(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let text = arg_str(args, 0)?;
+fn op_json_parse(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let text = arg_str(args, 0, heap)?;
     let v: serde_json::Value = serde_json::from_str(text)
         .map_err(|e| RexError::HostError(format!("json.parse: {e}")))?;
-    Ok(json_value_to_rex(&v))
+    Ok(crate::refs::json_to_value(&v, heap))
 }
 
-fn op_json_stringify(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let value = args.first().unwrap_or(&RexValue::RexNone);
-    let json = crate::refs::rex_value_to_json(value);
-    Ok(RexValue::Str(json.to_string()))
-}
-
-fn json_value_to_rex(v: &serde_json::Value) -> RexValue {
-    match v {
-        serde_json::Value::Null => RexValue::Null,
-        serde_json::Value::Bool(b) => RexValue::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() { RexValue::Int(i) }
-            else { RexValue::Float(n.as_f64().unwrap_or(0.0)) }
-        }
-        serde_json::Value::String(s) => RexValue::Str(s.clone()),
-        serde_json::Value::Array(arr) => RexValue::Array(arr.iter().map(json_value_to_rex).collect()),
-        serde_json::Value::Object(map) => {
-            RexValue::Object(map.iter().map(|(k, v)| (k.clone(), json_value_to_rex(v))).collect())
-        }
-    }
+fn op_json_stringify(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let value = args.first().copied().unwrap_or(Value::NONE);
+    let json = crate::refs::value_to_json(value, heap);
+    Ok(heap.intern_value(&json.to_string()))
 }
 
 // ── Logging ───────────────────────────────────────────────────────────
 
-fn op_log_info(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let msg = args.first().map(rex_value_to_string).unwrap_or_default();
+fn op_log_info(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let msg = args.first().map(|v| value_to_string(*v, heap)).unwrap_or_default();
     tracing::info!("{msg}");
-    Ok(RexValue::RexNone)
+    Ok(Value::NONE)
 }
 
-fn op_log_warning(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let msg = args.first().map(rex_value_to_string).unwrap_or_default();
+fn op_log_warning(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let msg = args.first().map(|v| value_to_string(*v, heap)).unwrap_or_default();
     tracing::warn!("{msg}");
-    Ok(RexValue::RexNone)
+    Ok(Value::NONE)
 }
 
-fn op_log_error(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let msg = args.first().map(rex_value_to_string).unwrap_or_default();
+fn op_log_error(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let msg = args.first().map(|v| value_to_string(*v, heap)).unwrap_or_default();
     tracing::error!("{msg}");
-    Ok(RexValue::RexNone)
+    Ok(Value::NONE)
 }
 
 // ── Database ──────────────────────────────────────────────────────────
 
-fn op_db_get(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let key = arg_str(args, 0)?;
+fn op_db_get(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let key = arg_str(args, 0, heap)?.to_string();
     with_db(|conn| {
         let mut stmt = conn.prepare_cached("SELECT value FROM kv WHERE key = ?1")
             .map_err(|e| RexError::HostError(format!("db.get: {e}")))?;
-        let result: Result<String, _> = stmt.query_row([key], |row| row.get(0));
+        let result: Result<String, _> = stmt.query_row([&key], |row| row.get(0));
         match result {
-            Ok(val) => Ok(RexValue::Str(val)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(RexValue::RexNone),
+            Ok(_) => Ok(()),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(()),
             Err(e) => Err(RexError::HostError(format!("db.get: {e}"))),
         }
+    })?;
+    // Re-run to get value (need heap access outside with_db)
+    with_db(|conn| {
+        let mut stmt = conn.prepare_cached("SELECT value FROM kv WHERE key = ?1")
+            .map_err(|e| RexError::HostError(format!("db.get: {e}")))?;
+        let result: Result<String, _> = stmt.query_row([&key], |row| row.get(0));
+        match result {
+            Ok(val) => Ok(val),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(String::new()),
+            Err(e) => Err(RexError::HostError(format!("db.get: {e}"))),
+        }
+    }).map(|val| {
+        if val.is_empty() { Value::NONE } else { heap.intern_value(&val) }
     })
 }
 
-fn op_db_set(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let key = arg_str(args, 0)?;
-    let value = args.get(1).map(rex_value_to_string).unwrap_or_default();
+fn op_db_set(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let key = arg_str(args, 0, heap)?.to_string();
+    let value = args.get(1).map(|v| value_to_string(*v, heap)).unwrap_or_default();
     with_db(|conn| {
         conn.execute(
             "INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)",
-            [key, &value],
+            [&key, &value],
         ).map_err(|e| RexError::HostError(format!("db.set: {e}")))?;
-        Ok(RexValue::Bool(true))
+        Ok(Value::bool(true))
     })
 }
 
-fn op_db_delete(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let key = arg_str(args, 0)?;
+fn op_db_delete(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let key = arg_str(args, 0, heap)?.to_string();
     with_db(|conn| {
-        conn.execute("DELETE FROM kv WHERE key = ?1", [key])
+        conn.execute("DELETE FROM kv WHERE key = ?1", [&key])
             .map_err(|e| RexError::HostError(format!("db.delete: {e}")))?;
-        Ok(RexValue::Bool(true))
+        Ok(Value::bool(true))
     })
 }
 
-fn op_db_list(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let prefix = arg_str(args, 0)?;
-    with_db(|conn| {
+fn op_db_list(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let prefix = arg_str(args, 0, heap)?.to_string();
+    let rows: Vec<(String, String)> = with_db(|conn| {
         let mut stmt = conn.prepare_cached(
             "SELECT key, value FROM kv WHERE key LIKE ?1 ORDER BY key"
         ).map_err(|e| RexError::HostError(format!("db.list: {e}")))?;
 
         let pattern = format!("{prefix}%");
-        let rows: Vec<RexValue> = stmt.query_map([&pattern], |row| {
+        let rows: Vec<(String, String)> = stmt.query_map([&pattern], |row| {
             let key: String = row.get(0)?;
             let value: String = row.get(1)?;
-            Ok(RexValue::Object(vec![
-                ("key".into(), RexValue::Str(key)),
-                ("value".into(), RexValue::Str(value)),
-            ]))
+            Ok((key, value))
         })
         .map_err(|e| RexError::HostError(format!("db.list: {e}")))?
         .filter_map(|r| r.ok())
         .collect();
 
-        Ok(RexValue::Array(rows))
-    })
+        Ok(rows)
+    })?;
+
+    let k_key = heap.intern("key");
+    let k_val = heap.intern("value");
+    let items: Vec<Value> = rows.iter().map(|(key, value)| {
+        let vk = heap.intern_value(key);
+        let vv = heap.intern_value(value);
+        heap.alloc_object(vec![(k_key, vk), (k_val, vv)])
+    }).collect();
+    Ok(heap.alloc_array(items))
 }
 
 // ── Filesystem ────────────────────────────────────────────────────────
 
-fn op_fs_read(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let path_str = arg_str(args, 0)?;
+fn op_fs_read(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let path_str = arg_str(args, 0, heap)?.to_string();
     with_root(|root| {
-        match sandbox_path(root, path_str) {
+        match sandbox_path(root, &path_str) {
             Ok(resolved) => {
                 match std::fs::read_to_string(&resolved) {
-                    Ok(content) => Ok(RexValue::Str(content)),
-                    Err(_) => Ok(RexValue::RexNone),
+                    Ok(content) => Ok(content),
+                    Err(_) => Ok(String::new()),
                 }
             }
-            Err(_) => Ok(RexValue::RexNone), // file not found or traversal denied
+            Err(_) => Ok(String::new()),
         }
+    }).map(|content| {
+        if content.is_empty() { Value::NONE } else { heap.intern_value(&content) }
     })
 }
 
-fn op_fs_glob(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let pattern = arg_str(args, 0)?;
-    with_root(|root| {
-        let full_pattern = root.join(pattern);
+fn op_fs_glob(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let pattern = arg_str(args, 0, heap)?.to_string();
+    let paths: Vec<String> = with_root(|root| {
+        let full_pattern = root.join(&pattern);
         let pattern_str = full_pattern.to_string_lossy();
-        let paths: Vec<RexValue> = glob::glob(&pattern_str)
+        let paths: Vec<String> = glob::glob(&pattern_str)
             .unwrap_or_else(|_| glob::glob("__nonexistent__").unwrap())
             .filter_map(|entry| entry.ok())
             .filter_map(|path| {
                 path.strip_prefix(root).ok()
-                    .map(|rel| RexValue::Str(rel.to_string_lossy().to_string()))
+                    .map(|rel| rel.to_string_lossy().to_string())
             })
             .collect();
-        Ok(RexValue::Array(paths))
-    })
+        Ok(paths)
+    })?;
+
+    let items: Vec<Value> = paths.iter().map(|p| heap.intern_value(p)).collect();
+    Ok(heap.alloc_array(items))
 }
 
-fn op_fs_meta(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let path_str = arg_str(args, 0)?;
+fn op_fs_meta(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let path_str = arg_str(args, 0, heap)?.to_string();
     with_root(|root| {
-        let resolved = sandbox_path(root, path_str)?;
+        let resolved = sandbox_path(root, &path_str)?;
         match std::fs::metadata(&resolved) {
             Ok(meta) => {
                 let modified = meta.modified()
@@ -272,18 +280,26 @@ fn op_fs_meta(args: &[RexValue]) -> Result<RexValue, RexError> {
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
-                Ok(RexValue::Object(vec![
-                    ("size".into(), RexValue::Int(meta.len() as i64)),
-                    ("modified".into(), RexValue::Int(modified)),
-                ]))
+                Ok(Some((meta.len() as i64, modified)))
             }
-            Err(_) => Ok(RexValue::RexNone),
+            Err(_) => Ok(None),
+        }
+    }).map(|result| {
+        match result {
+            Some((size, modified)) => {
+                let k_size = heap.intern("size");
+                let k_modified = heap.intern("modified");
+                heap.alloc_object(vec![
+                    (k_size, Value::int(size)),
+                    (k_modified, Value::int(modified)),
+                ])
+            }
+            None => Value::NONE,
         }
     })
 }
 
 fn sandbox_path(root: &Path, user_path: &str) -> Result<PathBuf, RexError> {
-    // Use cached canonical root — no syscall needed
     let root_canonical = PROJECT_ROOT_CANONICAL.with(|cell| {
         cell.borrow().clone()
     }).ok_or_else(|| RexError::HostError("no project root".into()))?;
@@ -297,7 +313,6 @@ fn sandbox_path(root: &Path, user_path: &str) -> Result<PathBuf, RexError> {
             Ok(canonical)
         }
         Err(_) => {
-            // File doesn't exist — normalize manually for traversal check
             let mut normalized = root_canonical.clone();
             for component in std::path::Path::new(user_path).components() {
                 match component {
@@ -316,17 +331,16 @@ fn sandbox_path(root: &Path, user_path: &str) -> Result<PathBuf, RexError> {
 
 // ── Content Transformation ────────────────────────────────────────────
 
-fn op_markdown_render(args: &[RexValue]) -> Result<RexValue, RexError> {
+fn op_markdown_render(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
     use pulldown_cmark::{Parser, Event, Tag, TagEnd, CodeBlockKind};
 
-    let text = arg_str(args, 0)?;
-    let parser = Parser::new(text);
+    let text = arg_str(args, 0, heap)?.to_string();
+    let parser = Parser::new(&text);
 
     let mut html = String::new();
     let mut in_rex_code_block = false;
     let mut code_buf = String::new();
 
-    // Walk events, intercepting rex code blocks for syntax highlighting
     let events: Vec<Event<'_>> = parser.collect();
     let mut i = 0;
     while i < events.len() {
@@ -338,7 +352,6 @@ fn op_markdown_render(args: &[RexValue]) -> Result<RexValue, RexError> {
                     code_buf.clear();
                     html.push_str("<pre><code class=\"language-rex\">");
                 } else {
-                    // Let default rendering handle non-rex blocks
                     pulldown_cmark::html::push_html(
                         &mut html,
                         std::iter::once(events[i].clone()),
@@ -346,7 +359,6 @@ fn op_markdown_render(args: &[RexValue]) -> Result<RexValue, RexError> {
                 }
             }
             Event::End(TagEnd::CodeBlock) if in_rex_code_block => {
-                // Highlight the accumulated Rex code
                 html.push_str(&highlight_rex_source(&code_buf));
                 html.push_str("</code></pre>\n");
                 in_rex_code_block = false;
@@ -366,32 +378,30 @@ fn op_markdown_render(args: &[RexValue]) -> Result<RexValue, RexError> {
         i += 1;
     }
 
-    Ok(RexValue::Str(html))
+    Ok(heap.intern_value(&html))
 }
 
-fn op_template_render(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let template = arg_str(args, 0)?;
-    let data = args.get(1).unwrap_or(&RexValue::RexNone);
-    let result = render_template(template, data);
-    Ok(RexValue::Str(result))
+fn op_template_render(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let template = arg_str(args, 0, heap)?.to_string();
+    let data = args.get(1).copied().unwrap_or(Value::NONE);
+    let result = render_template(&template, data, heap);
+    Ok(heap.intern_value(&result))
 }
 
-fn render_template(template: &str, data: &RexValue) -> String {
+fn render_template(template: &str, data: Value, heap: &Heap) -> String {
     let mut result = String::with_capacity(template.len());
     let bytes = template.as_bytes();
     let mut i = 0;
 
     while i < bytes.len() {
         if i + 2 < bytes.len() && bytes[i] == b'{' && bytes[i+1] == b'{' {
-            // Check for triple brace (unescaped)
             let unescaped = i + 2 < bytes.len() && bytes[i+2] == b'{';
             let start = if unescaped { i + 3 } else { i + 2 };
 
-            // Find closing braces
             let closing = if unescaped { "}}}" } else { "}}" };
             if let Some(end) = template[start..].find(closing) {
                 let key = template[start..start+end].trim();
-                let value = lookup_template_key(data, key);
+                let value = lookup_template_key(data, key, heap);
                 if unescaped {
                     result.push_str(&value);
                 } else {
@@ -408,18 +418,15 @@ fn render_template(template: &str, data: &RexValue) -> String {
     result
 }
 
-fn lookup_template_key(data: &RexValue, key: &str) -> String {
-    match data {
-        RexValue::Object(pairs) => {
-            for (k, v) in pairs {
-                if k == key {
-                    return rex_value_to_string(v);
-                }
+fn lookup_template_key(data: Value, key: &str, heap: &Heap) -> String {
+    if data.is_object() {
+        for &(k, v) in heap.object_pairs(data) {
+            if heap.resolve_str(k) == key {
+                return value_to_string(v, heap);
             }
-            String::new()
         }
-        _ => String::new(),
     }
+    String::new()
 }
 
 fn html_escape(s: &str) -> String {
@@ -439,42 +446,40 @@ fn html_escape(s: &str) -> String {
 
 // ── Time ──────────────────────────────────────────────────────────────
 
-fn op_time_now(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let _ = args;
+fn op_time_now(_args: &[Value], _heap: &mut Heap) -> Result<Value, RexError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    Ok(RexValue::Int(now))
+    Ok(Value::int(now))
 }
 
-fn op_time_uuid(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let _ = args;
+fn op_time_uuid(_args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
     let id = uuid::Uuid::now_v7();
-    Ok(RexValue::Str(id.to_string()))
+    Ok(heap.intern_value(&id.to_string()))
 }
 
 // ── Crypto ────────────────────────────────────────────────────────────
 
-fn op_crypto_hash(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let algo = arg_str(args, 0)?;
-    let data = arg_str(args, 1)?;
-    match algo {
+fn op_crypto_hash(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let algo = arg_str(args, 0, heap)?.to_string();
+    let data = arg_str(args, 1, heap)?.to_string();
+    match algo.as_str() {
         "sha256" => {
             use sha2::{Sha256, Digest};
             let mut hasher = Sha256::new();
             hasher.update(data.as_bytes());
-            Ok(RexValue::Str(hex::encode(hasher.finalize())))
+            Ok(heap.intern_value(&hex::encode(hasher.finalize())))
         }
         _ => Err(RexError::HostError(format!("unsupported hash algorithm: {algo}"))),
     }
 }
 
-fn op_crypto_hmac(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let algo = arg_str(args, 0)?;
-    let key = arg_str(args, 1)?;
-    let data = arg_str(args, 2)?;
-    match algo {
+fn op_crypto_hmac(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let algo = arg_str(args, 0, heap)?.to_string();
+    let key = arg_str(args, 1, heap)?.to_string();
+    let data = arg_str(args, 2, heap)?.to_string();
+    match algo.as_str() {
         "sha256" => {
             use hmac::{Hmac, Mac};
             use sha2::Sha256;
@@ -482,80 +487,76 @@ fn op_crypto_hmac(args: &[RexValue]) -> Result<RexValue, RexError> {
             let mut mac = HmacSha256::new_from_slice(key.as_bytes())
                 .map_err(|e| RexError::HostError(format!("hmac: {e}")))?;
             mac.update(data.as_bytes());
-            Ok(RexValue::Str(hex::encode(mac.finalize().into_bytes())))
+            Ok(heap.intern_value(&hex::encode(mac.finalize().into_bytes())))
         }
         _ => Err(RexError::HostError(format!("unsupported hmac algorithm: {algo}"))),
     }
 }
 
-fn op_crypto_random(args: &[RexValue]) -> Result<RexValue, RexError> {
+fn op_crypto_random(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
     let n = args.first()
-        .and_then(|v| v.to_i64())
+        .and_then(|v| v.as_i64())
         .unwrap_or(16) as usize;
     use rand::RngCore;
     let mut buf = vec![0u8; n];
     rand::rng().fill_bytes(&mut buf);
-    Ok(RexValue::Str(hex::encode(&buf)))
+    Ok(heap.intern_value(&hex::encode(&buf)))
 }
 
 // ── Text ──────────────────────────────────────────────────────────────
 
-fn op_html_escape(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let text = arg_str(args, 0)?;
-    Ok(RexValue::Str(html_escape(text)))
+fn op_html_escape(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let text = arg_str(args, 0, heap)?.to_string();
+    Ok(heap.intern_value(&html_escape(&text)))
 }
 
-/// Tagged template: html`<p>${user_input}</p>`
-/// Receives (["<p>", "</p>"], user_input) — auto-escapes interpolated values.
-/// Tagged template: html`<p>${user_input}</p>`
-/// Receives (["<p>", "</p>"], user_input) — auto-escapes interpolated values.
-/// Pass `html.raw(value)` to skip escaping for pre-rendered HTML.
-fn op_html_tag(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let parts = match args.first() {
-        Some(RexValue::Array(parts)) => parts,
-        _ => return Err(RexError::HostError("html tag: first argument must be string parts array".into())),
-    };
+fn op_html_tag(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let parts_val = args.first().copied().unwrap_or(Value::NONE);
+    if !parts_val.is_array() {
+        return Err(RexError::HostError("html tag: first argument must be string parts array".into()));
+    }
+    let parts: Vec<Value> = heap.array_items(parts_val).to_vec();
     let values = &args[1..];
     let mut out = String::new();
     for (i, part) in parts.iter().enumerate() {
-        if let RexValue::Str(s) = part {
+        if let Some(s) = part.as_str(heap) {
             out.push_str(s);
         }
         if i < values.len() {
-            // Check for {raw: "..."} marker — pass through unescaped
-            if let Some(raw_str) = extract_raw(&values[i]) {
+            if let Some(raw_str) = extract_raw(values[i], heap) {
                 out.push_str(&raw_str);
             } else {
-                let val_str = rex_value_to_string(&values[i]);
+                let val_str = value_to_string(values[i], heap);
                 out.push_str(&html_escape(&val_str));
             }
         }
     }
-    Ok(RexValue::Str(out))
+    Ok(heap.intern_value(&out))
 }
 
-/// Check if a value is a {raw: "..."} marker object.
-fn extract_raw(value: &RexValue) -> Option<String> {
-    if let RexValue::Object(pairs) = value {
-        if pairs.len() == 1 && pairs[0].0 == "raw" {
-            if let RexValue::Str(s) = &pairs[0].1 {
-                return Some(s.clone());
+fn extract_raw(value: Value, heap: &Heap) -> Option<String> {
+    if value.is_object() {
+        let pairs = heap.object_pairs(value);
+        if pairs.len() == 1 && heap.resolve_str(pairs[0].0) == "raw" {
+            if let Some(s) = pairs[0].1.as_str(heap) {
+                return Some(s.to_string());
             }
         }
     }
     None
 }
 
-/// html.raw(value) — wraps a string as {raw: value} so html`` won't escape it.
-fn op_html_raw(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let value = args.first().unwrap_or(&RexValue::RexNone);
-    let s = rex_value_to_string(value);
-    Ok(RexValue::Object(vec![("raw".into(), RexValue::Str(s))]))
+fn op_html_raw(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let value = args.first().copied().unwrap_or(Value::NONE);
+    let s = value_to_string(value, heap);
+    let k_raw = heap.intern("raw");
+    let v_raw = heap.intern_value(&s);
+    Ok(heap.alloc_object(vec![(k_raw, v_raw)]))
 }
 
-fn op_highlight_rex(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let source = arg_str(args, 0)?;
-    Ok(RexValue::Str(highlight_rex_source(source)))
+fn op_highlight_rex(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let source = arg_str(args, 0, heap)?.to_string();
+    Ok(heap.intern_value(&highlight_rex_source(&source)))
 }
 
 fn highlight_rex_source(source: &str) -> String {
@@ -564,14 +565,12 @@ fn highlight_rex_source(source: &str) -> String {
     let tokens = lexer::lex(source);
     let mut out = String::with_capacity(source.len() * 2);
 
-    // Helper: find the next non-whitespace token kind after position i
     let next_nonws = |i: usize| -> Option<TokenKind> {
         tokens[i+1..].iter()
             .find(|t| t.kind != TokenKind::Whitespace)
             .map(|t| t.kind)
     };
 
-    // Helper: find the previous non-whitespace token kind before position i
     let prev_nonws = |i: usize| -> Option<TokenKind> {
         tokens[..i].iter().rev()
             .find(|t| t.kind != TokenKind::Whitespace)
@@ -582,39 +581,30 @@ fn highlight_rex_source(source: &str) -> String {
         let text = &source[token.span.clone()];
         let escaped = html_escape(text);
         let class = match token.kind {
-            // Keywords
             TokenKind::KwWhen | TokenKind::KwUnless | TokenKind::KwDo
             | TokenKind::KwEnd | TokenKind::KwElse | TokenKind::KwFor
             | TokenKind::KwIn | TokenKind::KwOf | TokenKind::KwWhile
             | TokenKind::KwAnd | TokenKind::KwOr
-            | TokenKind::KwNot | TokenKind::KwDelete
+            | TokenKind::KwDelete
             | TokenKind::KwBreak | TokenKind::KwContinue
             | TokenKind::KwReturn => Some("kw"),
 
-            // Literals: true/false/null/none/nan/inf
             TokenKind::KwTrue | TokenKind::KwFalse => Some("bl"),
             TokenKind::KwNull | TokenKind::KwNone
             | TokenKind::KwNan | TokenKind::KwInf => Some("ct"),
 
-            // Type names and predicates are now regular idents — handled below
-
-            // Strings
             TokenKind::DoubleString | TokenKind::SingleString => Some("st"),
 
-            // Template literals — highlight internals
             TokenKind::TemplateLiteral => {
                 out.push_str(&highlight_template_literal(text));
                 continue;
             }
 
-            // Numbers
             TokenKind::DecimalNumber | TokenKind::HexNumber
             | TokenKind::BinaryNumber => Some("nm"),
 
-            // Comments
             TokenKind::LineComment | TokenKind::BlockComment => Some("cm"),
 
-            // Operators
             TokenKind::Plus | TokenKind::Minus | TokenKind::Star
             | TokenKind::Slash | TokenKind::Percent
             | TokenKind::Amp | TokenKind::Pipe | TokenKind::Caret
@@ -627,33 +617,26 @@ fn highlight_rex_source(source: &str) -> String {
             | TokenKind::AmpEq | TokenKind::PipeEq | TokenKind::CaretEq
             | TokenKind::Arrow => Some("op"),
 
-            // Punctuation
             TokenKind::Dot | TokenKind::DotParen | TokenKind::Comma
             | TokenKind::Colon | TokenKind::At
             | TokenKind::LParen | TokenKind::RParen
             | TokenKind::LBracket | TokenKind::RBracket
             | TokenKind::LBrace | TokenKind::RBrace => Some("pn"),
 
-            // Identifiers — contextual coloring
             TokenKind::Ident => {
                 if next_nonws(i) == Some(TokenKind::Colon) {
-                    // Object key: `slug:` `title:` `body:`
                     Some("ky")
                 } else if prev_nonws(i) == Some(TokenKind::Dot) {
-                    // Property access after dot: `res.headers`, `db.get`
                     Some("pr")
                 } else if next_nonws(i) == Some(TokenKind::LParen) {
-                    // Function call: `markdown.render(...)`
                     Some("fn")
                 } else {
                     None
                 }
             }
 
-            // Declaration keywords
             TokenKind::KwExtern | TokenKind::KwType => Some("kw"),
 
-            // Whitespace, errors
             TokenKind::Whitespace | TokenKind::Error => None,
         };
 
@@ -672,40 +655,31 @@ fn highlight_rex_source(source: &str) -> String {
     out
 }
 
-/// Highlight a template literal token, breaking it into string parts,
-/// `${`/`}` delimiters, and recursively highlighted interpolated expressions.
 fn highlight_template_literal(text: &str) -> String {
     let mut out = String::new();
     let bytes = text.as_bytes();
 
-    // Opening backtick (or tag`  if preceded by identifier — but the lexer
-    // emits the tag as a separate Ident token, so text starts with `)
     if bytes.is_empty() { return out; }
 
     let mut i = 0;
 
-    // Opening backtick
     out.push_str("<span class=\"hl-op\">`</span>");
     i += 1;
 
     while i < bytes.len() {
         if bytes[i] == b'`' {
-            // Closing backtick
             out.push_str("<span class=\"hl-op\">`</span>");
             break;
         } else if bytes[i] == b'\\' && i + 1 < bytes.len() {
-            // Escape sequence inside template
             let esc: String = text[i..i+2].to_string();
             out.push_str("<span class=\"hl-st\">");
             out.push_str(&html_escape(&esc));
             out.push_str("</span>");
             i += 2;
         } else if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            // Interpolation: ${expr}
             out.push_str("<span class=\"hl-op\">${</span>");
             i += 2;
 
-            // Find matching closing brace, tracking depth
             let expr_start = i;
             let mut depth: u32 = 1;
             while i < bytes.len() && depth > 0 {
@@ -713,7 +687,6 @@ fn highlight_template_literal(text: &str) -> String {
                     b'{' => depth += 1,
                     b'}' => depth -= 1,
                     b'`' => {
-                        // Nested template literal — skip it
                         i += 1;
                         while i < bytes.len() && bytes[i] != b'`' {
                             if bytes[i] == b'\\' { i += 1; }
@@ -721,7 +694,6 @@ fn highlight_template_literal(text: &str) -> String {
                         }
                     }
                     b'\'' | b'"' => {
-                        // Skip string literals inside interpolation
                         let quote = bytes[i];
                         i += 1;
                         while i < bytes.len() && bytes[i] != quote {
@@ -735,17 +707,14 @@ fn highlight_template_literal(text: &str) -> String {
                 if depth > 0 { i += 1; }
             }
 
-            // The expression is text[expr_start..i] (i is at the closing })
             let expr = &text[expr_start..i];
             if !expr.is_empty() {
-                // Recursively highlight the expression as Rex code
                 out.push_str(&highlight_rex_source(expr));
             }
 
             out.push_str("<span class=\"hl-op\">}</span>");
-            if depth == 0 { i += 1; } // skip past }
+            if depth == 0 { i += 1; }
         } else {
-            // Static string content — collect until next ${ or ` or \
             let start = i;
             while i < bytes.len()
                 && bytes[i] != b'`'
@@ -766,9 +735,9 @@ fn highlight_template_literal(text: &str) -> String {
     out
 }
 
-fn op_highlight_html(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let source = arg_str(args, 0)?;
-    Ok(RexValue::Str(highlight_html_source(source)))
+fn op_highlight_html(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let source = arg_str(args, 0, heap)?.to_string();
+    Ok(heap.intern_value(&highlight_html_source(&source)))
 }
 
 fn highlight_html_source(source: &str) -> String {
@@ -777,7 +746,6 @@ fn highlight_html_source(source: &str) -> String {
     let mut i = 0;
 
     while i < chars.len() {
-        // HTML comment: <!-- ... -->
         if i + 3 < chars.len() && chars[i] == '<' && chars[i+1] == '!' && chars[i+2] == '-' && chars[i+3] == '-' {
             let start = i;
             i += 4;
@@ -792,18 +760,15 @@ fn highlight_html_source(source: &str) -> String {
             continue;
         }
 
-        // Tag: < ... >
         if chars[i] == '<' {
             out.push_str("<span class=\"hl-pn\">&lt;</span>");
             i += 1;
 
-            // Closing tag slash
             if i < chars.len() && chars[i] == '/' {
                 out.push_str("<span class=\"hl-pn\">/</span>");
                 i += 1;
             }
 
-            // Tag name
             let name_start = i;
             while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '!' || chars[i] == ':') {
                 i += 1;
@@ -815,23 +780,19 @@ fn highlight_html_source(source: &str) -> String {
                 out.push_str("</span>");
             }
 
-            // Attributes and rest of tag
             while i < chars.len() && chars[i] != '>' {
-                // Whitespace
                 if chars[i].is_whitespace() {
                     out.push(chars[i]);
                     i += 1;
                     continue;
                 }
 
-                // Self-closing slash
                 if chars[i] == '/' {
                     out.push_str("<span class=\"hl-pn\">/</span>");
                     i += 1;
                     continue;
                 }
 
-                // Attribute value (quoted)
                 if chars[i] == '"' || chars[i] == '\'' {
                     let quote = chars[i];
                     let val_start = i;
@@ -847,14 +808,12 @@ fn highlight_html_source(source: &str) -> String {
                     continue;
                 }
 
-                // = sign
                 if chars[i] == '=' {
                     out.push_str("<span class=\"hl-op\">=</span>");
                     i += 1;
                     continue;
                 }
 
-                // Attribute name
                 let attr_start = i;
                 while i < chars.len() && chars[i] != '=' && chars[i] != '>' && chars[i] != '/' && !chars[i].is_whitespace() {
                     i += 1;
@@ -867,7 +826,6 @@ fn highlight_html_source(source: &str) -> String {
                 }
             }
 
-            // Closing >
             if i < chars.len() && chars[i] == '>' {
                 out.push_str("<span class=\"hl-pn\">&gt;</span>");
                 i += 1;
@@ -875,7 +833,6 @@ fn highlight_html_source(source: &str) -> String {
             continue;
         }
 
-        // Mustache: {{ or {{{
         if i + 1 < chars.len() && chars[i] == '{' && chars[i+1] == '{' {
             let triple = i + 2 < chars.len() && chars[i+2] == '{';
             let open = if triple { "{{{" } else { "{{" };
@@ -901,7 +858,6 @@ fn highlight_html_source(source: &str) -> String {
             continue;
         }
 
-        // Plain text
         let text_start = i;
         while i < chars.len() && chars[i] != '<' && !(i + 1 < chars.len() && chars[i] == '{' && chars[i+1] == '{') {
             i += 1;
@@ -925,54 +881,56 @@ where F: FnOnce(&mut crate::kv::KvStore) -> Result<R, RexError> {
     })
 }
 
-fn op_kv_get(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let key = arg_str(args, 0)?;
+fn op_kv_get(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let key = arg_str(args, 0, heap)?.to_string();
+    let val = with_kv(|store| {
+        Ok(store.get(&key).map(|v| v.to_string()))
+    })?;
+    match val {
+        Some(v) => Ok(heap.intern_value(&v)),
+        None => Ok(Value::NONE),
+    }
+}
+
+fn op_kv_set(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let key = arg_str(args, 0, heap)?.to_string();
+    let value = args.get(1).map(|v| value_to_string(*v, heap)).unwrap_or_default();
+    let ttl = args.get(2).and_then(|v| v.as_i64()).map(|t| t as u64);
     with_kv(|store| {
-        match store.get(key) {
-            Some(val) => Ok(RexValue::Str(val.to_string())),
-            None => Ok(RexValue::RexNone),
-        }
+        store.set(key, value, ttl);
+        Ok(Value::bool(true))
     })
 }
 
-fn op_kv_set(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let key = arg_str(args, 0)?;
-    let value = args.get(1).map(rex_value_to_string).unwrap_or_default();
-    let ttl = args.get(2).and_then(|v| v.to_i64()).map(|t| t as u64);
+fn op_kv_delete(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let key = arg_str(args, 0, heap)?.to_string();
     with_kv(|store| {
-        store.set(key.to_string(), value, ttl);
-        Ok(RexValue::Bool(true))
+        Ok(Value::bool(store.delete(&key)))
     })
 }
 
-fn op_kv_delete(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let key = arg_str(args, 0)?;
+fn op_kv_keys(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let prefix = arg_str(args, 0, heap)?.to_string();
+    let keys = with_kv(|store| {
+        Ok(store.keys(&prefix))
+    })?;
+    let items: Vec<Value> = keys.into_iter().map(|k| heap.intern_value(&k)).collect();
+    Ok(heap.alloc_array(items))
+}
+
+fn op_kv_incr(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let key = arg_str(args, 0, heap)?.to_string();
     with_kv(|store| {
-        Ok(RexValue::Bool(store.delete(key)))
+        Ok(Value::int(store.incr(&key)))
     })
 }
 
-fn op_kv_keys(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let prefix = arg_str(args, 0)?;
+fn op_kv_publish(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let channel = arg_str(args, 0, heap)?.to_string();
+    let data = args.get(1).map(|v| value_to_string(*v, heap)).unwrap_or_default();
     with_kv(|store| {
-        let keys = store.keys(prefix);
-        Ok(RexValue::Array(keys.into_iter().map(RexValue::Str).collect()))
-    })
-}
-
-fn op_kv_incr(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let key = arg_str(args, 0)?;
-    with_kv(|store| {
-        Ok(RexValue::Int(store.incr(key)))
-    })
-}
-
-fn op_kv_publish(args: &[RexValue]) -> Result<RexValue, RexError> {
-    let channel = arg_str(args, 0)?;
-    let data = args.get(1).map(rex_value_to_string).unwrap_or_default();
-    with_kv(|store| {
-        let count = store.publish(channel, &data);
-        Ok(RexValue::Int(count as i64))
+        let count = store.publish(&channel, &data);
+        Ok(Value::int(count as i64))
     })
 }
 
