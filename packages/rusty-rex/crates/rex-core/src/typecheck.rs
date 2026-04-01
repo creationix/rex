@@ -1072,6 +1072,11 @@ impl<'a> TypeEnv<'a> {
         }
     }
 
+    /// Returns true if a domain schema (.rexd) was provided.
+    fn has_domain(&self) -> bool {
+        !self.schema.globals.is_empty() || !self.schema.functions.is_empty()
+    }
+
     fn lookup_var(&self, name: &str) -> Option<Type> {
         for scope in self.scopes.iter().rev() {
             if let Some(ty) = scope.get(name) {
@@ -1205,7 +1210,21 @@ impl<'a> TypeEnv<'a> {
             SyntaxKind::Ident => {
                 let name = token.text();
                 self.var_reads.insert(name.to_string());
-                self.lookup_var(name).unwrap_or(Type::None)
+                match self.lookup_var(name) {
+                    Some(ty) => ty,
+                    None => {
+                        // If a domain schema is loaded, undefined variables are errors
+                        if self.has_domain() {
+                            let range = token.text_range();
+                            self.diagnostics.push(Diagnostic {
+                                kind: DiagnosticKind::Error,
+                                span: range.start().into()..range.end().into(),
+                                message: format!("undefined variable '{name}'"),
+                            });
+                        }
+                        Type::None
+                    }
+                }
             }
             // Type predicates used as standalone expressions — rare but valid
             SyntaxKind::KwString | SyntaxKind::KwNumber | SyntaxKind::KwObject
