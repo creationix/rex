@@ -326,7 +326,8 @@ impl<'s, 'c> Parser<'s, 'c> {
             match self.current() {
                 // Static navigation: .key or .digits
                 SyntaxKind::Dot => {
-                    if matches!(self.nth(1), SyntaxKind::Ident | SyntaxKind::DecimalNumber) {
+                    let next = self.nth(1);
+                    if matches!(next, SyntaxKind::Ident | SyntaxKind::DecimalNumber) || next.is_keyword() {
                         self.start_node_at(cp, SyntaxKind::NavExpr);
                         self.bump(); // .
                         self.bump(); // key

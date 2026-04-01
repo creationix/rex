@@ -325,7 +325,7 @@ pub enum PropertyResult {
 // ── Domain schema ─────────────────────────────────────────────────────────
 
 /// Parsed domain schema from a `.rexd` file.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct DomainSchema {
     pub type_aliases: HashMap<String, Type>,
     pub globals: HashMap<String, GlobalEntry>,
@@ -936,6 +936,9 @@ fn collect_nav_name(node: &SyntaxNode) -> String {
                 parts.push(t.text().to_string());
             }
             rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DecimalNumber => {
+                parts.push(t.text().to_string());
+            }
+            rowan::NodeOrToken::Token(t) if t.kind().is_keyword() => {
                 parts.push(t.text().to_string());
             }
             rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::NavExpr => {
@@ -1668,6 +1671,7 @@ impl<'a> TypeEnv<'a> {
         let key = match &children[2] {
             rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Ident => t.text().to_string(),
             rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DecimalNumber => t.text().to_string(),
+            rowan::NodeOrToken::Token(t) if t.kind().is_keyword() => t.text().to_string(),
             // Dynamic navigation .(expr) — can't know the key statically
             _ => return base_type.resolve_property("*").into_type(),
         };

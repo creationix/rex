@@ -124,6 +124,24 @@ impl SyntaxKind {
             SyntaxKind::Whitespace | SyntaxKind::LineComment | SyntaxKind::BlockComment
         )
     }
+
+    /// Returns true for keyword tokens that can appear as property names after `.`.
+    /// All keywords are valid property names in dot-access position (e.g. `db.delete`).
+    pub fn is_keyword(self) -> bool {
+        matches!(
+            self,
+            SyntaxKind::KwAnd | SyntaxKind::KwArray | SyntaxKind::KwBoolean
+            | SyntaxKind::KwBreak | SyntaxKind::KwContinue | SyntaxKind::KwDelete
+            | SyntaxKind::KwDo | SyntaxKind::KwElse | SyntaxKind::KwEnd
+            | SyntaxKind::KwExtern | SyntaxKind::KwFalse | SyntaxKind::KwFor
+            | SyntaxKind::KwIn | SyntaxKind::KwInf | SyntaxKind::KwNan
+            | SyntaxKind::KwNot | SyntaxKind::KwNull | SyntaxKind::KwNumber
+            | SyntaxKind::KwObject | SyntaxKind::KwOf | SyntaxKind::KwOr
+            | SyntaxKind::KwReturn | SyntaxKind::KwString | SyntaxKind::KwTrue
+            | SyntaxKind::KwType | SyntaxKind::KwNone | SyntaxKind::KwUnless
+            | SyntaxKind::KwWhen | SyntaxKind::KwWhile
+        )
+    }
 }
 
 impl From<TokenKind> for SyntaxKind {
