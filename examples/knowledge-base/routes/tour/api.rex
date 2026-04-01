@@ -1,6 +1,7 @@
 /* Tour Stop 5: JSON API */
 res.headers.content-type = "text/html"
 layout = fs.read("routes/_layouts/page.html")
+unless layout do status = 500; "layout not found" end
 
 /* Pre-highlight all sources */
 articles-source = fs.read("routes/api/articles.rex")

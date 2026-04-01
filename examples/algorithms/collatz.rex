@@ -1,10 +1,11 @@
 // Generate Collatz sequence lengths up to max (default 100)
-// rex examples/algorithms/collatz.rex
-// rex -e 'max = 200' examples/algorithms/collatz.rex
+// rex run examples/algorithms/collatz.rex
+// rex run examples/algorithms/collatz.rex max=200
 
+extern max: int|none
 max = max or 100
 
-lengths = {}
+lengths:{*:int} = {}
 n = 1
 while n <= max do
   current = n

@@ -1,6 +1,7 @@
 /* Tour Stop 3: Middleware */
 res.headers.content-type = "text/html"
 layout = fs.read("routes/_layouts/page.html")
+unless layout do status = 500; "layout not found" end
 
 /* Read the actual middleware source to display */
 global-mw = fs.read("routes/_middleware.rex")
