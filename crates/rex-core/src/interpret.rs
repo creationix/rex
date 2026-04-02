@@ -610,6 +610,11 @@ impl<'a> Interpreter<'a> {
         let body_end = self.pos - 1;
 
         let items = self.materialize_iterable(iterable)?;
+        let keys = if bindings.len() == 2 {
+            Some(self.materialize_keys(iterable)?)
+        } else {
+            None
+        };
         let mut results = Vec::new();
 
         for (i, item) in items.iter().enumerate() {
@@ -618,7 +623,8 @@ impl<'a> Interpreter<'a> {
             if bindings.len() == 1 {
                 self.vars.insert(bindings[0], *item);
             } else if bindings.len() == 2 {
-                self.vars.insert(bindings[0], Value::int(i as i64));
+                let key = keys.as_ref().and_then(|k| k.get(i).copied()).unwrap_or(Value::int(i as i64));
+                self.vars.insert(bindings[0], key);
                 self.vars.insert(bindings[1], *item);
             }
 
