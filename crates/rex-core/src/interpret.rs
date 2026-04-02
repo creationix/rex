@@ -468,23 +468,15 @@ impl<'a> Interpreter<'a> {
                 self.read_byte(); // consume '}'
                 return Ok(self.heap.alloc_object(pairs));
             } else {
-                // Not an object or string pointer — treat as block
-                let mut last = first;
-                while self.peek() != b'}' && !self.at_end() {
-                    last = self.eval()?;
-                }
-                self.read_byte(); // consume '}'
-                return Ok(last);
+                // Pointer didn't resolve to string or object — malformed
+                while self.peek() != b'}' && !self.at_end() { self.skip_value()?; }
+                self.read_byte();
+                return Ok(Value::NONE);
             }
         }
 
-        // Code block
-        let mut last = Value::NONE;
-        while self.peek() != b'}' && !self.at_end() {
-            last = self.eval()?;
-        }
-        self.read_byte(); // consume '}'
-        Ok(last)
+        // Fallback: try to parse as object (key-value pairs)
+        self.eval_object()
     }
 
     fn peek_is_string_literal(&self) -> bool {
@@ -1098,6 +1090,8 @@ impl<'a> Interpreter<'a> {
         }
 
         match name {
+            // Empty opcode = block: evaluate all args (already done), return last
+            "" => Ok(args.last().copied().unwrap_or(Value::NONE)),
             "ad" => self.op_add(args),
             "sb" => self.op_arith(args, |a, b| a - b),
             "ml" => self.op_arith(args, |a, b| a * b),
