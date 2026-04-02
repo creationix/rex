@@ -583,14 +583,15 @@ impl<'a> Interpreter<'a> {
 
         // Count children to find body boundary
         let scan_start = self.pos;
-        let mut child_count = 0;
+        let mut child_count: usize = 0;
         while self.peek() != closer && !self.at_end() {
             self.skip_value()?;
             child_count += 1;
         }
         self.pos = scan_start;
 
-        let max_bindings = if child_count > 0 { child_count - 1 } else { 0 };
+        let body_count: usize = if opener == b'{' { 2 } else { 1 };
+        let max_bindings = child_count.saturating_sub(body_count);
         let mut bindings = Vec::new();
         while bindings.len() < max_bindings && self.peek() != closer && !self.at_end() {
             let save = self.pos;
@@ -616,6 +617,7 @@ impl<'a> Interpreter<'a> {
             None
         };
         let mut results = Vec::new();
+        let mut obj_pairs: Vec<(u32, Value)> = Vec::new();
 
         for (i, item) in items.iter().enumerate() {
             self.tick()?;
@@ -629,9 +631,17 @@ impl<'a> Interpreter<'a> {
             }
 
             self.pos = body_start;
-            match self.eval_until(closer) {
-                Ok(val) => {
-                    if opener == b'(' || val.is_defined() {
+            match self.eval_body(closer, opener == b'{') {
+                Ok((val, key)) => {
+                    if opener == b'{' {
+                        // Object comprehension: key and value must both be defined
+                        if let Some(k) = key {
+                            if k.is_defined() && val.is_defined() {
+                                let kid = self.heap.value_to_key(k);
+                                obj_pairs.push((kid, val));
+                            }
+                        }
+                    } else if opener == b'(' || val.is_defined() {
                         results.push(val);
                     }
                 }
@@ -643,7 +653,9 @@ impl<'a> Interpreter<'a> {
 
         self.pos = body_end + 1;
 
-        if opener == b'(' {
+        if opener == b'{' {
+            Ok(self.heap.alloc_object(obj_pairs))
+        } else if opener == b'(' {
             Ok(results.last().copied().unwrap_or(Value::NONE))
         } else {
             Ok(self.heap.alloc_array(results))
@@ -658,14 +670,15 @@ impl<'a> Interpreter<'a> {
         let iterable = self.eval()?;
 
         let scan_start = self.pos;
-        let mut child_count = 0;
+        let mut child_count: usize = 0;
         while self.peek() != closer && !self.at_end() {
             self.skip_value()?;
             child_count += 1;
         }
         self.pos = scan_start;
 
-        let max_bindings = if child_count > 0 { child_count - 1 } else { 0 };
+        let body_count: usize = if opener == b'{' { 2 } else { 1 };
+        let max_bindings = child_count.saturating_sub(body_count);
         let mut bindings = Vec::new();
         while bindings.len() < max_bindings && self.peek() != closer && !self.at_end() {
             let save = self.pos;
@@ -686,6 +699,7 @@ impl<'a> Interpreter<'a> {
 
         let keys = self.materialize_keys(iterable)?;
         let mut results = Vec::new();
+        let mut obj_pairs: Vec<(u32, Value)> = Vec::new();
 
         for key in &keys {
             self.tick()?;
@@ -695,9 +709,16 @@ impl<'a> Interpreter<'a> {
             }
 
             self.pos = body_start;
-            match self.eval_until(closer) {
-                Ok(val) => {
-                    if opener == b'(' || val.is_defined() {
+            match self.eval_body(closer, opener == b'{') {
+                Ok((val, key)) => {
+                    if opener == b'{' {
+                        if let Some(k) = key {
+                            if k.is_defined() && val.is_defined() {
+                                let kid = self.heap.value_to_key(k);
+                                obj_pairs.push((kid, val));
+                            }
+                        }
+                    } else if opener == b'(' || val.is_defined() {
                         results.push(val);
                     }
                 }
@@ -708,7 +729,9 @@ impl<'a> Interpreter<'a> {
         }
 
         self.pos = body_end + 1;
-        if opener == b'(' {
+        if opener == b'{' {
+            Ok(self.heap.alloc_object(obj_pairs))
+        } else if opener == b'(' {
             Ok(results.last().copied().unwrap_or(Value::NONE))
         } else {
             Ok(self.heap.alloc_array(results))
@@ -729,6 +752,7 @@ impl<'a> Interpreter<'a> {
         self.pos = save;
 
         let mut results = Vec::new();
+        let mut obj_pairs: Vec<(u32, Value)> = Vec::new();
         loop {
             self.tick()?;
             self.pos = cond_start;
@@ -738,9 +762,16 @@ impl<'a> Interpreter<'a> {
             }
 
             self.pos = body_start;
-            match self.eval_until(closer) {
-                Ok(val) => {
-                    if opener == b'(' || val.is_defined() {
+            match self.eval_body(closer, opener == b'{') {
+                Ok((val, key)) => {
+                    if opener == b'{' {
+                        if let Some(k) = key {
+                            if k.is_defined() && val.is_defined() {
+                                let kid = self.heap.value_to_key(k);
+                                obj_pairs.push((kid, val));
+                            }
+                        }
+                    } else if opener == b'(' || val.is_defined() {
                         results.push(val);
                     }
                 }
@@ -751,10 +782,36 @@ impl<'a> Interpreter<'a> {
         }
 
         self.pos = body_end + 1;
-        if opener == b'(' {
+        if opener == b'{' {
+            Ok(self.heap.alloc_object(obj_pairs))
+        } else if opener == b'(' {
             Ok(results.last().copied().unwrap_or(Value::NONE))
         } else {
             Ok(self.heap.alloc_array(results))
+        }
+    }
+
+    /// Evaluate body expressions until closer. For object comprehensions
+    /// (is_obj=true), returns (value, Some(key)) where the second-to-last
+    /// expression is the key and the last is the value.
+    fn eval_body(&mut self, closer: u8, is_obj: bool) -> Result<(Value, Option<Value>), RexError> {
+        if !is_obj {
+            let val = self.eval_until(closer)?;
+            return Ok((val, None));
+        }
+        // Object: collect all values, last two are key and value
+        let mut vals = Vec::new();
+        while self.peek() != closer && !self.at_end() {
+            vals.push(self.eval()?);
+        }
+        match vals.len() {
+            0 => Ok((Value::NONE, Some(Value::NONE))),
+            1 => Ok((vals[0], Some(Value::NONE))),
+            _ => {
+                let val = vals[vals.len() - 1];
+                let key = vals[vals.len() - 2];
+                Ok((val, Some(key)))
+            }
         }
     }
 
@@ -803,6 +860,10 @@ impl<'a> Interpreter<'a> {
         if target.is_array() {
             if let Some(k) = key.as_str(&self.heap) {
                 if k == "size" { return Ok(Value::int(self.heap.array_len(target) as i64)); }
+                // String index: try to parse as integer (e.g., .0, .1)
+                if let Ok(idx) = k.parse::<usize>() {
+                    return Ok(self.heap.array_get(target, idx));
+                }
             }
             if let Some(idx) = key.to_i64(&self.heap) {
                 if idx >= 0 {
@@ -1579,5 +1640,230 @@ mod tests {
     fn object_dynamic_key_mutation() {
         let (v, _) = eval("obj = {}\nobj.(4) = true\nobj.(4)");
         assert_eq!(v.as_bool(), Some(true), "dynamic key mutation should work, got {:?}", v);
+    }
+
+    // ── Semicolons (compound expressions) ─────────────────────────────
+
+    #[test]
+    fn semicolon_compound() {
+        let (v, _) = eval("1; 2; 3");
+        assert_eq!(v.as_i64(), Some(3));
+    }
+
+    #[test]
+    fn semicolon_forces_boundary() {
+        // a; -b is two exprs (a then negate b), not a - b
+        let (v, _) = eval("10; -3");
+        assert_eq!(v.as_i64(), Some(-3));
+        // contrast with subtraction
+        let (v, _) = eval("10 - 3");
+        assert_eq!(v.as_i64(), Some(7));
+    }
+
+    #[test]
+    fn semicolon_in_condition() {
+        let (v, _) = eval("x = 1; when x; x + 1 do 42 end");
+        assert_eq!(v.as_i64(), Some(42));
+    }
+
+    // ── Array comprehensions ──────────────────────────────────────────
+
+    #[test]
+    fn array_comp_map() {
+        let (v, heap) = eval("[ v * 2 for v in [ 1, 2, 3 ] ]");
+        assert!(v.is_array());
+        assert_eq!(heap.array_len(v), 3);
+        assert_eq!(heap.array_get(v, 0).as_i64(), Some(2));
+        assert_eq!(heap.array_get(v, 2).as_i64(), Some(6));
+    }
+
+    #[test]
+    fn array_comp_filter() {
+        let (v, heap) = eval("[ v >= 3 and v for v in [ 1, 2, 3, 4, 5 ] ]");
+        assert_eq!(heap.array_len(v), 3);
+        assert_eq!(heap.array_get(v, 0).as_i64(), Some(3));
+    }
+
+    #[test]
+    fn array_comp_with_index() {
+        let (v, heap) = eval("[ i for i, v in [ 10, 20, 30 ] ]");
+        assert_eq!(heap.array_len(v), 3);
+        assert_eq!(heap.array_get(v, 0).as_i64(), Some(0));
+        assert_eq!(heap.array_get(v, 2).as_i64(), Some(2));
+    }
+
+    #[test]
+    fn array_comp_for_of() {
+        let (v, heap) = eval("[ k for k of { a: 1 b: 2 } ]");
+        assert_eq!(heap.array_len(v), 2);
+        assert_eq!(heap.array_get(v, 0).as_str(&heap), Some("a"));
+    }
+
+    #[test]
+    fn array_comp_while() {
+        let (v, heap) = eval("x = 1; [ x = x * 2 while x < 100 ]");
+        assert!(v.is_array());
+        assert_eq!(heap.array_get(v, 0).as_i64(), Some(2));
+        // Last element should be < 200 (doubled once more before condition fails)
+        let last = heap.array_get(v, heap.array_len(v) - 1);
+        assert!(last.as_i64().unwrap() <= 128);
+    }
+
+    #[test]
+    fn array_comp_multi_expr_body() {
+        let (v, heap) = eval("a = 0; b = 1\n[ c = a + b\n  a = b\n  b = c\n  while a <= 20 ]");
+        assert!(v.is_array());
+        assert_eq!(heap.array_get(v, 0).as_i64(), Some(1));
+        assert_eq!(heap.array_get(v, 1).as_i64(), Some(2));
+        assert_eq!(heap.array_get(v, 2).as_i64(), Some(3));
+        assert_eq!(heap.array_get(v, 3).as_i64(), Some(5));
+    }
+
+    // ── Object comprehensions ─────────────────────────────────────────
+
+    #[test]
+    fn object_comp_basic() {
+        let (v, mut heap) = eval("{ (k): v * 10 for k, v in { a: 1 b: 2 } }");
+        assert!(v.is_object());
+        let k_a = heap.intern("a");
+        let k_b = heap.intern("b");
+        assert_eq!(heap.object_get(v, k_a).as_i64(), Some(10));
+        assert_eq!(heap.object_get(v, k_b).as_i64(), Some(20));
+    }
+
+    #[test]
+    fn object_comp_from_array() {
+        let (v, mut heap) = eval("{ (u.name): u.score for u in [ { name: \"Ada\" score: 95 } ] }");
+        assert!(v.is_object());
+        let k = heap.intern("Ada");
+        assert_eq!(heap.object_get(v, k).as_i64(), Some(95));
+    }
+
+    #[test]
+    fn object_comp_filter_value() {
+        let (v, mut heap) = eval("{ (k): v >= 2 and v for k, v in { a: 1 b: 2 c: 3 } }");
+        assert_eq!(heap.object_len(v), 2); // a excluded
+        let k_b = heap.intern("b");
+        assert_eq!(heap.object_get(v, k_b).as_i64(), Some(2));
+    }
+
+    #[test]
+    fn object_comp_filter_key() {
+        let (v, mut heap) = eval("{ (k == \"a\" and k): v for k, v in { a: 1 b: 2 } }");
+        assert_eq!(heap.object_len(v), 1);
+        let k_a = heap.intern("a");
+        assert_eq!(heap.object_get(v, k_a).as_i64(), Some(1));
+    }
+
+    // ── For loops with key-value iteration ────────────────────────────
+
+    #[test]
+    fn for_kv_object_keys() {
+        let (v, heap) = eval("[ k for k, v in { x: 1 y: 2 } ]");
+        assert_eq!(heap.array_len(v), 2);
+        assert_eq!(heap.array_get(v, 0).as_str(&heap), Some("x"));
+        assert_eq!(heap.array_get(v, 1).as_str(&heap), Some("y"));
+    }
+
+    #[test]
+    fn for_kv_object_values() {
+        let (v, heap) = eval("[ v for k, v in { x: 1 y: 2 } ]");
+        assert_eq!(heap.array_get(v, 0).as_i64(), Some(1));
+        assert_eq!(heap.array_get(v, 1).as_i64(), Some(2));
+    }
+
+    #[test]
+    fn for_kv_array_indices() {
+        let (v, heap) = eval("[ i for i, v in [ 10, 20, 30 ] ]");
+        assert_eq!(heap.array_get(v, 0).as_i64(), Some(0));
+        assert_eq!(heap.array_get(v, 1).as_i64(), Some(1));
+    }
+
+    // ── Control flow ──────────────────────────────────────────────────
+
+    #[test]
+    fn unless() {
+        let (v, _) = eval("unless none do 42 end");
+        assert_eq!(v.as_i64(), Some(42));
+        let (v, _) = eval("unless true do 42 end");
+        assert!(!v.is_defined());
+    }
+
+    #[test]
+    fn when_unless_chain() {
+        let (v, _) = eval("when a do 1 else unless b do 2 else 3 end");
+        // a=none, b=none → unless body (2)
+        assert_eq!(v.as_i64(), Some(2));
+    }
+
+    #[test]
+    fn while_loop() {
+        let (v, _) = eval("x = 0\nwhile x < 5 do x = x + 1 end\nx");
+        assert_eq!(v.as_i64(), Some(5));
+    }
+
+    #[test]
+    fn break_in_loop() {
+        let (v, _) = eval("x = 0\nwhile true do\n  x = x + 1\n  when x == 3 do break end\nend\nx");
+        assert_eq!(v.as_i64(), Some(3));
+    }
+
+    #[test]
+    fn continue_in_loop() {
+        // Sum only even numbers 1..5 using continue
+        let (v, _) = eval("sum = 0\nfor v in 1..5 do\n  unless v % 2 == 0 do continue end\n  sum = sum + v\nend\nsum");
+        assert_eq!(v.as_i64(), Some(6)); // 2 + 4
+    }
+
+    // ── Existence logic ───────────────────────────────────────────────
+
+    #[test]
+    fn or_returns_first_defined() {
+        let (v, _) = eval("none or none or 42");
+        assert_eq!(v.as_i64(), Some(42));
+    }
+
+    #[test]
+    fn and_returns_last_if_all_defined() {
+        let (v, _) = eval("1 and 2 and 3");
+        assert_eq!(v.as_i64(), Some(3));
+    }
+
+    #[test]
+    fn and_returns_none_if_any_undefined() {
+        let (v, _) = eval("1 and none and 3");
+        assert!(!v.is_defined());
+    }
+
+    // ── Navigation ────────────────────────────────────────────────────
+
+    #[test]
+    fn static_nav() {
+        let (v, _) = eval("{ a: { b: 42 } }.a.b");
+        assert_eq!(v.as_i64(), Some(42));
+    }
+
+    #[test]
+    fn dynamic_nav() {
+        let (v, _) = eval("obj = { x: 1 }\nkey = \"x\"\nobj.(key)");
+        assert_eq!(v.as_i64(), Some(1));
+    }
+
+    #[test]
+    fn array_index() {
+        let (v, _) = eval("[ 10, 20, 30 ].1");
+        assert_eq!(v.as_i64(), Some(20));
+    }
+
+    #[test]
+    fn array_size() {
+        let (v, _) = eval("[ 1, 2, 3 ].size");
+        assert_eq!(v.as_i64(), Some(3));
+    }
+
+    #[test]
+    fn string_size() {
+        let (v, _) = eval("\"hello\".size");
+        assert_eq!(v.as_i64(), Some(5));
     }
 }
