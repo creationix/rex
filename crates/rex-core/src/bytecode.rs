@@ -175,7 +175,15 @@ fn encode_into(value: &Value, out: &mut String) {
             }
             out.push('}');
         }
-        Value::Block(items) => encode_paired('{', '}', items, out),
+        Value::Block(items) => {
+            // Blocks encode as a call with the empty opcode: (%expr0 expr1 ...)
+            out.push('(');
+            out.push('%');
+            for item in items {
+                encode_into(item, out);
+            }
+            out.push(')');
+        }
         Value::Call(items) => encode_paired('(', ')', items, out),
 
         // Compound containers
@@ -661,8 +669,9 @@ impl RevEncoder {
                 for i in items.iter().rev() { s.write(i, false); }
             }),
             Value::Object(pairs) => self.emit_object(pairs, skippable),
-            Value::Block(items) => self.emit_paired(b'{', b'}', skippable, |s| {
+            Value::Block(items) => self.emit_paired(b'(', b')', skippable, |s| {
                 for i in items.iter().rev() { s.write(i, false); }
+                s.write(&Value::Opcode(String::new()), false); // empty opcode
             }),
             Value::Call(items) => self.emit_paired(b'(', b')', skippable, |s| {
                 for i in items.iter().rev() { s.write(i, false); }
@@ -991,7 +1000,15 @@ fn decode_one(input: &[u8], pos: &mut usize, resolve: bool) -> Result<Value, Dec
         }
 
         // Paired containers
-        b'(' => decode_paired_body(input, pos, b')', resolve, |items| Value::Call(items)),
+        b'(' => decode_paired_body(input, pos, b')', resolve, |items| {
+            // (%...) with empty opcode = Block
+            if let Some(Value::Opcode(name)) = items.first() {
+                if name.is_empty() {
+                    return Value::Block(items[1..].to_vec());
+                }
+            }
+            Value::Call(items)
+        }),
         b'[' => {
             // Check for index: at least one b64 digit followed by '#'
             if peek_is_index(input, *pos) {
@@ -1873,27 +1890,27 @@ mod tests {
 
     #[test]
     fn conditional_block_branch_is_length_prefixed() {
-        // when x do {1} end → ?(x$ 2{2+})
+        // when x do 1 end → ?(x$ 3(%2+))
         let v = Value::When(vec![
             Value::Variable("x".into()),
             Value::Block(vec![Value::Integer(1)]),
         ]);
         let encoded = encode(&v);
-        assert_eq!(encoded, "?(x$2{2+})");
+        assert_eq!(encoded, "?(x$3(%2+))");
         let decoded = decode(&encoded).unwrap();
         assert_eq!(decoded, v);
     }
 
     #[test]
     fn conditional_both_branches_length_prefixed() {
-        // when x do {1, 2} else {3} end
+        // when x do 1; 2 else 3 end
         let v = Value::When(vec![
             Value::Variable("x".into()),
             Value::Block(vec![Value::Integer(1), Value::Integer(2)]),
             Value::Block(vec![Value::Integer(3)]),
         ]);
         let encoded = encode(&v);
-        assert_eq!(encoded, "?(x$4{2+4+}2{6+})");
+        assert_eq!(encoded, "?(x$5(%2+4+)3(%6+))");
         let decoded = decode(&encoded).unwrap();
         assert_eq!(decoded, v);
     }
@@ -1905,7 +1922,7 @@ mod tests {
             Value::Block(vec![Value::Integer(1), Value::Integer(2)]),
         ]);
         let encoded = encode(&v);
-        assert_eq!(encoded, "|(a$4{2+4+})");
+        assert_eq!(encoded, "|(a$5(%2+4+))");
         let decoded = decode(&encoded).unwrap();
         assert_eq!(decoded, v);
     }
@@ -1935,7 +1952,7 @@ mod tests {
         ]);
         let encoded = encode(&v);
         // No length prefix — '>' is not conditional
-        assert_eq!(encoded, ">(items$x${x$})");
+        assert_eq!(encoded, ">(items$x$(%x$))");
         let decoded = decode(&encoded).unwrap();
         assert_eq!(decoded, v);
     }
