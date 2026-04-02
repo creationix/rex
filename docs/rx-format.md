@@ -198,6 +198,23 @@ The key insight is that pointers are forward references — they point to values
 
 Container headers (arrays, objects) are emitted after their children in this scheme, which means they naturally appear before their children in the final output — exactly the right order.
 
+### Deduplication Detection
+
+Finding structurally identical values requires comparing subtrees, which is expensive for large or deeply nested values. A practical approach:
+
+1. **Skip large containers.** Arrays and objects beyond a size threshold (e.g., 16 children) are unlikely to have duplicates, and the cost-to-benefit ratio of comparing them is poor.
+2. **Limit recursion.** Do a recursive complexity scan, counting each child node. Abort as soon as a threshold is reached (e.g., 64 nodes). Values exceeding the limit are emitted without dedup.
+3. **Hash the value.** For values that pass both filters, compute a unique key and look it up in a hash map. On a hit, emit a pointer; on a miss, emit the value and record it.
+
+The details are language-dependent:
+
+- **JavaScript**: Use `JSON.stringify` as the hash key. Engines heavily optimize it, making it faster than manual traversal — but this would be a terrible choice in most other languages.
+- **Rust**: Do a single DFS pass over the entire input to recursively calculate the complexity of every value upfront. Then during the encoding pass, only compute hash keys for values under the complexity threshold. This avoids the per-value abort logic and keeps the hot path simple.
+
+**Schema sharing.** Objects with identical key lists can share a schema. Maintain a separate dedup map for key lists — when encoding an object, extract its keys (a flat list of strings), look it up, and if found, emit a pointer to the previous object followed by just the values. This is simpler than general value dedup since keys are always flat string lists.
+
+**Cost check.** Only emit a pointer if it's actually smaller than re-encoding the value. Pointers are varints — they grow with distance from the target. Record the encoded byte size of each value alongside its position in the dedup map. When a duplicate is found, compare the pointer size (varint length of the delta + 1 for `^`) against the original value's size. If the pointer would be equal or larger, just re-emit the value.
+
 ---
 
 ## Tag Summary
