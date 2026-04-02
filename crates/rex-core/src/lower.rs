@@ -401,7 +401,8 @@ fn lower_nav(node: &SyntaxNode) -> Value {
     // The first child is the base (Variable if ident), subsequent idents
     // after Dot are nav keys (String).
     let mut items = Vec::new();
-    let mut seen_dot = false;
+    let mut after_dot = false;    // after `.` — next ident is a static key
+    let mut after_dotparen = false; // after `.(` — contents are dynamic expressions
 
     for child in non_trivia_children(node) {
         match child {
@@ -416,30 +417,34 @@ fn lower_nav(node: &SyntaxNode) -> Value {
                 } else if let Some(v) = lower_node(&n) {
                     items.push(v);
                 }
+                after_dot = false;
+                after_dotparen = false;
             }
             rowan::NodeOrToken::Token(t) => {
                 match t.kind() {
-                    SyntaxKind::Dot | SyntaxKind::DotParen => {
-                        seen_dot = true;
+                    SyntaxKind::Dot => { after_dot = true; }
+                    SyntaxKind::DotParen => { after_dotparen = true; }
+                    SyntaxKind::RParen => { after_dotparen = false; }
+                    SyntaxKind::Ident if after_dotparen => {
+                        // Dynamic nav .(expr) — ident is a variable reference
+                        items.push(Value::Variable(t.text().to_string()));
                     }
-                    SyntaxKind::RParen => {}
-                    SyntaxKind::Ident if !seen_dot => {
+                    SyntaxKind::Ident if after_dot => {
+                        // Static nav .key — ident is a string key
+                        items.push(Value::String(t.text().to_string()));
+                        after_dot = false;
+                    }
+                    SyntaxKind::Ident => {
                         // Base identifier → Variable
                         items.push(Value::Variable(t.text().to_string()));
                     }
-                    SyntaxKind::Ident => {
-                        // Nav key after dot → String
+                    SyntaxKind::DecimalNumber if after_dot => {
                         items.push(Value::String(t.text().to_string()));
-                        seen_dot = false;
+                        after_dot = false;
                     }
-                    SyntaxKind::DecimalNumber if seen_dot => {
+                    kind if after_dot && kind.is_keyword() => {
                         items.push(Value::String(t.text().to_string()));
-                        seen_dot = false;
-                    }
-                    kind if seen_dot && kind.is_keyword() => {
-                        // Keyword used as property name after dot (e.g. db.delete)
-                        items.push(Value::String(t.text().to_string()));
-                        seen_dot = false;
+                        after_dot = false;
                     }
                     _ => {
                         if let Some(v) = lower_token(&t) {
@@ -820,7 +825,7 @@ fn lower_object_comprehension(node: &SyntaxNode) -> Value {
     for child in non_trivia_children(node) {
         match child {
             rowan::NodeOrToken::Token(t) => match t.kind() {
-                SyntaxKind::LBrace | SyntaxKind::RBrace | SyntaxKind::Comma | SyntaxKind::Colon => {}
+                SyntaxKind::LBrace | SyntaxKind::RBrace | SyntaxKind::Comma => {}
                 SyntaxKind::KwFor => { seen_keyword = true; }
                 SyntaxKind::KwWhile => { seen_keyword = true; comp_kind = Some('#'); }
                 SyntaxKind::KwIn => { seen_keyword = true; if comp_kind.is_none() { comp_kind = Some('>'); } }
@@ -839,6 +844,14 @@ fn lower_object_comprehension(node: &SyntaxNode) -> Value {
                     else if comp_kind.is_none() { comp_kind = Some('>'); }
                     source_items.extend(binding_items);
                 }
+                SyntaxKind::Pair => {
+                    // Extract key and value from the pair as separate body items
+                    let (key, val) = lower_pair(&n);
+                    if !seen_keyword {
+                        body_items.push(key);
+                        body_items.push(val);
+                    }
+                }
                 _ => {
                     if let Some(v) = lower_node(&n) {
                         if seen_keyword { source_items.push(v); } else { body_items.push(v); }
@@ -848,6 +861,8 @@ fn lower_object_comprehension(node: &SyntaxNode) -> Value {
         }
     }
 
+    // Format: [iterable, bindings..., body_exprs..., key_expr, value_expr]
+    // The last two body items are the key and value expressions
     let mut items = source_items;
     items.extend(body_items);
 
