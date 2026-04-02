@@ -13,6 +13,7 @@ struct SpecTest {
     domain: Option<String>,
     inputs: Vec<(String, String)>, // (format, content) — "rex", "json", "rx", "rexc"
     expected_output: Option<String>,
+    output_format: String, // "rex", "json", etc.
     expected_bytecode: Option<String>,
     line: usize,
 }
@@ -26,6 +27,7 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
         domain: None,
         inputs: Vec::new(),
         expected_output: None,
+        output_format: "rex".to_string(),
         expected_bytecode: None,
         line: 0,
     };
@@ -42,7 +44,10 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
                     "rex" => current.source = Some(body),
                     "rexd" => current.domain = Some(body),
                     "rexc" => current.expected_bytecode = Some(body),
-                    s if s.ends_with(" output") => current.expected_output = Some(body),
+                    s if s.ends_with(" output") => {
+                        current.output_format = s.strip_suffix(" output").unwrap().to_string();
+                        current.expected_output = Some(body);
+                    }
                     s if s.ends_with(" input") => {
                         let fmt = s.strip_suffix(" input").unwrap().to_string();
                         current.inputs.push((fmt, body));
@@ -78,6 +83,7 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
                     domain: None,
                     inputs: Vec::new(),
                     expected_output: None,
+                    output_format: "rex".to_string(),
                     expected_bytecode: None,
                     line: 0,
                 };
@@ -151,13 +157,89 @@ fn run_test(test: &SpecTest) {
         let result = rex_core::interpret::run(&bytecode, ctx)
             .unwrap_or_else(|e| panic!("[{}] runtime error: {e}\n  source: {}", test.name, source));
 
-        let actual = format_value(result.value, &result.heap);
-        assert_eq!(
-            actual.trim(), expected.trim(),
-            "\n[{}] output mismatch\n  source: {}\n  expected: {}\n  actual:   {}",
-            test.name, source, expected.trim(), actual.trim()
-        );
+        match test.output_format.as_str() {
+            "json" => {
+                let actual_json = value_to_json(result.value, &result.heap);
+                let expected_json: serde_json::Value = serde_json::from_str(expected.trim())
+                    .unwrap_or_else(|e| panic!("[{}] invalid expected JSON: {e}\n  text: {}", test.name, expected));
+                assert!(
+                    json_eq_ordered(&actual_json, &expected_json),
+                    "\n[{}] output mismatch\n  source: {}\n  expected: {}\n  actual:   {}",
+                    test.name, source, expected_json, actual_json
+                );
+            }
+            _ => {
+                let actual = format_value(result.value, &result.heap);
+                assert_eq!(
+                    actual.trim(), expected.trim(),
+                    "\n[{}] output mismatch\n  source: {}\n  expected: {}\n  actual:   {}",
+                    test.name, source, expected.trim(), actual.trim()
+                );
+            }
+        }
     }
+}
+
+/// Compare two JSON values with order-sensitive object key comparison.
+fn json_eq_ordered(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    match (a, b) {
+        (serde_json::Value::Object(am), serde_json::Value::Object(bm)) => {
+            if am.len() != bm.len() { return false; }
+            // Compare key order and values
+            am.iter().zip(bm.iter()).all(|((ak, av), (bk, bv))| {
+                ak == bk && json_eq_ordered(av, bv)
+            })
+        }
+        (serde_json::Value::Array(aa), serde_json::Value::Array(ba)) => {
+            aa.len() == ba.len() && aa.iter().zip(ba.iter()).all(|(a, b)| json_eq_ordered(a, b))
+        }
+        _ => a == b,
+    }
+}
+
+fn value_to_json(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> serde_json::Value {
+    if v.is_none() || v.is_null() { return serde_json::Value::Null; }
+    if let Some(b) = v.as_bool() { return serde_json::Value::Bool(b); }
+    if let Some(n) = v.as_i64() { return serde_json::json!(n); }
+    if let Some(f) = v.as_f64(heap) { return serde_json::json!(f); }
+    if let Some(s) = v.as_str(heap) { return serde_json::Value::String(s.to_string()); }
+    if v.is_array() {
+        let items: Vec<serde_json::Value> = heap.array_items(v).iter()
+            .map(|&item| value_to_json(item, heap))
+            .collect();
+        return serde_json::Value::Array(items);
+    }
+    if v.is_object() {
+        let map: serde_json::Map<String, serde_json::Value> = heap.object_pairs(v).iter()
+            .map(|&(k, val)| (heap.resolve_str(k).to_string(), value_to_json(val, heap)))
+            .collect();
+        return serde_json::Value::Object(map);
+    }
+    serde_json::Value::Null
+}
+
+#[allow(dead_code)]
+fn format_value_json(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> String {
+    if v.is_none() || v.is_null() { return "null".into(); }
+    if let Some(b) = v.as_bool() { return b.to_string(); }
+    if let Some(n) = v.as_i64() { return n.to_string(); }
+    if let Some(f) = v.as_f64(heap) { return f.to_string(); }
+    if let Some(s) = v.as_str(heap) { return format!("{s:?}"); }
+    if v.is_array() {
+        let items: Vec<String> = heap.array_items(v).iter()
+            .map(|&item| format_value_json(item, heap))
+            .collect();
+        if items.is_empty() { return "[]".into(); }
+        return format!("[{}]", items.join(", "));
+    }
+    if v.is_object() {
+        let pairs: Vec<String> = heap.object_pairs(v).iter()
+            .map(|&(k, val)| format!("{:?}: {}", heap.resolve_str(k), format_value_json(val, heap)))
+            .collect();
+        if pairs.is_empty() { return "{}".into(); }
+        return format!("{{{}}}", pairs.join(", "));
+    }
+    format!("{v:?}")
 }
 
 fn format_value(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> String {
@@ -174,6 +256,7 @@ fn format_value(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> String
         let items: Vec<String> = heap.array_items(v).iter()
             .map(|&item| format_value(item, heap))
             .collect();
+        if items.is_empty() { return "[]".into(); }
         return format!("[ {} ]", items.join(", "));
     }
     if v.is_object() {

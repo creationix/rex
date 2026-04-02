@@ -407,7 +407,8 @@ fn lower_nav(node: &SyntaxNode) -> Value {
     for child in non_trivia_children(node) {
         match child {
             rowan::NodeOrToken::Node(n) => {
-                if n.kind() == SyntaxKind::NavExpr {
+                if n.kind() == SyntaxKind::NavExpr && !after_dotparen {
+                    // Static nav chain — flatten into parent call
                     let inner = lower_nav(&n);
                     if let Value::Call(inner_items) = inner {
                         items.extend(inner_items);
@@ -415,6 +416,7 @@ fn lower_nav(node: &SyntaxNode) -> Value {
                         items.push(inner);
                     }
                 } else if let Some(v) = lower_node(&n) {
+                    // Dynamic nav or other node — keep as sub-expression
                     items.push(v);
                 }
                 after_dot = false;
