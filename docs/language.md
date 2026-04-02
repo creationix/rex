@@ -146,6 +146,20 @@ user and user.email          // guard chain
 a and b or c                 // (a and b) or c
 ```
 
+### Compound Expressions
+
+Semicolons group multiple expressions into a single expression, like C's comma operator. Evaluates left to right, returns the last value:
+
+```rex
+a = 1; b = 2; a + b       // 3
+
+// Useful in single-expression positions:
+when setup(); ready do go() end
+[ c = a + b; a = b; b = c while a <= 100 ]
+```
+
+Semicolons force expression boundaries: `a; -b` is two expressions (`a` then negate `b`), while `a - b` is one (subtraction).
+
 ### Operator Precedence
 
 Highest to lowest:
@@ -162,6 +176,7 @@ Highest to lowest:
 | 8 | `and` | existence and |
 | 9 | `or` | existence or |
 | 10 | `=` `:=` `+=` etc. | assignment |
+| 11 | `;` | compound expression |
 
 ### Type Predicates
 
@@ -244,6 +259,14 @@ for k, v in {a: 1, b: 2} do log(k, v) end   // key + value
 for k of {a: 1, b: 2} do log(k) end         // keys only
 ```
 
+### `while` Loops
+
+```rex
+while x < 10 do
+  x += 1
+end
+```
+
 ### Ranges
 
 ```rex
@@ -271,6 +294,23 @@ Body first, then iteration:
 ```
 
 Return `none` to exclude an element.
+
+`while` comprehensions collect values until the condition fails:
+
+```rex
+x = 1
+[x = x * 2 while x < 100]                    // [2, 4, 8, 16, 32, 64, 128]
+```
+
+The body can have multiple expressions — all are evaluated per iteration, the last is collected:
+
+```rex
+a = 0; b = 1
+[c = a + b
+  a = b
+  b = c
+  while a <= 100]                              // fibonacci: [1, 2, 3, 5, ...]
+```
 
 ### Iterable Types
 
