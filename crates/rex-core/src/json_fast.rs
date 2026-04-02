@@ -64,9 +64,17 @@ impl<'s> JsonParser<'s> {
             TokenKind::LBracket => self.parse_array(),
             TokenKind::DoubleString => self.parse_string(),
             TokenKind::SingleString => self.parse_string(),
-            TokenKind::DecimalNumber => self.parse_number(),
+            TokenKind::DecimalNumber => self.parse_number(false),
             TokenKind::HexNumber => self.parse_hex_number(),
             TokenKind::BinaryNumber => self.parse_bin_number(),
+            TokenKind::Minus => {
+                self.bump(); // consume -
+                match self.current()? {
+                    TokenKind::DecimalNumber => self.parse_number(true),
+                    TokenKind::KwInf => { self.bump(); Some(Value::Ref("nif".into())) }
+                    _ => None,
+                }
+            }
             TokenKind::KwTrue => { self.bump(); Some(Value::Ref("t".into())) }
             TokenKind::KwFalse => { self.bump(); Some(Value::Ref("f".into())) }
             TokenKind::KwNull => { self.bump(); Some(Value::Ref("n".into())) }
@@ -186,13 +194,10 @@ impl<'s> JsonParser<'s> {
         Some(Value::String(unescape(inner)))
     }
 
-    fn parse_number(&mut self) -> Option<Value> {
-        let text = self.bump();
-        let neg = text.starts_with('-');
-        let body = text.trim_start_matches('-');
+    fn parse_number(&mut self, neg: bool) -> Option<Value> {
+        let body = self.bump();
 
         if body.contains('.') || body.contains('e') || body.contains('E') {
-            // Decimal
             let (int_part, frac_part, exp) = split_decimal(body);
             let sig_str = format!("{}{}", int_part, frac_part);
             let sig: i64 = sig_str.parse().ok()?;
@@ -207,18 +212,16 @@ impl<'s> JsonParser<'s> {
 
     fn parse_hex_number(&mut self) -> Option<Value> {
         let text = self.bump();
-        let neg = text.starts_with('-');
-        let body = text.trim_start_matches('-').trim_start_matches("0x");
+        let body = text.trim_start_matches("0x");
         let n = i64::from_str_radix(body, 16).ok()?;
-        Some(Value::Integer(if neg { -n } else { n }))
+        Some(Value::Integer(n))
     }
 
     fn parse_bin_number(&mut self) -> Option<Value> {
         let text = self.bump();
-        let neg = text.starts_with('-');
-        let body = text.trim_start_matches('-').trim_start_matches("0b");
+        let body = text.trim_start_matches("0b");
         let n = i64::from_str_radix(body, 2).ok()?;
-        Some(Value::Integer(if neg { -n } else { n }))
+        Some(Value::Integer(n))
     }
 }
 
