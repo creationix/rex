@@ -297,7 +297,12 @@ fn lower_unary(node: &SyntaxNode) -> Value {
 
     match op {
         Some(SyntaxKind::Minus) => {
-            Value::Call(vec![Value::Opcode("ng".into()), operand])
+            // Constant-fold: -integer → negative integer literal
+            match &operand {
+                Value::Integer(n) => Value::Integer(-n),
+                Value::Decimal { sig, exp } => Value::Decimal { sig: -sig, exp: *exp },
+                _ => Value::Call(vec![Value::Opcode("ng".into()), operand]),
+            }
         }
         Some(SyntaxKind::Tilde) => {
             Value::Call(vec![Value::Opcode("nt".into()), operand])

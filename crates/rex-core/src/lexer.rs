@@ -62,11 +62,12 @@ pub enum TokenKind {
     Ident,
 
     // ── Number literals ─────────────────────────────────────────────
-    #[regex(r"-?0x[0-9a-fA-F]+")]
+    // No leading `-` — negation is a unary operator, not part of the literal.
+    #[regex(r"0x[0-9a-fA-F]+")]
     HexNumber,
-    #[regex(r"-?0b[01]+")]
+    #[regex(r"0b[01]+")]
     BinaryNumber,
-    #[regex(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")]
+    #[regex(r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")]
     DecimalNumber,
 
     // ── String literals ─────────────────────────────────────────────
