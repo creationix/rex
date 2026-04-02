@@ -76,6 +76,7 @@ pub enum SyntaxKind {
     RBracket,
     LBrace,
     RBrace,
+    Semicolon,
     LineComment,
     BlockComment,
     Whitespace,
@@ -106,6 +107,7 @@ pub enum SyntaxKind {
     TypeDecl,
     ExternDecl,
     ReturnExpr,
+    CompoundExpr,
 
     /// Rowan requires a dedicated root kind.
     Root,

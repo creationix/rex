@@ -157,6 +157,10 @@ pub enum TokenKind {
     #[token("}")]
     RBrace,
 
+    // ── Semicolon (optional statement separator) ────────────────────
+    #[token(";")]
+    Semicolon,
+
     // ── Comments ────────────────────────────────────────────────────
     #[regex(r"//[^\n]*(\n)?", allow_greedy = true)]
     LineComment,

@@ -61,6 +61,10 @@ fn format_type(ty: &typecheck::Type) -> String {
     }
 }
 
+fn is_type_name(word: &str) -> bool {
+    matches!(word, "str" | "int" | "num" | "bool" | "some" | "none" | "null" | "unknown" | "never")
+}
+
 /// Extract a file path from a file:// URI string.
 fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     let s = uri.as_str();
@@ -459,9 +463,15 @@ fn handle_hover(state: &LspState, params: HoverParams) -> Option<lsp_types::Hove
         let ty = exact.or(smallest.map(|(_, ty)| ty));
         if let Some(ty) = ty {
             let type_str = format_type(ty);
+            // If the word IS a type keyword and its type is itself, show `: type`
+            let display_type = if type_str == word && is_type_name(&word) {
+                "type".to_string()
+            } else {
+                type_str
+            };
             let content = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
                 kind: lsp_types::MarkupKind::Markdown,
-                value: format!("```rex\n{word}: {type_str}\n```"),
+                value: format!("```rex\n{word}: {display_type}\n```"),
             });
             return Some(lsp_types::Hover { contents: content, range: None });
         }
