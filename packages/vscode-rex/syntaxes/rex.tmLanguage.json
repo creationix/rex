@@ -16,6 +16,7 @@
 				{ "include": "#control-keyword" },
 				{ "include": "#storage-type" },
 				{ "include": "#storage-modifier" },
+				{ "include": "#support-type" },
 				{ "include": "#logical-operator" },
 				{ "include": "#arrow-operator" },
 				{ "include": "#comparison-operator" },
@@ -23,6 +24,7 @@
 				{ "include": "#range-operator" },
 				{ "include": "#value-operator" },
 				{ "include": "#comma-separator" },
+				{ "include": "#semicolon-separator" },
 				{ "include": "#container-paren" },
 				{ "include": "#container-bracket" },
 				{ "include": "#container-brace" }
@@ -175,6 +177,10 @@
 			"match": "\\bmut\\b",
 			"name": "storage.modifier.rex"
 		},
+		"support-type": {
+			"match": "\\b(str|int|num|bool|some|unknown|never)\\b",
+			"name": "support.type.rex"
+		},
 		"logical-operator": {
 			"match": "\\b(and|or|not)\\b",
 			"name": "keyword.operator.expression.rex"
@@ -202,6 +208,10 @@
 		"comma-separator": {
 			"match": ",",
 			"name": "punctuation.separator.comma.rex"
+		},
+		"semicolon-separator": {
+			"match": ";",
+			"name": "punctuation.separator.semicolon.rex"
 		},
 		"container-paren": {
 			"begin": "\\(",

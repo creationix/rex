@@ -243,20 +243,37 @@ impl<'s, 'c> Parser<'s, 'c> {
     // ── Grammar rules ───────────────────────────────────────────────
 
     fn parse_program(&mut self) {
-        // Start root node *before* eating any trivia so all tokens
-        // (including leading whitespace/comments) live inside the root.
         self.builder
             .start_node(rowan::SyntaxKind(SyntaxKind::Root as u16));
-        while !self.at_end() {
-            self.parse_expr();
-        }
-        // Consume any trailing trivia
+        self.parse_expr_list(&[]);
         self.eat_trivia();
         self.finish_node();
     }
 
+    /// Parse a single expression. If semicolons follow, wraps in a CompoundExpr.
     fn parse_expr(&mut self) {
+        let cp = self.checkpoint();
         self.parse_assign_expr();
+
+        if self.current() == SyntaxKind::Semicolon {
+            self.start_node_at(cp, SyntaxKind::CompoundExpr);
+            while self.current() == SyntaxKind::Semicolon {
+                self.bump(); // ;
+                if self.at_end() { break; }
+                // Don't consume the next expr if it starts with a stop token
+                // (the caller will handle that)
+                self.parse_assign_expr();
+            }
+            self.finish_node();
+        }
+    }
+
+    /// Parse zero or more expressions until a stop token.
+    /// Newlines are whitespace — expressions are just parsed sequentially.
+    fn parse_expr_list(&mut self, stop: &[SyntaxKind]) {
+        while !self.at_end() && !stop.contains(&self.current()) {
+            self.parse_expr();
+        }
     }
 
     fn parse_assign_expr(&mut self) {
@@ -344,13 +361,11 @@ impl<'s, 'c> Parser<'s, 'c> {
                     self.expect(SyntaxKind::RParen);
                     self.finish_node();
                 }
-                // Call: (args)
+                // Call: f(a, b)
                 SyntaxKind::LParen => {
                     self.start_node_at(cp, SyntaxKind::CallExpr);
                     self.bump(); // (
-                    if self.current() != SyntaxKind::RParen {
-                        self.parse_elements(Self::parse_expr);
-                    }
+                    self.parse_comma_list(SyntaxKind::RParen, Self::parse_expr);
                     self.expect(SyntaxKind::RParen);
                     self.finish_node();
                 }
@@ -540,14 +555,7 @@ impl<'s, 'c> Parser<'s, 'c> {
 
     fn parse_block(&mut self) {
         self.start_node(SyntaxKind::Block);
-        while !self.at_end()
-            && !matches!(
-                self.current(),
-                SyntaxKind::KwEnd | SyntaxKind::KwElse
-            )
-        {
-            self.parse_expr();
-        }
+        self.parse_expr_list(&[SyntaxKind::KwEnd, SyntaxKind::KwElse]);
         self.finish_node();
     }
 
@@ -608,130 +616,64 @@ impl<'s, 'c> Parser<'s, 'c> {
 
     fn parse_array(&mut self) {
         self.eat_trivia();
-        let outer_cp = self.builder.checkpoint();
+        let cp = self.builder.checkpoint();
         self.bump(); // [
-
         if self.eat(SyntaxKind::RBracket) {
-            // empty array: []
-            self.start_node_at(outer_cp, SyntaxKind::ArrayExpr);
+            self.start_node_at(cp, SyntaxKind::ArrayExpr);
             self.finish_node();
             return;
         }
-
-        // Parse first expression, then decide: comprehension or list?
-        self.parse_expr();
-
-        match self.current() {
-            SyntaxKind::KwFor => {
-                self.start_node_at(outer_cp, SyntaxKind::ArrayComprehension);
-                self.bump(); // for
-                self.parse_iter_binding_comprehension();
-                self.expect(SyntaxKind::RBracket);
-                self.finish_node();
-            }
-            SyntaxKind::KwWhile => {
-                self.start_node_at(outer_cp, SyntaxKind::ArrayComprehension);
-                self.bump(); // while
-                self.parse_expr();
-                self.expect(SyntaxKind::RBracket);
-                self.finish_node();
-            }
-            SyntaxKind::KwIn => {
-                self.start_node_at(outer_cp, SyntaxKind::ArrayComprehension);
-                self.bump(); // in
-                self.parse_expr();
-                self.expect(SyntaxKind::RBracket);
-                self.finish_node();
-            }
-            SyntaxKind::KwOf => {
-                self.start_node_at(outer_cp, SyntaxKind::ArrayComprehension);
-                self.bump(); // of
-                self.parse_expr();
-                self.expect(SyntaxKind::RBracket);
-                self.finish_node();
-            }
-            _ => {
-                // Regular array: [a, b, c]
-                self.start_node_at(outer_cp, SyntaxKind::ArrayExpr);
-                // We already parsed the first element; parse rest
-                while !self.at_end() && self.current() != SyntaxKind::RBracket {
-                    self.eat(SyntaxKind::Comma); // optional comma
-                    if self.current() == SyntaxKind::RBracket {
-                        break; // trailing comma
-                    }
-                    self.parse_expr();
-                }
-                self.expect(SyntaxKind::RBracket);
-                self.finish_node();
-            }
-        }
+        self.parse_collection_body(
+            cp, SyntaxKind::ArrayExpr, SyntaxKind::ArrayComprehension,
+            SyntaxKind::RBracket, Self::parse_expr,
+        );
     }
 
     fn parse_object(&mut self) {
-        let outer_cp = self.checkpoint();
+        let cp = self.checkpoint();
         self.bump(); // {
-
         if self.eat(SyntaxKind::RBrace) {
-            self.start_node_at(outer_cp, SyntaxKind::ObjectExpr);
+            self.start_node_at(cp, SyntaxKind::ObjectExpr);
             self.finish_node();
             return;
         }
+        self.parse_collection_body(
+            cp, SyntaxKind::ObjectExpr, SyntaxKind::ObjectComprehension,
+            SyntaxKind::RBrace, Self::parse_pair,
+        );
+    }
 
-        // Parse first key: value, then decide
-        let pair_cp = self.checkpoint();
+    /// Shared logic for arrays and objects: parse comma-separated items,
+    /// checking for comprehension keywords after each one. If a keyword
+    /// is found, wraps as `comp_kind`; otherwise wraps as `list_kind`.
+    fn parse_collection_body(
+        &mut self,
+        cp: rowan::Checkpoint,
+        list_kind: SyntaxKind,
+        comp_kind: SyntaxKind,
+        closer: SyntaxKind,
+        mut parse_item: impl FnMut(&mut Self),
+    ) {
+        parse_item(self);
+        loop {
+            if self.try_comprehension_tail(cp, comp_kind, closer) { return; }
+            if self.current() == closer || self.at_end() { break; }
+            self.eat(SyntaxKind::Comma);
+            if self.current() == closer { break; }
+            parse_item(self);
+        }
+        self.start_node_at(cp, list_kind);
+        self.expect(closer);
+        self.finish_node();
+    }
+
+    /// Parse a single object pair: `key: value`, wrapped in a Pair node.
+    fn parse_pair(&mut self) {
+        self.start_node(SyntaxKind::Pair);
         self.parse_obj_key();
         self.expect(SyntaxKind::Colon);
         self.parse_expr();
-
-        match self.current() {
-            SyntaxKind::KwFor => {
-                self.start_node_at(outer_cp, SyntaxKind::ObjectComprehension);
-                self.bump(); // for
-                self.parse_iter_binding_comprehension();
-                self.expect(SyntaxKind::RBrace);
-                self.finish_node();
-            }
-            SyntaxKind::KwWhile => {
-                self.start_node_at(outer_cp, SyntaxKind::ObjectComprehension);
-                self.bump(); // while
-                self.parse_expr();
-                self.expect(SyntaxKind::RBrace);
-                self.finish_node();
-            }
-            SyntaxKind::KwIn => {
-                self.start_node_at(outer_cp, SyntaxKind::ObjectComprehension);
-                self.bump(); // in
-                self.parse_expr();
-                self.expect(SyntaxKind::RBrace);
-                self.finish_node();
-            }
-            SyntaxKind::KwOf => {
-                self.start_node_at(outer_cp, SyntaxKind::ObjectComprehension);
-                self.bump(); // of
-                self.parse_expr();
-                self.expect(SyntaxKind::RBrace);
-                self.finish_node();
-            }
-            _ => {
-                // Regular object: first pair already parsed, wrap it
-                self.start_node_at(outer_cp, SyntaxKind::ObjectExpr);
-                self.start_node_at(pair_cp, SyntaxKind::Pair);
-                self.finish_node();
-                while !self.at_end() && self.current() != SyntaxKind::RBrace {
-                    self.eat(SyntaxKind::Comma);
-                    if self.current() == SyntaxKind::RBrace {
-                        break;
-                    }
-                    self.start_node(SyntaxKind::Pair);
-                    self.parse_obj_key();
-                    self.expect(SyntaxKind::Colon);
-                    self.parse_expr();
-                    self.finish_node();
-                }
-                self.expect(SyntaxKind::RBrace);
-                self.finish_node();
-            }
-        }
+        self.finish_node();
     }
 
     fn parse_obj_key(&mut self) {
@@ -810,16 +752,47 @@ impl<'s, 'c> Parser<'s, 'c> {
         self.finish_node();
     }
 
+    // ── Comprehension tail ───────────────────────────────────────
+
+    /// If the current token is a comprehension keyword (`for`/`while`/`in`/`of`),
+    /// wrap everything from `cp` onward as a comprehension node and return true.
+    fn try_comprehension_tail(
+        &mut self,
+        cp: rowan::Checkpoint,
+        kind: SyntaxKind,
+        closer: SyntaxKind,
+    ) -> bool {
+        match self.current() {
+            SyntaxKind::KwFor => {
+                self.start_node_at(cp, kind);
+                self.bump();
+                self.parse_iter_binding_comprehension();
+                self.expect(closer);
+                self.finish_node();
+                true
+            }
+            SyntaxKind::KwWhile | SyntaxKind::KwIn | SyntaxKind::KwOf => {
+                self.start_node_at(cp, kind);
+                self.bump();
+                self.parse_expr();
+                self.expect(closer);
+                self.finish_node();
+                true
+            }
+            _ => false,
+        }
+    }
+
     // ── Utilities ───────────────────────────────────────────────────
 
-    /// Parse a comma-separated list: `item (','? item)* ','?`
-    fn parse_elements(&mut self, mut parse_item: impl FnMut(&mut Self)) {
+    /// Parse a comma-separated list of items until `closer`.
+    /// Handles empty lists, trailing commas, and optional commas.
+    fn parse_comma_list(&mut self, closer: SyntaxKind, mut parse_item: impl FnMut(&mut Self)) {
+        if self.current() == closer { return; }
         parse_item(self);
-        while !self.at_end() && self.current() != SyntaxKind::RParen {
+        while !self.at_end() && self.current() != closer {
             self.eat(SyntaxKind::Comma);
-            if self.current() == SyntaxKind::RParen {
-                break;
-            }
+            if self.current() == closer { break; }
             parse_item(self);
         }
     }

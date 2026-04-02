@@ -45,6 +45,7 @@ fn lower_node(node: &SyntaxNode) -> Option<Value> {
         SyntaxKind::ObjectComprehension => Some(lower_object_comprehension(node)),
         SyntaxKind::TemplateExpr => Some(lower_template_expr(node)),
         SyntaxKind::ReturnExpr => Some(lower_return(node)),
+        SyntaxKind::CompoundExpr => Some(lower_block_body(node)),
         SyntaxKind::Error => None, // skip error nodes
         _ => None,
     }

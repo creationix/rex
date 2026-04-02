@@ -1,6 +1,7 @@
 // Calculate the fibonacci numbers up to max (default 100)
 // rex fibonacci.rex
 // rex -e 'max = 200' fibonacci.rex
+extern max: int | none
 max = max or 100
 
 // Build fibonacci sequence using index keys
@@ -19,12 +20,12 @@ end
 // Collect object values into an array
 fibs
 
-// Alternative: Build fibonacci sequence using array keys
+// Alternative: Build fibonacci sequence using array comprehension
 a = 0
 b = 1
-[ when true do c = a + b
+[
+  c = a + b
   a = b
   b = c
-  end
- while a <= max
+  while a <= max
 ]
