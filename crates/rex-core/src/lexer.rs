@@ -58,7 +58,7 @@ pub enum TokenKind {
 
     // ── Identifiers ─────────────────────────────────────────────────
     // Must come after keywords so logos tries keyword tokens first.
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_-]*")]
+    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*(-[a-zA-Z_][a-zA-Z0-9_]*)*")]
     Ident,
 
     // ── Number literals ─────────────────────────────────────────────
