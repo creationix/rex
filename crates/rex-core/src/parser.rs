@@ -696,6 +696,11 @@ impl<'s, 'c> Parser<'s, 'c> {
                 self.bump()
             }
             SyntaxKind::DoubleString | SyntaxKind::SingleString => self.bump(),
+            SyntaxKind::TemplateLiteral => {
+                self.start_node(SyntaxKind::TemplateExpr);
+                self.bump();
+                self.finish_node();
+            }
             SyntaxKind::LParen => {
                 self.start_node(SyntaxKind::GroupExpr);
                 self.bump(); // (
