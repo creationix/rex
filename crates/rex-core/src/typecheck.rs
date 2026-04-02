@@ -2540,9 +2540,98 @@ impl<'a> TypeEnv<'a> {
         Type::Object { fields, wildcard: None }
     }
 
-    fn infer_object_comp(&mut self, _node: &SyntaxNode) -> Type {
-        // Object comprehension — returns a map
-        Type::Object { fields: vec![], wildcard: Some(Box::new(Type::Some)) }
+    fn infer_object_comp(&mut self, node: &SyntaxNode) -> Type {
+        // Same as array comprehension but returns {*: value_type}
+        let children: Vec<_> = non_trivia_children(node).collect();
+
+        let mut body_children = Vec::new();
+        let mut iterable_type = Type::unknown();
+        let mut binding_names: Vec<String> = Vec::new();
+        let mut is_of = false;
+
+        for child in &children {
+            match child {
+                rowan::NodeOrToken::Token(t) if matches!(t.kind(),
+                    SyntaxKind::LBrace | SyntaxKind::RBrace |
+                    SyntaxKind::KwFor | SyntaxKind::KwWhile) => continue,
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::IterBinding => {
+                    let mut past_keyword = false;
+                    for bc in non_trivia_children(n) {
+                        match &bc {
+                            rowan::NodeOrToken::Token(t) if matches!(t.kind(),
+                                SyntaxKind::KwIn | SyntaxKind::KwOf) => {
+                                if t.kind() == SyntaxKind::KwOf { is_of = true; }
+                                past_keyword = true;
+                            }
+                            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Comma => {}
+                            _ if !past_keyword => {
+                                if let rowan::NodeOrToken::Token(t) = &bc {
+                                    if t.kind() == SyntaxKind::Ident {
+                                        binding_names.push(t.text().to_string());
+                                    }
+                                }
+                            }
+                            _ => {
+                                iterable_type = self.infer_child(&bc);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    body_children.push(child);
+                }
+            }
+        }
+
+        // Set up scope with iteration variables
+        self.push_scope();
+        let iterable = self.resolve_type(&iterable_type);
+        let elem_type = match &iterable {
+            Type::Array(elem) => (**elem).clone(),
+            _ => Type::Some,
+        };
+        match binding_names.len() {
+            1 => {
+                if is_of {
+                    self.set_var(&binding_names[0], Type::Str);
+                } else {
+                    self.set_var(&binding_names[0], elem_type);
+                }
+            }
+            2 => {
+                self.set_var(&binding_names[0], Type::Str);
+                self.set_var(&binding_names[1], elem_type);
+            }
+            _ => {}
+        }
+
+        // Infer body — for object comprehensions, the body is a Pair (key: value)
+        let mut val_type = Type::Some;
+        for child in &body_children {
+            if let rowan::NodeOrToken::Node(n) = child {
+                if n.kind() == SyntaxKind::Pair {
+                    // Visit all children of the pair to track variable reads
+                    let pair_children: Vec<_> = non_trivia_children(n).collect();
+                    let colon_idx = pair_children.iter()
+                        .position(|c| as_token_kind(c) == Some(SyntaxKind::Colon));
+                    if let Some(ci) = colon_idx {
+                        // Infer key expression(s)
+                        for kc in &pair_children[..ci] {
+                            self.infer_child(kc);
+                        }
+                        // Infer value expression
+                        if ci + 1 < pair_children.len() {
+                            val_type = self.infer_child(&pair_children[ci + 1]);
+                        }
+                    }
+                    continue;
+                }
+            }
+            val_type = self.infer_child(child);
+        }
+        self.pop_scope();
+
+        Type::Object { fields: vec![], wildcard: Some(Box::new(val_type)) }
     }
 
     fn infer_template(&mut self, node: &SyntaxNode) -> Type {
