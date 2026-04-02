@@ -1868,13 +1868,31 @@ impl<'a> TypeEnv<'a> {
         let base_type = self.infer_child(&children[0]);
         let base_type = self.resolve_type(&base_type);
 
-        // Get the property key
+        // Check if this is dynamic navigation .(expr) vs static .key
+        let is_dynamic = children[1].as_token()
+            .map_or(false, |t| t.kind() == SyntaxKind::DotParen);
+
+        if is_dynamic {
+            // Dynamic navigation .(expr) — infer the key expression to track
+            // variable reads, even though we can't resolve the property statically
+            for c in &children[2..] {
+                match c {
+                    rowan::NodeOrToken::Node(n) => { self.infer_node(n); }
+                    rowan::NodeOrToken::Token(t) if !matches!(t.kind(), SyntaxKind::RParen) => {
+                        self.infer_token(t);
+                    }
+                    _ => {}
+                }
+            }
+            return base_type.resolve_property("*").into_type();
+        }
+
+        // Static navigation .key
         let key = match &children[2] {
             rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Ident => t.text().to_string(),
             rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DecimalNumber => t.text().to_string(),
             rowan::NodeOrToken::Token(t) if t.kind().is_keyword() => t.text().to_string(),
-            // Dynamic navigation .(expr) — can't know the key statically
-            _ => return base_type.resolve_property("*").into_type(),
+            _ => return Type::unknown(),
         };
 
         match base_type.resolve_property(&key) {
