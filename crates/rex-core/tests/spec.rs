@@ -1,36 +1,40 @@
 //! Golden spec test runner.
 //!
-//! Parses `docs/spec.md` and runs each test case defined in markdown.
-//! See docs/spec.md for the format.
+//! Parses `docs/spec-by-example.md` and runs each test case.
+//!
+//! ## Block types
+//!
+//! - `rex` — input: compile and run in the shared VM, preserving state
+//! - `json` — output check: structural match against the last expression result
+//! - `json vars` — output check: structural match against all current variables
+//! - `rexc` — output check: exact match against compiled bytecode of previous rex block
+//!
+//! Multiple blocks per test, interleaved freely. State carries across rex blocks.
 
 use std::collections::HashMap;
 
-/// A single test case extracted from the spec.
+#[derive(Debug)]
+enum Step {
+    Rex(String),
+    CheckJson(String),
+    CheckJsonVars(String),
+    CheckBytecode(String),
+}
+
 #[derive(Debug)]
 struct SpecTest {
     name: String,
-    source: Option<String>,
-    domain: Option<String>,
-    inputs: Vec<(String, String)>, // (format, content) — "rex", "json", "rx", "rexc"
-    expected_output: Option<String>,
-    output_format: String, // "rex", "json", etc.
-    expected_bytecode: Option<String>,
+    steps: Vec<Step>,
+    #[allow(dead_code)]
     line: usize,
 }
 
 fn parse_spec(markdown: &str) -> Vec<SpecTest> {
     let mut tests = Vec::new();
     let mut headers: Vec<String> = Vec::new();
-    let mut current = SpecTest {
-        name: String::new(),
-        source: None,
-        domain: None,
-        inputs: Vec::new(),
-        expected_output: None,
-        output_format: "rex".to_string(),
-        expected_bytecode: None,
-        line: 0,
-    };
+    let mut steps: Vec<Step> = Vec::new();
+    let mut test_line: usize = 0;
+
     let mut in_fence = false;
     let mut fence_lang = String::new();
     let mut fence_body = String::new();
@@ -38,28 +42,18 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
     for (lineno, line) in markdown.lines().enumerate() {
         if in_fence {
             if line.starts_with("```") {
-                // Close fence
                 let body = fence_body.trim().to_string();
                 match fence_lang.as_str() {
-                    "rex" => current.source = Some(body),
-                    "rexd" => current.domain = Some(body),
-                    "rexc" => current.expected_bytecode = Some(body),
-                    s if s.ends_with(" output") => {
-                        current.output_format = s.strip_suffix(" output").unwrap().to_string();
-                        current.expected_output = Some(body);
-                    }
-                    s if s.ends_with(" input") => {
-                        let fmt = s.strip_suffix(" input").unwrap().to_string();
-                        current.inputs.push((fmt, body));
-                    }
-                    _ => {} // ignore unknown fence types
+                    "rex" => steps.push(Step::Rex(body)),
+                    "json" => steps.push(Step::CheckJson(body)),
+                    "json vars" => steps.push(Step::CheckJsonVars(body)),
+                    "rexc" => steps.push(Step::CheckBytecode(body)),
+                    _ => {} // ignore unknown
                 }
                 in_fence = false;
                 fence_body.clear();
             } else {
-                if !fence_body.is_empty() {
-                    fence_body.push('\n');
-                }
+                if !fence_body.is_empty() { fence_body.push('\n'); }
                 fence_body.push_str(line);
             }
             continue;
@@ -73,119 +67,124 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
         }
 
         if line.starts_with('#') {
-            // Flush previous test if it has content
-            if current.source.is_some() || current.expected_output.is_some() {
-                current.name = headers.join(" > ");
-                tests.push(current);
-                current = SpecTest {
-                    name: String::new(),
-                    source: None,
-                    domain: None,
-                    inputs: Vec::new(),
-                    expected_output: None,
-                    output_format: "rex".to_string(),
-                    expected_bytecode: None,
-                    line: 0,
-                };
+            // Flush previous test
+            if !steps.is_empty() {
+                tests.push(SpecTest {
+                    name: headers.join(" > "),
+                    steps: std::mem::take(&mut steps),
+                    line: test_line,
+                });
             }
 
-            // Parse header level and text
             let level = line.chars().take_while(|&c| c == '#').count();
             let text = line[level..].trim().to_string();
-
-            // Adjust header stack
-            while headers.len() >= level {
-                headers.pop();
-            }
+            while headers.len() >= level { headers.pop(); }
             headers.push(text);
-            current.line = lineno + 1;
+            test_line = lineno + 1;
         }
     }
 
     // Flush last test
-    if current.source.is_some() || current.expected_output.is_some() {
-        current.name = headers.join(" > ");
-        tests.push(current);
+    if !steps.is_empty() {
+        tests.push(SpecTest {
+            name: headers.join(" > "),
+            steps,
+            line: test_line,
+        });
     }
 
     tests
 }
 
 fn run_test(test: &SpecTest) {
-    let source = match &test.source {
-        Some(s) => s.clone(),
-        None => return, // no source to test
-    };
+    let mut vars: HashMap<String, rex_core::heap::Value> = HashMap::new();
+    let mut heap = rex_core::heap::Heap::new();
+    let mut last_value = rex_core::heap::Value::NONE;
+    let mut last_bytecode = String::new();
 
-    // Compile
-    let bytecode = match &test.domain {
-        Some(domain) => rex_core::compile_with_domain(&source, domain),
-        None => rex_core::compile(&source),
-    };
+    for step in &test.steps {
+        match step {
+            Step::Rex(source) => {
+                let bytecode = rex_core::compile(source);
+                last_bytecode = bytecode.clone();
 
-    // Check expected bytecode
-    if let Some(expected) = &test.expected_bytecode {
-        assert_eq!(
-            bytecode.trim(), expected.trim(),
-            "\n[{}] bytecode mismatch\n  source: {}\n  expected: {}\n  actual:   {}",
-            test.name, source, expected, bytecode.trim()
-        );
-    }
+                let mut ctx = rex_core::interpret::Context::default();
+                ctx.vars = std::mem::take(&mut vars);
+                ctx.heap = std::mem::take(&mut heap);
+                ctx.gas_limit = 1_000_000;
 
-    // Check expected output
-    if let Some(expected) = &test.expected_output {
-        let mut ctx = rex_core::interpret::Context::default();
+                let result = rex_core::interpret::run(&bytecode, ctx)
+                    .unwrap_or_else(|e| panic!("[{}] runtime error: {e}\n  source: {source}", test.name));
 
-        // Process inputs
-        for (fmt, content) in &test.inputs {
-            match fmt.as_str() {
-                "rex" => {
-                    // Compile and run input to set up variables
-                    let input_bc = rex_core::compile(content);
-                    let result = rex_core::interpret::run(&input_bc, ctx)
-                        .unwrap_or_else(|e| panic!("[{}] input error: {e}", test.name));
-                    ctx = rex_core::interpret::Context::default();
-                    ctx.vars = result.vars;
-                    ctx.heap = result.heap;
-                }
-                // TODO: json, rx, rexc input formats
-                _ => {}
+                last_value = result.value;
+                vars = result.vars;
+                heap = result.heap;
             }
-        }
-
-        ctx.gas_limit = 1_000_000;
-        let result = rex_core::interpret::run(&bytecode, ctx)
-            .unwrap_or_else(|e| panic!("[{}] runtime error: {e}\n  source: {}", test.name, source));
-
-        match test.output_format.as_str() {
-            "json" => {
-                let actual_json = value_to_json(result.value, &result.heap);
+            Step::CheckJson(expected) => {
+                let actual = value_to_json(last_value, &heap);
                 let expected_json: serde_json::Value = serde_json::from_str(expected.trim())
-                    .unwrap_or_else(|e| panic!("[{}] invalid expected JSON: {e}\n  text: {}", test.name, expected));
+                    .unwrap_or_else(|e| panic!("[{}] invalid expected JSON: {e}\n  text: {expected}", test.name));
                 assert!(
-                    json_eq_ordered(&actual_json, &expected_json),
-                    "\n[{}] output mismatch\n  source: {}\n  expected: {}\n  actual:   {}",
-                    test.name, source, expected_json, actual_json
+                    json_eq_ordered(&actual, &expected_json),
+                    "\n[{}] output mismatch\n  expected: {}\n  actual:   {}",
+                    test.name, expected_json, actual
                 );
             }
-            _ => {
-                let actual = format_value(result.value, &result.heap);
+            Step::CheckJsonVars(expected) => {
+                let expected_json: serde_json::Value = serde_json::from_str(expected.trim())
+                    .unwrap_or_else(|e| panic!("[{}] invalid expected JSON vars: {e}\n  text: {expected}", test.name));
+                let actual = vars_to_json(&vars, &heap);
+                assert!(
+                    json_eq_ordered(&actual, &expected_json),
+                    "\n[{}] vars mismatch\n  expected: {}\n  actual:   {}",
+                    test.name, expected_json, actual
+                );
+            }
+            Step::CheckBytecode(expected) => {
                 assert_eq!(
-                    actual.trim(), expected.trim(),
-                    "\n[{}] output mismatch\n  source: {}\n  expected: {}\n  actual:   {}",
-                    test.name, source, expected.trim(), actual.trim()
+                    last_bytecode.trim(), expected.trim(),
+                    "\n[{}] bytecode mismatch\n  expected: {}\n  actual:   {}",
+                    test.name, expected.trim(), last_bytecode.trim()
                 );
             }
         }
     }
 }
 
-/// Compare two JSON values with order-sensitive object key comparison.
+// ── JSON conversion ───────────────────────────────────────────────────
+
+fn value_to_json(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> serde_json::Value {
+    if v.is_none() || v.is_null() { return serde_json::Value::Null; }
+    if let Some(b) = v.as_bool() { return serde_json::Value::Bool(b); }
+    if let Some(n) = v.as_i64() { return serde_json::json!(n); }
+    if let Some(f) = v.as_f64(heap) { return serde_json::json!(f); }
+    if let Some(s) = v.as_str(heap) { return serde_json::Value::String(s.to_string()); }
+    if v.is_array() {
+        return serde_json::Value::Array(
+            heap.array_items(v).iter().map(|&item| value_to_json(item, heap)).collect()
+        );
+    }
+    if v.is_object() {
+        let map: serde_json::Map<String, serde_json::Value> = heap.object_pairs(v).iter()
+            .map(|&(k, val)| (heap.resolve_str(k).to_string(), value_to_json(val, heap)))
+            .collect();
+        return serde_json::Value::Object(map);
+    }
+    serde_json::Value::Null
+}
+
+fn vars_to_json(vars: &HashMap<String, rex_core::heap::Value>, heap: &rex_core::heap::Heap) -> serde_json::Value {
+    let map: serde_json::Map<String, serde_json::Value> = vars.iter()
+        .map(|(k, &v)| (k.clone(), value_to_json(v, heap)))
+        .collect();
+    serde_json::Value::Object(map)
+}
+
+/// Order-sensitive deep comparison of JSON values.
 fn json_eq_ordered(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     match (a, b) {
         (serde_json::Value::Object(am), serde_json::Value::Object(bm)) => {
             if am.len() != bm.len() { return false; }
-            // Compare key order and values
             am.iter().zip(bm.iter()).all(|((ak, av), (bk, bv))| {
                 ak == bk && json_eq_ordered(av, bv)
             })
@@ -197,77 +196,7 @@ fn json_eq_ordered(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     }
 }
 
-fn value_to_json(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> serde_json::Value {
-    if v.is_none() || v.is_null() { return serde_json::Value::Null; }
-    if let Some(b) = v.as_bool() { return serde_json::Value::Bool(b); }
-    if let Some(n) = v.as_i64() { return serde_json::json!(n); }
-    if let Some(f) = v.as_f64(heap) { return serde_json::json!(f); }
-    if let Some(s) = v.as_str(heap) { return serde_json::Value::String(s.to_string()); }
-    if v.is_array() {
-        let items: Vec<serde_json::Value> = heap.array_items(v).iter()
-            .map(|&item| value_to_json(item, heap))
-            .collect();
-        return serde_json::Value::Array(items);
-    }
-    if v.is_object() {
-        let map: serde_json::Map<String, serde_json::Value> = heap.object_pairs(v).iter()
-            .map(|&(k, val)| (heap.resolve_str(k).to_string(), value_to_json(val, heap)))
-            .collect();
-        return serde_json::Value::Object(map);
-    }
-    serde_json::Value::Null
-}
-
-#[allow(dead_code)]
-fn format_value_json(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> String {
-    if v.is_none() || v.is_null() { return "null".into(); }
-    if let Some(b) = v.as_bool() { return b.to_string(); }
-    if let Some(n) = v.as_i64() { return n.to_string(); }
-    if let Some(f) = v.as_f64(heap) { return f.to_string(); }
-    if let Some(s) = v.as_str(heap) { return format!("{s:?}"); }
-    if v.is_array() {
-        let items: Vec<String> = heap.array_items(v).iter()
-            .map(|&item| format_value_json(item, heap))
-            .collect();
-        if items.is_empty() { return "[]".into(); }
-        return format!("[{}]", items.join(", "));
-    }
-    if v.is_object() {
-        let pairs: Vec<String> = heap.object_pairs(v).iter()
-            .map(|&(k, val)| format!("{:?}: {}", heap.resolve_str(k), format_value_json(val, heap)))
-            .collect();
-        if pairs.is_empty() { return "{}".into(); }
-        return format!("{{{}}}", pairs.join(", "));
-    }
-    format!("{v:?}")
-}
-
-fn format_value(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> String {
-    if v.is_none() { return "none".into(); }
-    if v.is_null() { return "null".into(); }
-    if let Some(b) = v.as_bool() { return if b { "true" } else { "false" }.into(); }
-    if let Some(n) = v.as_i64() { return n.to_string(); }
-    if let Some(f) = v.as_f64(heap) {
-        if f == f.floor() && f.abs() < 1e15 { return format!("{}", f as i64); }
-        return f.to_string();
-    }
-    if let Some(s) = v.as_str(heap) { return format!("{s:?}"); }
-    if v.is_array() {
-        let items: Vec<String> = heap.array_items(v).iter()
-            .map(|&item| format_value(item, heap))
-            .collect();
-        if items.is_empty() { return "[]".into(); }
-        return format!("[ {} ]", items.join(", "));
-    }
-    if v.is_object() {
-        let pairs: Vec<String> = heap.object_pairs(v).iter()
-            .map(|&(k, val)| format!("{}: {}", heap.resolve_str(k), format_value(val, heap)))
-            .collect();
-        if pairs.is_empty() { return "{}".into(); }
-        return format!("{{ {} }}", pairs.join(" "));
-    }
-    format!("{v:?}")
-}
+// ── Test entry point ──────────────────────────────────────────────────
 
 #[test]
 fn run_spec() {
@@ -276,14 +205,14 @@ fn run_spec() {
     let markdown = match std::fs::read_to_string(&spec_path) {
         Ok(content) => content,
         Err(_) => {
-            eprintln!("spec.md not found at {}, skipping spec tests", spec_path.display());
+            eprintln!("spec-by-example.md not found, skipping");
             return;
         }
     };
 
     let tests = parse_spec(&markdown);
     if tests.is_empty() {
-        eprintln!("no tests found in spec.md");
+        eprintln!("no tests found in spec-by-example.md");
         return;
     }
 
