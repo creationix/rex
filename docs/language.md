@@ -288,28 +288,44 @@ end
 Body first, then iteration:
 
 ```rex
-[v * 2 for v in [1, 2, 3]]                    // [2, 4, 6]
-[v % 2 == 0 and v for v in 1..10]             // [2, 4, 6, 8, 10] — filter
-{(k): v * 10 for k, v in {a: 1, b: 2}}       // {a: 10, b: 20}
+[ v * 2 for v in [ 1, 2, 3 ] ]                  // [ 2, 4, 6 ]
+[ v % 2 == 0 and v for v in 1..10 ]              // [ 2, 4, 6, 8, 10 ] — filter
+{ (k): v * 10 for k, v in { a: 1, b: 2 } }      // { a: 10, b: 20 }
 ```
 
-Return `none` to exclude an element.
+#### Filtering
 
-`while` comprehensions collect values until the condition fails:
+Comprehensions automatically exclude elements where the result is `none`:
+
+- **Array**: if the body expression is `none`, the element is excluded
+- **Object**: if either the key or value expression is `none`, the pair is excluded
+
+This enables the `cond and value` filtering pattern:
+
+```rex
+[ v >= 10 and v for v in [ 5, 15, 3, 20 ] ]     // [ 15, 20 ]
+{ (k): v >= 10 and v for k, v in scores }        // only pairs where value >= 10
+```
+
+#### `while` comprehensions
+
+Collect values until the condition fails:
 
 ```rex
 x = 1
-[x = x * 2 while x < 100]                    // [2, 4, 8, 16, 32, 64, 128]
+[ x = x * 2 while x < 100 ]                     // [ 2, 4, 8, 16, 32, 64, 128 ]
 ```
 
-The body can have multiple expressions — all are evaluated per iteration, the last is collected:
+#### Multi-expression bodies
+
+All expressions are evaluated per iteration. The last is the collected value:
 
 ```rex
 a = 0; b = 1
-[c = a + b
+[ c = a + b
   a = b
   b = c
-  while a <= 100]                              // fibonacci: [1, 2, 3, 5, ...]
+  while a <= 100 ]                                // fibonacci: [ 1, 2, 3, 5, ... ]
 ```
 
 ### Iterable Types
