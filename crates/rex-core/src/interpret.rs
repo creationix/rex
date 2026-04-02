@@ -467,16 +467,29 @@ impl<'a> Interpreter<'a> {
                 }
                 self.read_byte(); // consume '}'
                 return Ok(self.heap.alloc_object(pairs));
+            } else if first.is_array() {
+                // Pointer resolved to an array → schema-shared object (array of keys)
+                let len = self.heap.array_len(first);
+                let keys: Vec<u32> = (0..len)
+                    .map(|i| self.heap.value_to_key(self.heap.array_get(first, i)))
+                    .collect();
+                let mut pairs = Vec::new();
+                for &key in &keys {
+                    let v = self.eval()?;
+                    pairs.push((key, v));
+                }
+                self.read_byte(); // consume '}'
+                return Ok(self.heap.alloc_object(pairs));
             } else {
-                // Pointer didn't resolve to string or object — malformed
-                while self.peek() != b'}' && !self.at_end() { self.skip_value()?; }
-                self.read_byte();
-                return Ok(Value::NONE);
+                return Err(RexError::InvalidBytecode(
+                    "{} first child must resolve to string, object, or array".into()
+                ));
             }
         }
 
-        // Fallback: try to parse as object (key-value pairs)
-        self.eval_object()
+        Err(RexError::InvalidBytecode(
+            "{} first child must be string literal, pointer, or index".into()
+        ))
     }
 
     fn peek_is_string_literal(&self) -> bool {

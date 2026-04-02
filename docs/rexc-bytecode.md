@@ -99,9 +99,26 @@ Children follow the tag directly (no delimiters):
 
 ## Block
 
-`{expr0 expr1 ... exprN}` — evaluates sequentially, returns last. Same `{}` delimiters as objects.
+`(%expr0 expr1 ... exprN)` — the empty opcode (`%` with no mnemonic) followed by expressions. Evaluates sequentially, returns last.
 
-Disambiguation: first child is a string literal → object. First child resolves to object/array → schema-shared object. Otherwise → block.
+`do...end` in Rex source compiles to a call with the empty opcode:
+
+```
+(%=x$2+x$)        do x = 1; x end
+```
+
+`{}` is **always** an object — never a code block. Code blocks use `(%...)`.
+
+### Object Disambiguation
+
+The first child after `{` determines the object variant. If it's a pointer or chain, resolve it recursively until you reach a concrete value. Then:
+
+- **`#`** → indexed object (see [RX: Indexed Containers](rx-format.md#indexed-containers))
+- **String** → key-value object (alternating key-value pairs)
+- **Object or array** → schema-shared object (pointer to schema, then values only)
+- **Anything else** → error (not a valid object)
+
+Do not peek at the raw tag byte — the first child may be a pointer that resolves to a string or object.
 
 ---
 
