@@ -12,7 +12,7 @@ else
 end
 
 sum = 0
-for i in 1..5 do
+for i in 1 .. 5 do
   when i == 4 do
     continue
   else
@@ -25,4 +25,4 @@ while countdown > 0 do
   countdown -= 1
 end
 
-{status: status sum: sum countdown: countdown}
+{ status: status sum: sum countdown: countdown }

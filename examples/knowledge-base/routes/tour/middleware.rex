@@ -14,7 +14,10 @@ hl-global = when global-mw do html.raw(html.highlight(global-mw)) end
 hl-api = when api-mw do html.raw(html.highlight(api-mw)) end
 hl-self = when self-source do html.raw(html.highlight(self-source)) end
 
-auth-snippet = "unless api-key do\n  res.status = 401\n  {ok: false, error: \"unauthorized\"}\nend"
+auth-snippet = "unless api-key do
+  res.status = 401
+  {ok: false, error: \"unauthorized\"}
+end"
 
 body = html`<h1>Tour: Middleware</h1>
 <p class="source-link"><a href="/tour/templates">Next: Templates &rarr;</a></p>

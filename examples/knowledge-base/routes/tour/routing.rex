@@ -8,7 +8,14 @@ end
 self-source = fs.read("routes/tour/routing.rex")
 highlighted = when self-source do html.raw(html.highlight(self-source)) end
 
-routing-snippet = "when method == \"GET\" do\n  /* return data */\nend\n\nwhen method == \"POST\" do\n  input = json.parse(body)\n  /* create resource */\nend"
+routing-snippet = "when method == \"GET\" do
+  /* return data */
+end
+
+when method == \"POST\" do
+  input = json.parse(body)
+  /* create resource */
+end"
 
 body = html`<h1>Tour: Filesystem Routing</h1>
 <p class="source-link"><a href="/tour/middleware">Next: Middleware &rarr;</a></p>
