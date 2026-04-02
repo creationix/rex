@@ -862,6 +862,26 @@ fn interpret_type_object(node: &SyntaxNode) -> Type {
     Type::Object { fields, wildcard }
 }
 
+// ── Type helpers ──────────────────────────────────────────────────────────
+
+/// Remove None from a type (comprehensions filter out none values).
+fn strip_none(ty: Type) -> Type {
+    match ty {
+        Type::None => Type::Never,
+        Type::Union(types) => {
+            let filtered: Vec<Type> = types.into_iter()
+                .filter(|t| !matches!(t, Type::None))
+                .collect();
+            match filtered.len() {
+                0 => Type::Never,
+                1 => filtered.into_iter().next().unwrap(),
+                _ => Type::Union(filtered),
+            }
+        }
+        other => other,
+    }
+}
+
 // ── CST helpers ───────────────────────────────────────────────────────────
 
 /// Iterate non-trivia children of a node.
@@ -2510,7 +2530,9 @@ impl<'a> TypeEnv<'a> {
         };
         self.pop_scope();
 
-        Type::Array(Box::new(body_type))
+        // Comprehensions filter out none values, so strip none from element type
+        let elem_type = strip_none(body_type);
+        Type::Array(Box::new(elem_type))
     }
 
     fn infer_object(&mut self, node: &SyntaxNode) -> Type {
@@ -2631,6 +2653,7 @@ impl<'a> TypeEnv<'a> {
         }
         self.pop_scope();
 
+        let val_type = strip_none(val_type);
         Type::Object { fields: vec![], wildcard: Some(Box::new(val_type)) }
     }
 
