@@ -1025,10 +1025,49 @@ impl<'a> Interpreter<'a> {
         let raw = self.read_raw();
         let tag = self.peek();
         if tag == b'$' {
+            // Delete variable
             self.read_byte();
             let name = Self::raw_to_str(raw);
             let kid = self.heap.intern(name);
             self.vars.remove(&kid);
+        } else if tag == b'(' || tag == b'^' {
+            // Delete property: ~(obj key) or ~^pointer
+            // For pointers, follow to the call, then delete
+            let parts = if tag == b'^' {
+                self.read_byte(); // consume '^'
+                let delta = parse_uint(raw) as usize;
+                let target = self.pos + delta;
+                let save = self.pos;
+                self.pos = target;
+                let _raw2 = self.read_raw();
+                self.read_byte(); // consume '('
+                let mut p = Vec::new();
+                while self.peek() != b')' && !self.at_end() {
+                    p.push(self.eval()?);
+                }
+                self.read_byte(); // consume ')'
+                self.pos = save;
+                p
+            } else {
+                self.read_byte(); // consume '('
+                let mut p = Vec::new();
+                while self.peek() != b')' && !self.at_end() {
+                    p.push(self.eval()?);
+                }
+                self.read_byte(); // consume ')'
+                p
+            };
+            if parts.len() >= 2 {
+                let mut target = parts[0];
+                for i in 1..parts.len() - 1 {
+                    target = self.read_property(target, parts[i])?;
+                }
+                let last_key = parts[parts.len() - 1];
+                if target.is_object() {
+                    let kid = self.heap.value_to_key(last_key);
+                    self.heap.object_delete(target, kid);
+                }
+            }
         } else {
             self.skip_value()?;
         }
@@ -1274,8 +1313,20 @@ impl<'a> Interpreter<'a> {
 
     fn op_bitwise(&self, args: &[Value], f: fn(i64, i64) -> i64) -> Result<Value, RexError> {
         if args.len() < 2 { return Ok(Value::NONE); }
-        if let (Some(a), Some(b)) = (args[0].to_i64(&self.heap), args[1].to_i64(&self.heap)) {
-            Ok(Value::int(f(a, b)))
+        let a = args[0].as_i64()
+            .or_else(|| args[0].as_bool().map(|b| b as i64))
+            .or_else(|| args[0].to_i64(&self.heap));
+        let b = args[1].as_i64()
+            .or_else(|| args[1].as_bool().map(|b| b as i64))
+            .or_else(|| args[1].to_i64(&self.heap));
+        if let (Some(a), Some(b)) = (a, b) {
+            let r = f(a, b);
+            // If both inputs were booleans, return boolean
+            if args[0].as_bool().is_some() && args[1].as_bool().is_some() {
+                Ok(Value::bool(r != 0))
+            } else {
+                Ok(Value::int(r))
+            }
         } else {
             Ok(Value::NONE)
         }
