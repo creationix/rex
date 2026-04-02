@@ -11,7 +11,11 @@ sample-md = fs.read("routes/_content/sample-article.md")
 sample-html = when sample-md do html.raw(markdown.render(sample-md)) end
 
 /* Pre-highlight sources */
-pipeline-snippet = "/* The 3-step content pipeline */\nlayout = fs.read(\"routes/_layouts/page.html\")\ncontent = fs.read(\"routes/_content/sample-article.md\")\nhtml-body = markdown.render(content)\ntemplate.render(layout, {title: \"My Page\", body: html-body})"
+pipeline-snippet = "/* The 3-step content pipeline */
+layout = fs.read(\"routes/_layouts/page.html\")
+content = fs.read(\"routes/_content/sample-article.md\")
+html-body = markdown.render(content)
+template.render(layout, {title: \"My Page\", body: html-body})"
 layout-source = fs.read("routes/_layouts/page.html")
 hl-layout = when layout-source do html.raw(html.highlight-html(layout-source)) end
 self-source = fs.read("routes/tour/templates.rex")

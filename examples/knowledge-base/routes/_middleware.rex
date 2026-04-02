@@ -9,8 +9,7 @@ res.headers.x-powered-by = "rex-serve"
 /* View-source tool: send X-View-Source header to see the .rex source
    for the current route. This is opt-in per project (via this middleware). */
 when headers.x-view-source do
-  /* Map the URL path back to a source file */
-  source-path = "routes" + path + ".rex"
+   /* Map the URL path back to a source file */source-path = "routes" + path + ".rex"
   source = fs.read(source-path)
 
   /* Try index.rex for directory paths */
@@ -24,6 +23,8 @@ when headers.x-view-source do
     res.status = 418
     res.headers.content-type = "text/plain; charset=utf-8"
     res.headers.x-source-path = source-path
-    "// Source: " + source-path + "\n\n" + source
+    "// Source: " + source-path + "
+
+" + source
   end
 end

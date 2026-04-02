@@ -12,7 +12,11 @@ slug-source = fs.read("routes/api/articles/[slug].rex")
 hl-articles = when articles-source do html.raw(html.highlight(articles-source)) end
 hl-slug = when slug-source do html.raw(html.highlight(slug-source)) end
 
-api-snippet = "when method == \"GET\" do\n  articles = db.list(\"article:\")\n  items = [json.parse(a.value) for a in articles]\n  {ok: true, articles: items}\nend"
+api-snippet = "when method == \"GET\" do
+  articles = db.list(\"article:\")
+  items = [json.parse(a.value) for a in articles]
+  {ok: true, articles: items}
+end"
 
 body = html`<h1>Tour: JSON API</h1>
 <p class="source-link"><a href="/tour/experience">Next: DX Report &rarr;</a></p>
@@ -43,7 +47,9 @@ you a complete CRUD API in a few lines of Rex.</p>
 <summary>Step 2: Create an article</summary>
 <pre>curl -X POST http://localhost:4000/api/articles \
   -H 'Authorization: demo' \
-  -d '{"slug":"hello","title":"Hello World","body":"# Hello\n\nCreated via API."}'</pre>
+  -d '{"slug":"hello","title":"Hello World","body":"# Hello
+
+Created via API."}'</pre>
 </details>
 
 <details class="try-it">

@@ -15,14 +15,14 @@ max-grade = max-grade or 100
 bonus: int = 10
 
 students = [
-  {name: "Alice" scores: {math: 92 science: 88 english: 95 history: 78}}
-  {name: "Bob" scores: {math: 45 science: 62 english: 58 history: 71}}
-  {name: "Carol" scores: {math: 73 science: 81 english: 69 history: 84}}
-  {name: "Dave" scores: {math: 88 science: 55 english: 91 history: 63}}
-  {name: "Eve" scores: {math: 100 science: 97 english: 99 history: 96}}
+  { name: "Alice" scores: { math: 92 science: 88 english: 95 history: 78 } }
+  { name: "Bob" scores: { math: 45 science: 62 english: 58 history: 71 } }
+  { name: "Carol" scores: { math: 73 science: 81 english: 69 history: 84 } }
+  { name: "Dave" scores: { math: 88 science: 55 english: 91 history: 63 } }
+  { name: "Eve" scores: { math: 100 science: 97 english: 99 history: 96 } }
 ]
 
-subjects = [k for k of students.0.scores]
+subjects = [ k for k of students.0.scores ]
 results = []
 
 for i, student in students do
@@ -36,16 +36,16 @@ for i, student in students do
       curved = max-grade
     end
 
-    grades.(subj) = {raw: score curved: curved}
+    grades.(subj) = { raw: score curved: curved }
     total += curved
     count += 1
   end
 
   avg = total / count
-  results.(i) = {name: student.name average: avg grades: grades}
+  results.(i) = { name: student.name average: avg grades: grades }
 end
 
-honors = [r.average >= 85 and r.name for r in results]
+honors = [ r.average >= 85 and r.name for r in results ]
 
 at-risk = []
 at-risk-n = 0

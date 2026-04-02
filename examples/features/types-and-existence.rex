@@ -1,7 +1,7 @@
 // Type predicates and existence-based logic
 // rex examples/features/types-and-existence.rex
 
-inputs = [42 "hello" [1 2] {x: 1} true none null]
+inputs = [ 42 "hello" [ 1 2 ] { x: 1 } true none null ]
 tags = []
 
 for i, value in inputs do
@@ -20,7 +20,7 @@ for i, value in inputs do
   end
 end
 
-filtered = [v != null and v for v in inputs]
+filtered = [ v != null and v for v in inputs ]
 
 {
   tags: tags

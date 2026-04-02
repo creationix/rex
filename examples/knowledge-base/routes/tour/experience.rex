@@ -7,11 +7,24 @@ unless layout do
 end
 
 /* Pre-highlight all code snippets */
-snippet-1 = "/* This just works. No truthiness bugs. */\napi-key = headers.authorization\n\nunless api-key do       /* only fires if truly absent */\n  res.status = 401\nend\n\nmax = query.limit or 100  /* 0 is a valid limit, won't fall through */"
-snippet-2 = "items = [json.parse(a.value) for a in db.list(\"article:\")]\n{ok: true, articles: [{slug: a.slug, title: a.title} for a in items]}"
-snippet-3 = "template.render(layout, {title: title, body: html})\n/*                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   This object is passed as Lazy(span) to the opcode.\n   The opcode can't access the interpreter to resolve\n   the variable references inside it. */"
-snippet-4 = "body = body + \"<li><a href=\\\"\" + url + \"\\\">\" + title + \"</a></li>\""
-snippet-5 = "list = list + html`<li>${name}</li>`\n`<ul>${list}</ul>`"
+snippet-1 = "/* This just works. No truthiness bugs. */
+api-key = headers.authorization
+
+unless api-key do       /* only fires if truly absent */
+  res.status = 401
+end
+
+max = query.limit or 100  /* 0 is a valid limit, won't fall through */"
+snippet-2 = "items = [json.parse(a.value) for a in db.list(\"article:\")]
+{ok: true, articles: [{slug: a.slug, title: a.title} for a in items]}"
+snippet-3 = "template.render(layout, {title: title, body: html})
+/*                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   This object is passed as Lazy(span) to the opcode.
+   The opcode can't access the interpreter to resolve
+   the variable references inside it. */"
+snippet-4 = "body = body + \"<li><a href=\\"\" + url + \"\\">\" + title + \"</a></li>\""
+snippet-5 = "list = list + html`<li>${name}</li>`
+`<ul>${list}</ul>`"
 
 hl-1 = html.raw(html.highlight(snippet-1))
 hl-2 = html.raw(html.highlight(snippet-2))

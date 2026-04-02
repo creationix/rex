@@ -2,10 +2,10 @@
 // rex run examples/algorithms/collatz.rex
 // rex run examples/algorithms/collatz.rex max=200
 
-extern max: int|none
+extern max: int | none
 max = max or 100
 
-lengths:{*:int} = {}
+lengths: { *: int } = {}
 n = 1
 while n <= max do
   current = n
@@ -22,4 +22,4 @@ while n <= max do
   n += 1
 end
 
-[lengths.(v) for v in 1..max]
+[ lengths.(v) for v in 1 .. max ]

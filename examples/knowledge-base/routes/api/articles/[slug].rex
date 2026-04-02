@@ -5,9 +5,9 @@ when method == "GET" do
   record = db.get("article:" + slug)
   unless record do
     res.status = 404
-    return {ok: false, error: "not_found"}
+    return { ok: false error: "not_found" }
   end
-  return {ok: true, article: json.parse(record)}
+  return { ok: true article: json.parse(record) }
 end
 
 when method == "PUT" do
@@ -16,7 +16,7 @@ when method == "PUT" do
 
   unless existing do
     res.status = 404
-    return {ok: false, error: "not_found"}
+    return { ok: false error: "not_found" }
   end
 
   old = json.parse(existing)
@@ -28,13 +28,13 @@ when method == "PUT" do
     updated: time.now()
   }
   db.set("article:" + slug, json.stringify(updated))
-  return {ok: true, slug: slug}
+  return { ok: true slug: slug }
 end
 
 when method == "DELETE" do
   db.delete("article:" + slug)
-  return {ok: true, deleted: slug}
+  return { ok: true deleted: slug }
 end
 
 res.status = 405
-{ok: false, error: "method_not_allowed"}
+{ ok: false error: "method_not_allowed" }
