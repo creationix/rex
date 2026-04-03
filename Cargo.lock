@@ -1467,6 +1467,7 @@ dependencies = [
  "criterion",
  "logos",
  "rowan",
+ "serde_json",
 ]
 
 [[package]]

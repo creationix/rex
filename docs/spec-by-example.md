@@ -20,91 +20,59 @@ Prose is ignored by the runner. Multiple blocks per section, interleaved freely.
 
 ## Integers
 
-| rex | rext | result |
-|-----|------|--------|
-| `42` | `1k+` | `42` |
-| `-1` | `1+` | `-1` |
-| `0` | `+` | `0` |
-
-```rex
-[42, -1, 0]
-```
-
-```json
-[42, -1, 0]
-```
+| rex     | rext   | json    |
+|---------|--------|---------|
+| `0`     | `+`    | `0`     |
+| `-1`    | `1+`   | `-1`    |
+| `1`     | `2+`   | `1`     |
+| `42`    | `1k+`  | `42`    |
+| `1234`  | `CA+`  | `1234`  |
+| `-4321` | `271+` | `-4321` |
 
 Hex and binary literals compile to plain integers:
 
-| rex | rext | result |
-|-----|------|--------|
-| `0xFF` | `7-+` | `255` |
-| `0b1010` | `k+` | `10` |
-
-```rex
-[0xFF, 0b1010]
-```
-
-```json
-[255, 10]
-```
+| rex          | rext      | json         |
+|--------------|-----------|--------------|
+| `0xFF`       | `7-+`     | `255`        |
+| `0b1010`     | `k+`      | `10`         |
+| `0xdeadbeef` | `6ZmTTu+` | `3735928559` |
 
 ## Decimals
 
-| rex | rext | result |
-|-----|------|--------|
-| `3.14` | `3*9Q+` | `3.14` |
-| `12e3` | `6*o+` | `12000` |
+| rex      | rext    | json      |
+|----------|---------|-----------|
+| `3.14`   | `3*9Q+` | `3.14`    |
+| `12e3`   | `6*o+`  | `12e3`    |
+| `12e-34` | `13*o+` | `1.2e-33` |
 
-```rex
-[3.14, 12e3]
-```
-
-```json
-[3.14, 12000.0]
-```
 
 ## Strings
 
 Single and double quotes produce identical values:
 
-| rex | rext | result |
-|-----|------|--------|
-| `"hello"` | `5,hello` | `"hello"` |
-| `'hello'` | `5,hello` | `"hello"` |
-| `""` | `,` | `""` |
-
-```rex
-["hello", 'hello', ""]
-```
-
-```json
-["hello", "hello", ""]
-```
+| rex             | rext          | json            |
+|-----------------|---------------|-----------------|
+| `"hello"`       | `5,hello`     | `"hello"`       |
+| `'world'`       | `5,world`     | `"world"`       |
+| `""`            | `,`           | `""`            |
+| `"\"escaped\""` | `9,"escaped"` | `"\"escaped\""` |
 
 ## Booleans, Null, None
 
-| rex | rext | result |
-|-----|------|--------|
-| `true` | `t'` | `true` |
-| `false` | `f'` | `false` |
-| `null` | `n'` | `null` |
-| `none` | `no'` | `none` |
-
-```rex
-[true, false, null, none]
-```
-
-```json
-[true, false, null, null]
-```
+| rex     | rext  | result  |
+|---------|-------|---------|
+| `true`  | `t'`  | `true`  |
+| `false` | `f'`  | `false` |
+| `null`  | `n'`  | `null`  |
+| `none`  | `no'` | `none`  |
 
 ## Special Numbers
 
-| rex | rext | result |
-|-----|------|--------|
-| `inf` | `inf'` | `inf` |
-| `nan` | `nan'` | `nan` |
+| rex    | rext   |
+|--------|--------|
+| `inf`  | `inf'` |
+| `-inf` | `nif'` |
+| `nan`  | `nan'` |
 
 ## Comments
 
@@ -127,27 +95,32 @@ Comments are stripped during compilation — they produce no bytecode.
 
 Commas are optional. Trailing commas allowed.
 
-| rex | rext | result |
-|-----|------|--------|
-| `[]` | `[]` | `[]` |
+| rex         | rext       | json        |
+|-------------|------------|-------------|
+| `[]`        | `[]`       | `[]`        |
 | `[1, 2, 3]` | `[2+4+6+]` | `[1, 2, 3]` |
+| `[ 1 2 3 ]` | `[2+4+6+]` | `[1, 2, 3]` |
 
 ```rex
-[1 2 3]
+[1 [2] 3 [5] 5]
+```
+
+```rext
+[2+[4+]6+[a+]a+]
 ```
 
 ```json
-[1, 2, 3]
+[1,[2],3,[5],5]
 ```
 
 ## Objects
 
 Bare keys are strings. Commas optional. Trailing commas allowed.
 
-| rex | rext |
-|-----|------|
-| `{}` | `{}` |
-| `{a: 1, b: 2}` | `{1,a2+1,b4+}` |
+| rex            | rext           | json            |
+|----------------|----------------|-----------------|
+| `{}`           | `{}`           | `{}`            |
+| `{a: 1, b: 2}` | `{1,a2+1,b4+}` | `{"a":1,"b":2}` |
 
 ```rex
 {name: "Rex", age: 65}
@@ -161,10 +134,10 @@ Bare keys are strings. Commas optional. Trailing commas allowed.
 
 Parentheses make the key an expression:
 
-| rex | rext |
-|-----|------|
+| rex         | rext         |
+|-------------|--------------|
 | `{name: 1}` | `{4,name2+}` |
-| `{(x): 1}` | `{x$2+}` |
+| `{(x): 1}`  | `{x$2+}`     |
 
 ## Nested Containers
 
@@ -200,8 +173,8 @@ d.6,hello name$
 
 Tagged templates pass parts and values to a function:
 
-| rex | rext |
-|-----|------|
+| rex                     | rext                     |
+|-------------------------|--------------------------|
 | `` html`<p>${x}</p>` `` | `(html$[3,<p>4,</p>]x$)` |
 
 ## Ranges
@@ -228,17 +201,17 @@ Inclusive. Auto-descending when start > end.
 
 Dots read nested values. Compiles to a call with string arguments:
 
-| rex | rext |
-|-----|------|
-| `user.name` | `(user$4,name)` |
+| rex                   | rext                       |
+|-----------------------|----------------------------|
+| `user.name`           | `(user$4,name)`            |
 | `user.address.street` | `(user$7,address6,street)` |
 
 ## Dynamic Keys
 
 `.()` navigates with an expression:
 
-| rex | rext |
-|-----|------|
+| rex           | rext              |
+|---------------|-------------------|
 | `map.(x + 1)` | `(map$(ad%x$2+))` |
 
 ---
@@ -269,8 +242,8 @@ x = 42
 
 Desugars to `x = op(x, value)`:
 
-| rex | rext |
-|-----|------|
+| rex      | rext           |
+|----------|----------------|
 | `x += 1` | `=x$(ad%x$2+)` |
 
 ```rex
@@ -302,14 +275,14 @@ a = 1; b = 2; a + b
 
 # Arithmetic
 
-| rex | rext | result |
-|-----|------|--------|
-| `1 + 2` | `(ad%2+4+)` | `3` |
-| `10 - 3` | `(sb%k+6+)` | `7` |
-| `4 * 5` | `(ml%8+a+)` | `20` |
-| `7 / 2` | `(dv%e+4+)` | `3.5` |
-| `10 % 3` | `(md%k+6+)` | `1` |
-| `-x` | `(ng%x$)` | |
+| rex      | rext        | json  |
+|----------|-------------|-------|
+| `1 + 2`  | `(ad%2+4+)` | `3`   |
+| `10 - 3` | `(sb%k+6+)` | `7`   |
+| `4 * 5`  | `(ml%8+a+)` | `20`  |
+| `7 / 2`  | `(dv%e+4+)` | `3.5` |
+| `10 % 3` | `(md%k+6+)` | `1`   |
+| `-x`     | `(ng%x$)`   |       |
 
 ```rex
 [1 + 2, 10 - 3, 4 * 5, 7 / 2, 10 % 3]
@@ -339,11 +312,11 @@ String concatenation uses `+`:
 
 Comparisons return the **left-hand value** on success, `none` on failure:
 
-| rex | result |
-|-----|--------|
-| `3 > 2` | `3` |
-| `3 > 5` | `none` |
-| `3 == 3` | `3` |
+| rex      | json   |
+|----------|--------|
+| `3 > 2`  | `3`    |
+| `3 > 5`  | `none` |
+| `3 == 3` | `3`    |
 | `3 != 3` | `none` |
 
 ```rex
@@ -356,13 +329,13 @@ Comparisons return the **left-hand value** on success, `none` on failure:
 
 All comparison opcodes:
 
-| rex | rext |
-|-----|------|
+| rex      | rext        |
+|----------|-------------|
 | `x == 1` | `(eq%x$2+)` |
 | `x != 1` | `(nq%x$2+)` |
-| `x > 1` | `(gt%x$2+)` |
+| `x > 1`  | `(gt%x$2+)` |
 | `x >= 1` | `(ge%x$2+)` |
-| `x < 1` | `(lt%x$2+)` |
+| `x < 1`  | `(lt%x$2+)` |
 | `x <= 1` | `(le%x$2+)` |
 
 ---
@@ -371,11 +344,11 @@ All comparison opcodes:
 
 Symbol operators (`&`, `|`, `^`, `~`) operate on **values** — bitwise for numbers, logical for booleans:
 
-| rex | rext | result |
-|-----|------|--------|
-| `5 & 3` | `(an%a+6+)` | `1` |
-| `~5` | `(nt%a+)` | `-6` |
-| `~true` | `(nt%t')` | `false` |
+| rex     | rext        | result  |
+|---------|-------------|---------|
+| `5 & 3` | `(an%a+6+)` | `1`     |
+| `~5`    | `(nt%a+)`   | `-6`    |
+| `~true` | `(nt%t')`   | `false` |
 
 ```rex
 [5 & 3, ~5, ~true]
@@ -393,11 +366,11 @@ Symbol operators (`&`, `|`, `^`, `~`) operate on **values** — bitwise for numb
 
 ## `or` — first defined value
 
-| rex | rext | result |
-|-----|------|--------|
-| `none or "fallback"` | `\|(no'8,fallback)` | `"fallback"` |
-| `0 or "fallback"` | `\|(+8,fallback)` | `0` |
-| `false or "fallback"` | `\|(f'8,fallback)` | `false` |
+| rex                   | rext                | result       |
+|-----------------------|---------------------|--------------|
+| `none or "fallback"`  | `\|(no'8,fallback)` | `"fallback"` |
+| `0 or "fallback"`     | `\|(+8,fallback)`   | `0`          |
+| `false or "fallback"` | `\|(f'8,fallback)`  | `false`      |
 
 ```rex
 [none or "fallback", 0 or "fallback", false or "fallback"]
@@ -409,9 +382,9 @@ Symbol operators (`&`, `|`, `^`, `~`) operate on **values** — bitwise for numb
 
 ## `and` — last value if all defined
 
-| rex | rext | result |
-|-----|------|--------|
-| `1 and 2` | `&(2+4+)` | `2` |
+| rex          | rext       | json   |
+|--------------|------------|--------|
+| `1 and 2`    | `&(2+4+)`  | `2`    |
 | `none and 2` | `&(no'4+)` | `none` |
 
 ```rex
@@ -493,16 +466,16 @@ when val = 10 do val + 1 end
 
 Halts execution and produces a value:
 
-| rex | rext |
-|-----|------|
+| rex         | rext   |
+|-------------|--------|
 | `return 42` | `;1k+` |
 
 ## `delete`
 
 Removes a key from an object:
 
-| rex | rext |
-|-----|------|
+| rex              | rext           |
+|------------------|----------------|
 | `delete obj.key` | `~(obj$3,key)` |
 
 ---
@@ -550,9 +523,9 @@ while x < 3 do x += 1 end
 
 ## `break` / `continue`
 
-| rex | rext |
-|-----|------|
-| `break` | `\` |
+| rex        | rext |
+|------------|------|
+| `break`    | `\`  |
 | `continue` | `1\` |
 
 ```rex
@@ -622,15 +595,15 @@ x = 1
 
 Return the value if it matches the type, `none` otherwise:
 
-| rex | rext | result |
-|-----|------|--------|
-| `isString("hi")` | `(st%2,hi)` | `"hi"` |
-| `isString(42)` | `(st%1k+)` | `none` |
-| `isNumber(3.14)` | `(nm%3*9Q+)` | `3.14` |
-| `isInteger(42)` | `(ig%1k+)` | `42` |
-| `isBoolean(true)` | `(bt%t')` | `true` |
-| `isArray([])` | `(ar%[])` | `[]` |
-| `isObject({})` | `(ob%{})` | `{}` |
+| rex               | rext         | json   |
+|-------------------|--------------|--------|
+| `isString("hi")`  | `(st%2,hi)`  | `"hi"` |
+| `isString(42)`    | `(st%1k+)`   | `none` |
+| `isNumber(3.14)`  | `(nm%3*9Q+)` | `3.14` |
+| `isInteger(42)`   | `(ig%1k+)`   |        |
+| `isBoolean(true)` | `(bt%t')`    | `true` |
+| `isArray([])`     | `(ar%[])`    | `[]`   |
+| `isObject({})`    | `(ob%{})`    | `{}`   |
 
 ```rex
 [isString("hi"), isString(42)]

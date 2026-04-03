@@ -268,6 +268,7 @@ fn encode_fixed_b64(n: u64, width: usize, out: &mut String) {
 }
 
 /// Decode a fixed-width b64 number from `width` bytes at `pos`.
+#[allow(dead_code)]
 fn decode_fixed_b64(input: &[u8], pos: &mut usize, width: usize) -> u64 {
     let mut n: u64 = 0;
     for _ in 0..width {

@@ -297,10 +297,11 @@ fn lower_unary(node: &SyntaxNode) -> Value {
 
     match op {
         Some(SyntaxKind::Minus) => {
-            // Constant-fold: -integer → negative integer literal
+            // Constant-fold negation of numeric literals
             match &operand {
                 Value::Integer(n) => Value::Integer(-n),
                 Value::Decimal { sig, exp } => Value::Decimal { sig: -sig, exp: *exp },
+                Value::Ref(name) if name == "inf" => Value::Ref("nif".into()),
                 _ => Value::Call(vec![Value::Opcode("ng".into()), operand]),
             }
         }
@@ -1051,6 +1052,7 @@ fn lower_return(node: &SyntaxNode) -> Value {
 }
 
 /// Returns true if the value is pure data (no computation needed).
+#[allow(dead_code)]
 fn is_data(v: &Value) -> bool {
     match v {
         Value::Integer(_) | Value::Decimal { .. } | Value::String(_) | Value::Ref(_) => true,
