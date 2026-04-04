@@ -1,0 +1,13 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "Rex Bytecode",
+	"scopeName": "source.rext",
+	"patterns": [
+		{ "match": "\\{", "name": "punctuation.definition.dictionary.begin.rext" },
+		{ "match": "\\}", "name": "punctuation.definition.dictionary.end.rext" },
+		{ "match": "\\[", "name": "punctuation.definition.array.begin.rext" },
+		{ "match": "\\]", "name": "punctuation.definition.array.end.rext" },
+		{ "match": "\\(", "name": "punctuation.definition.parameters.begin.rext" },
+		{ "match": "\\)", "name": "punctuation.definition.parameters.end.rext" }
+	]
+}

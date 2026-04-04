@@ -481,6 +481,11 @@ impl<'s, 'c> Parser<'s, 'c> {
         self.start_node(SyntaxKind::ExternDecl);
         self.bump(); // extern
 
+        // Optional shortcode: extern "jp" ...
+        if self.current() == SyntaxKind::DoubleString || self.current() == SyntaxKind::SingleString {
+            self.bump(); // shortcode string
+        }
+
         // Check for contextual `mut`
         if self.current() == SyntaxKind::Ident && self.current_text() == "mut" {
             self.bump(); // mut (consumed as Ident — it's contextual)
@@ -570,6 +575,10 @@ impl<'s, 'c> Parser<'s, 'c> {
     }
 
     fn parse_iter_binding(&mut self) {
+        self.parse_iter_binding_inner("iteration binding");
+    }
+
+    fn parse_iter_binding_inner(&mut self, context: &str) {
         self.start_node(SyntaxKind::IterBinding);
         match self.current() {
             SyntaxKind::Ident => {
@@ -577,9 +586,14 @@ impl<'s, 'c> Parser<'s, 'c> {
                 self.parse_optional_type_annotation();
                 match self.current() {
                     SyntaxKind::Comma => {
-                        // key, value in expr
                         self.bump(); // ,
                         self.expect(SyntaxKind::Ident);
+                        self.parse_optional_type_annotation();
+                        self.expect(SyntaxKind::KwIn);
+                        self.parse_expr();
+                    }
+                    SyntaxKind::Ident if self.current_text() != "of" => {
+                        self.bump(); // second ident (comma-less)
                         self.parse_optional_type_annotation();
                         self.expect(SyntaxKind::KwIn);
                         self.parse_expr();
@@ -596,7 +610,7 @@ impl<'s, 'c> Parser<'s, 'c> {
                         let span = self.current_span();
                         self.errors.push(ParseError {
                             span,
-                            message: "expected `in`, `of`, or `,` in iteration binding".into(),
+                            message: format!("expected `in`, `of`, or `,` in {context}"),
                         });
                     }
                 }
@@ -618,13 +632,16 @@ impl<'s, 'c> Parser<'s, 'c> {
         self.eat_trivia();
         let cp = self.builder.checkpoint();
         self.bump(); // [
+        let indexed = self.eat(SyntaxKind::Hash);
         if self.eat(SyntaxKind::RBracket) {
-            self.start_node_at(cp, SyntaxKind::ArrayExpr);
+            let kind = if indexed { SyntaxKind::IndexedArrayExpr } else { SyntaxKind::ArrayExpr };
+            self.start_node_at(cp, kind);
             self.finish_node();
             return;
         }
+        let kind = if indexed { SyntaxKind::IndexedArrayExpr } else { SyntaxKind::ArrayExpr };
         self.parse_collection_body(
-            cp, SyntaxKind::ArrayExpr, SyntaxKind::ArrayComprehension,
+            cp, kind, SyntaxKind::ArrayComprehension,
             SyntaxKind::RBracket, Self::parse_expr,
         );
     }
@@ -632,13 +649,16 @@ impl<'s, 'c> Parser<'s, 'c> {
     fn parse_object(&mut self) {
         let cp = self.checkpoint();
         self.bump(); // {
+        let indexed = self.eat(SyntaxKind::Hash);
         if self.eat(SyntaxKind::RBrace) {
-            self.start_node_at(cp, SyntaxKind::ObjectExpr);
+            let kind = if indexed { SyntaxKind::IndexedObjectExpr } else { SyntaxKind::ObjectExpr };
+            self.start_node_at(cp, kind);
             self.finish_node();
             return;
         }
+        let kind = if indexed { SyntaxKind::IndexedObjectExpr } else { SyntaxKind::ObjectExpr };
         self.parse_collection_body(
-            cp, SyntaxKind::ObjectExpr, SyntaxKind::ObjectComprehension,
+            cp, kind, SyntaxKind::ObjectComprehension,
             SyntaxKind::RBrace, Self::parse_pair,
         );
     }
@@ -654,17 +674,29 @@ impl<'s, 'c> Parser<'s, 'c> {
         closer: SyntaxKind,
         mut parse_item: impl FnMut(&mut Self),
     ) {
-        parse_item(self);
+        self.parse_maybe_spread(&mut parse_item);
         loop {
             if self.try_comprehension_tail(cp, comp_kind, closer) { return; }
             if self.current() == closer || self.at_end() { break; }
             self.eat(SyntaxKind::Comma);
             if self.current() == closer { break; }
-            parse_item(self);
+            self.parse_maybe_spread(&mut parse_item);
         }
         self.start_node_at(cp, list_kind);
         self.expect(closer);
         self.finish_node();
+    }
+
+    /// If `...` is next, wrap the following item in a SpreadExpr node.
+    fn parse_maybe_spread(&mut self, parse_item: &mut impl FnMut(&mut Self)) {
+        if self.current() == SyntaxKind::DotDotDot {
+            self.start_node(SyntaxKind::SpreadExpr);
+            self.bump(); // ...
+            self.parse_expr();
+            self.finish_node();
+        } else {
+            parse_item(self);
+        }
     }
 
     /// Parse a single object pair: `key: value`, wrapped in a Pair node.
@@ -719,42 +751,7 @@ impl<'s, 'c> Parser<'s, 'c> {
     }
 
     fn parse_iter_binding_comprehension(&mut self) {
-        self.start_node(SyntaxKind::IterBinding);
-        if self.current() == SyntaxKind::Ident {
-            self.bump(); // first ident
-            self.parse_optional_type_annotation();
-            match self.current() {
-                SyntaxKind::Comma => {
-                    self.bump(); // ,
-                    self.expect(SyntaxKind::Ident);
-                    self.parse_optional_type_annotation();
-                    self.expect(SyntaxKind::KwIn);
-                    self.parse_expr();
-                }
-                SyntaxKind::KwIn => {
-                    self.bump();
-                    self.parse_expr();
-                }
-                SyntaxKind::KwOf => {
-                    self.bump();
-                    self.parse_expr();
-                }
-                _ => {
-                    let span = self.current_span();
-                    self.errors.push(ParseError {
-                        span,
-                        message: "expected `in`, `of`, or `,` in comprehension binding".into(),
-                    });
-                }
-            }
-        } else {
-            let span = self.current_span();
-            self.errors.push(ParseError {
-                span,
-                message: "expected identifier in comprehension binding".into(),
-            });
-        }
-        self.finish_node();
+        self.parse_iter_binding_inner("comprehension binding");
     }
 
     // ── Comprehension tail ───────────────────────────────────────

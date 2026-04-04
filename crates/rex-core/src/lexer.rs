@@ -107,6 +107,8 @@ pub enum TokenKind {
     PipeEq,
     #[token("^=")]
     CaretEq,
+    #[token("...")]
+    DotDotDot,
     #[token("..")]
     DotDot,
     #[token(".(")]
@@ -145,6 +147,8 @@ pub enum TokenKind {
     Colon,
     #[token("@")]
     At,
+    #[token("#")]
+    Hash,
     #[token("(")]
     LParen,
     #[token(")")]

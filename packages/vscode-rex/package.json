@@ -17,6 +17,10 @@
 	"categories": [
 		"Programming Languages"
 	],
+	"activationEvents": [
+		"onLanguage:rext",
+		"onLanguage:markdown"
+	],
 	"contributes": {
 		"languages": [
 			{
@@ -36,14 +40,24 @@
 				}
 			},
 			{
+				"id": "rext",
+				"aliases": [
+					"Rex Bytecode"
+				],
+				"extensions": [
+					".rext"
+				],
+				"configuration": "./rext-language-configuration.json"
+			},
+			{
 				"id": "rx",
 				"aliases": [
 					"RX Binary"
 				],
 				"extensions": [
-					".rx",
-					".rexc"
+					".rx"
 				],
+				"configuration": "./rext-language-configuration.json",
 				"icon": {
 					"light": "./img/rx-icon-light.svg",
 					"dark": "./img/rx-icon-dark.svg"
@@ -69,6 +83,14 @@
 			"[rex]": {
 				"editor.wordSeparators": "`~!@#$%^&*()=+[{]}\\|;:'\",.<>/?",
 				"editor.semanticHighlighting.enabled": true
+			},
+			"[rext]": {
+				"editor.semanticHighlighting.enabled": true,
+				"editor.wordWrap": "on"
+			},
+			"[rx]": {
+				"editor.semanticHighlighting.enabled": true,
+				"editor.wordWrap": "on"
 			}
 		},
 		"semanticTokenScopes": [
@@ -82,6 +104,24 @@
 					"type": ["entity.name.type.rex"],
 					"parameter": ["variable.parameter.rex"]
 				}
+			},
+			{
+				"language": "rext",
+				"scopes": {
+					"property": ["support.type.property-name.rext"]
+				}
+			},
+			{
+				"language": "rx",
+				"scopes": {
+					"property": ["support.type.property-name.rx"]
+				}
+			},
+			{
+				"language": "markdown",
+				"scopes": {
+					"property": ["support.type.property-name"]
+				}
 			}
 		],
 		"grammars": [
@@ -91,6 +131,16 @@
 				"path": "./syntaxes/rex.tmLanguage.json"
 			},
 			{
+				"language": "rext",
+				"scopeName": "source.rext",
+				"path": "./syntaxes/rext.tmLanguage.json"
+			},
+			{
+				"language": "rx",
+				"scopeName": "source.rx",
+				"path": "./syntaxes/rx.tmLanguage.json"
+			},
+			{
 				"scopeName": "markdown.rex.codeblock",
 				"path": "./syntaxes/rex-markdown.tmLanguage.json",
 				"injectTo": [
@@ -98,7 +148,8 @@
 					"source.gfm"
 				],
 				"embeddedLanguages": {
-					"meta.embedded.block.rex": "rex"
+					"meta.embedded.block.rex": "rex",
+					"meta.embedded.block.rext": "rext"
 				}
 			},
 			{

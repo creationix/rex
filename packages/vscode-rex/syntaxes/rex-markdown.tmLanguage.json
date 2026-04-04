@@ -15,6 +15,19 @@
 			},
 			"contentName": "meta.embedded.block.rex",
 			"patterns": [{ "include": "source.rex" }]
+		},
+		{
+			"begin": "(^|\\G)(\\s*)(`{3,}|~{3,})\\s*(?i:(rext))\\s*$",
+			"end": "(^|\\G)(\\2)(\\3)\\s*$",
+			"beginCaptures": {
+				"3": { "name": "punctuation.definition.markdown" },
+				"4": { "name": "fenced_code.block.language.markdown" }
+			},
+			"endCaptures": {
+				"3": { "name": "punctuation.definition.markdown" }
+			},
+			"contentName": "meta.embedded.block.rext",
+			"patterns": [{ "include": "source.rext" }]
 		}
 	]
 }

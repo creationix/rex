@@ -15,9 +15,9 @@ use std::collections::HashMap;
 
 #[derive(Debug)]
 enum Step {
-    Rex(String, usize),        // source, line
-    CompileOnly(String, usize), // source, line
-    CheckJson(String, usize, usize), // expected, line, col
+    Rex(String, Option<String>, usize),        // source, domain, line
+    CompileOnly(String, Option<String>, usize), // source, domain, line
+    CheckJson(String, usize, usize),            // expected, line, col
     CheckJsonVars(String, usize),
     CheckBytecode(String, usize),
 }
@@ -42,23 +42,15 @@ fn extract_backtick(cell: &str) -> Option<&str> {
     cell.strip_prefix('`').and_then(|s| s.strip_suffix('`'))
 }
 
-/// Parse a markdown table row into cells (splits on `|`, trims outer empty cells).
+/// Parse a markdown table row into cells (splits on `|`, drops leading/trailing empties from outer pipes).
 fn parse_table_row(line: &str) -> Vec<String> {
-    line.split('|')
+    let cells: Vec<String> = line.split('|')
         .map(|s| s.trim().to_string())
-        .collect::<Vec<_>>()
-        .into_iter()
-        .skip(1) // leading empty from `| ...`
-        .take_while(|s| !s.is_empty() || s == "") // keep inner cells
-        .collect::<Vec<_>>()
-        // drop trailing empty from `... |`
-        .into_iter()
-        .rev()
-        .skip_while(|s| s.is_empty())
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect()
+        .collect();
+    // Drop first and last elements (empty strings from leading/trailing `|`)
+    let start = if cells.first().map_or(false, |s| s.is_empty()) { 1 } else { 0 };
+    let end = if cells.last().map_or(false, |s| s.is_empty()) { cells.len() - 1 } else { cells.len() };
+    cells[start..end].to_vec()
 }
 
 fn parse_spec(markdown: &str) -> Vec<SpecTest> {
@@ -70,6 +62,7 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
     let mut fence_lang = String::new();
     let mut fence_body = String::new();
     let mut fence_start: usize = 0;
+    let mut active_domain: Option<String> = None;
 
     // Table state
     let mut table_cols: Vec<String> = Vec::new(); // column names from header row
@@ -82,10 +75,11 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
             if line.starts_with("```") {
                 let body = fence_body.trim().to_string();
                 match fence_lang.as_str() {
-                    "rex" => steps.push(Step::Rex(body, fence_start)),
+                    "rex" => steps.push(Step::Rex(body, active_domain.clone(), fence_start)),
                     "json" => steps.push(Step::CheckJson(body, fence_start, 1)),
                     "json vars" => steps.push(Step::CheckJsonVars(body, fence_start)),
                     "rexc" | "rext" => steps.push(Step::CheckBytecode(body, fence_start)),
+                    "rexd" => { active_domain = Some(body); }
                     _ => {} // ignore unknown
                 }
                 in_fence = false;
@@ -113,7 +107,7 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
                 0 => {
                     // Potential header row — check if cells look like column names
                     let names: Vec<String> = cells.iter().map(|c| c.trim().to_lowercase()).collect();
-                    if names.iter().any(|n| n == "rex" || n == "rext" || n == "json") {
+                    if names.iter().any(|n| n == "rex" || n == "rext" || n == "json" || n == "rexd") {
                         table_cols = names;
                         table_state = 1;
                     }
@@ -149,11 +143,12 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
                     if let Some(rex_src) = get("rex") {
                         let has_json = table_cols.iter().any(|n| n == "json");
                         let json_with_col = get_with_col("json");
+                        let domain = get("rexd");
 
                         if has_json && json_with_col.is_some() {
-                            steps.push(Step::Rex(rex_src, line_num));
+                            steps.push(Step::Rex(rex_src, domain, line_num));
                         } else {
-                            steps.push(Step::CompileOnly(rex_src, line_num));
+                            steps.push(Step::CompileOnly(rex_src, domain, line_num));
                         }
 
                         if let Some(rext) = get("rext") {
@@ -200,6 +195,135 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
     tests
 }
 
+// ── Host environment for spec tests ──────────────────────────────────
+
+fn spec_opcodes() -> HashMap<String, fn(&[rex_core::heap::Value], &mut rex_core::heap::Heap) -> Result<rex_core::heap::Value, rex_core::interpret::RexError>> {
+    use rex_core::heap::{Value, Heap};
+    use rex_core::interpret::RexError;
+
+    let mut map: HashMap<String, fn(&[Value], &mut Heap) -> Result<Value, RexError>> = HashMap::new();
+
+    // H — html tagged template: escapes interpolated values for safe HTML
+    map.insert("H".into(), |args: &[Value], heap: &mut Heap| {
+        // args[0] = string parts array, args[1..] = interpolated values
+        if args.is_empty() { return Ok(Value::NONE); }
+        let parts_val = args[0];
+        let parts: Vec<String> = if parts_val.is_array() {
+            heap.array_items(parts_val).iter()
+                .map(|v| v.as_str(heap).unwrap_or("").to_string())
+                .collect()
+        } else { return Ok(Value::NONE); };
+
+        let values = &args[1..];
+        let mut out = String::new();
+        for (i, part) in parts.iter().enumerate() {
+            out.push_str(part);
+            if i < values.len() {
+                // HTML-escape the interpolated value
+                let s = values[i].as_str(heap)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format_value(values[i], heap));
+                for c in s.chars() {
+                    match c {
+                        '&' => out.push_str("&amp;"),
+                        '<' => out.push_str("&lt;"),
+                        '>' => out.push_str("&gt;"),
+                        '"' => out.push_str("&quot;"),
+                        '\'' => out.push_str("&#39;"),
+                        _ => out.push(c),
+                    }
+                }
+            }
+        }
+        Ok(heap.intern_value(&out))
+    });
+
+    // Jp — json.parse: parse a JSON string into a Rex value
+    map.insert("Jp".into(), |args: &[Value], heap: &mut Heap| {
+        let text = args.first().and_then(|v| v.as_str(heap)).unwrap_or("");
+        match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(json) => Ok(json_to_value(&json, heap)),
+            Err(_) => Ok(Value::NONE),
+        }
+    });
+
+    // Js — json.stringify: convert a Rex value to a JSON string
+    map.insert("Js".into(), |args: &[Value], heap: &mut Heap| {
+        let val = args.first().copied().unwrap_or(Value::NONE);
+        let json = value_to_json(val, heap);
+        let s = json.to_string();
+        Ok(heap.intern_value(&s))
+    });
+
+    // Mf — math.floor: floor a number to an integer
+    map.insert("Mf".into(), |args: &[Value], heap: &mut Heap| {
+        let n = args.first().and_then(|v| v.as_f64(heap)).unwrap_or(0.0);
+        Ok(Value::int(n.floor() as i64))
+    });
+
+    map
+}
+
+fn spec_refs(heap: &mut rex_core::heap::Heap) -> HashMap<String, rex_core::heap::Value> {
+    let mut refs = HashMap::new();
+
+    // E — env: a simple key-value map
+    let name = heap.intern_value("Rex");
+    let version = heap.intern_value("1.0");
+    let k_name = heap.intern("name");
+    let k_version = heap.intern("version");
+    let env = heap.alloc_object(vec![(k_name, name), (k_version, version)]);
+    refs.insert("E".into(), env);
+
+    refs
+}
+
+/// Convert a serde_json::Value to a Rex heap value.
+fn json_to_value(json: &serde_json::Value, heap: &mut rex_core::heap::Heap) -> rex_core::heap::Value {
+    use rex_core::heap::Value;
+    match json {
+        serde_json::Value::Null => Value::NULL,
+        serde_json::Value::Bool(b) => if *b { Value::TRUE } else { Value::FALSE },
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() { Value::int(i) }
+            else if let Some(f) = n.as_f64() { heap.alloc_float(f) }
+            else { Value::NONE }
+        }
+        serde_json::Value::String(s) => heap.intern_value(s),
+        serde_json::Value::Array(arr) => {
+            let items: Vec<Value> = arr.iter().map(|v| json_to_value(v, heap)).collect();
+            heap.alloc_array(items)
+        }
+        serde_json::Value::Object(obj) => {
+            let pairs: Vec<(u32, Value)> = obj.iter()
+                .map(|(k, v)| (heap.intern(k), json_to_value(v, heap)))
+                .collect();
+            heap.alloc_object(pairs)
+        }
+    }
+}
+
+/// Format a value as a plain string (for html escaping of non-string values).
+fn format_value(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> String {
+    if v.is_none() { return "none".into(); }
+    if v.is_null() { return "null".into(); }
+    if let Some(b) = v.as_bool() { return b.to_string(); }
+    if let Some(n) = v.as_i64() { return n.to_string(); }
+    if let Some(f) = v.as_f64(heap) { return f.to_string(); }
+    value_to_json(v, heap).to_string()
+}
+
+fn check_format(source: &str, line: usize) -> Option<String> {
+    let formatted = rex_core::format(source);
+    let formatted = formatted.trim();
+    let source = source.trim();
+    if formatted != source {
+        Some(format!("line {line}: format mismatch\n  source:    {source}\n  formatted: {formatted}"))
+    } else {
+        None
+    }
+}
+
 fn run_test(test: &SpecTest) -> Vec<String> {
     let mut vars: HashMap<String, rex_core::heap::Value> = HashMap::new();
     let mut heap = rex_core::heap::Heap::new();
@@ -209,14 +333,24 @@ fn run_test(test: &SpecTest) -> Vec<String> {
 
     for step in &test.steps {
         match step {
-            Step::Rex(source, line) => {
-                let bytecode = rex_core::compile(source);
+            Step::Rex(source, domain, line) => {
+                if let Some(err) = check_format(source, *line) {
+                    errors.push(err);
+                }
+                let bytecode = match domain {
+                    Some(d) => rex_core::compile_with_domain(source, d),
+                    None => rex_core::compile(source),
+                };
                 last_bytecode = bytecode.clone();
 
                 let mut ctx = rex_core::interpret::Context::default();
                 ctx.vars = std::mem::take(&mut vars);
                 ctx.heap = std::mem::take(&mut heap);
                 ctx.gas_limit = 1_000_000;
+                if domain.is_some() {
+                    ctx.opcodes = spec_opcodes();
+                    ctx.refs = spec_refs(&mut ctx.heap);
+                }
 
                 match rex_core::interpret::run(&bytecode, ctx) {
                     Ok(result) => {
@@ -229,8 +363,14 @@ fn run_test(test: &SpecTest) -> Vec<String> {
                     }
                 }
             }
-            Step::CompileOnly(source, _line) => {
-                last_bytecode = rex_core::compile(source);
+            Step::CompileOnly(source, domain, _line) => {
+                if let Some(err) = check_format(source, *_line) {
+                    errors.push(err);
+                }
+                last_bytecode = match domain {
+                    Some(d) => rex_core::compile_with_domain(source, d),
+                    None => rex_core::compile(source),
+                };
             }
             Step::CheckJson(expected, line, col) => {
                 let actual = value_to_json(last_value, &heap);
@@ -347,7 +487,7 @@ fn main() {
         eprintln!("\x1b[32m✓ {} specs passed\x1b[0m", tests.len());
     } else {
         eprintln!(); // blank line after [Running: ...] header
-        for err in errors.iter().take(4) {
+        for err in errors.iter().take(30) {
             if let Some(rest) = err.strip_prefix("line ") {
                 if let Some((loc, detail)) = rest.split_once(": ") {
                     eprintln!("\x1b[38;5;208m{SPEC_FILE}:{loc}\x1b[0m {detail}");

@@ -24,6 +24,15 @@ cargo test -p rex-core                   # run compiler tests
 cargo install --path crates/rex-cli      # install rex CLI
 ```
 
+### Spec tests
+
+The golden spec lives in `docs/spec-by-example.md`. To watch for changes and re-run automatically:
+
+```sh
+cargo test -p rex-core --test spec --no-run   # build the test binary (once)
+watchexec -w docs/spec-by-example.md --clear -- ./target/debug/deps/spec-*
+```
+
 ### Rex CLI
 
 ```sh

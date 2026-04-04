@@ -432,29 +432,30 @@ fn extract_extern_decl(node: &SyntaxNode, schema: &mut DomainSchema, doc: Option
     let kw = tokens.next();
     if kw.is_none() { return; }
 
-    // Check for `mut`
-    let mut mutable = false;
+    // Skip optional shortcode string: extern "jp" ...
     let next = match tokens.next() {
-        Some(child) => {
-            if as_token_text(&child) == Some("mut") {
-                mutable = true;
-                tokens.next()
-            } else {
-                Some(child)
-            }
-        }
-        Option::None => return,
+        Some(child) => child,
+        None => return,
+    };
+    let next = if matches!(next.kind(), SyntaxKind::DoubleString | SyntaxKind::SingleString) {
+        match tokens.next() { Some(c) => c, None => return }
+    } else {
+        next
     };
 
-    let next = match next {
-        Some(n) => n,
-        Option::None => return,
+    // Check for `mut`
+    let mut mutable = false;
+    let body = if as_token_text(&next) == Some("mut") {
+        mutable = true;
+        match tokens.next() { Some(c) => c, None => return }
+    } else {
+        next
     };
 
     // The body is an expression parsed by parse_expr, optionally followed by `-> ReturnType`:
     // - AssignExpr for `name = type`
     // - CallExpr for `name.fn(args)` — may be followed by `-> ReturnType`
-    match &next {
+    match &body {
         rowan::NodeOrToken::Node(n) => {
             match n.kind() {
                 SyntaxKind::AssignExpr => {
@@ -1597,11 +1598,18 @@ impl<'a> TypeEnv<'a> {
             _ => return,
         }
 
-        // Check for `mut`
+        // Skip optional shortcode string
         let next = match children.next() {
             Some(c) => c,
             _ => return,
         };
+        let next = if matches!(next.kind(), SyntaxKind::DoubleString | SyntaxKind::SingleString) {
+            match children.next() { Some(c) => c, _ => return }
+        } else {
+            next
+        };
+
+        // Check for `mut`
         let body = if as_token_text(&next).map_or(false, |t| t == "mut") {
             match children.next() {
                 Some(c) => c,

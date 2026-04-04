@@ -33,8 +33,9 @@ describe("rex TextMate grammar", () => {
 		expect(includes.has("#assignment-operator")).toBe(true);
 		expect(includes.has("#value-operator")).toBe(true);
 
-		// Context-dependent patterns removed — LSP semantic tokens handle these
-		expect(includes.has("#object-key")).toBe(false);
+		// Object keys detected via tight-colon heuristic (ident: with no space)
+		expect(includes.has("#object-key")).toBe(true);
+		// Function calls handled by LSP semantic tokens
 		expect(includes.has("#function-call")).toBe(false);
 		expect(includes.has("#identifier")).toBe(false);
 		expect(includes.has("#navigation-static")).toBe(false);

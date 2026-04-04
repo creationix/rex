@@ -65,11 +65,12 @@ impl Formatter {
             SK::NavExpr | SK::GroupExpr => self.tight(node),
             SK::ConditionalExpr | SK::ForExpr | SK::WhileExpr => self.block_kw(node),
             SK::ElseBranch => self.else_branch(node),
-            SK::ArrayExpr => self.array(node),
-            SK::ObjectExpr => self.object(node),
+            SK::ArrayExpr | SK::IndexedArrayExpr => self.array(node),
+            SK::ObjectExpr | SK::IndexedObjectExpr => self.object(node),
             SK::ArrayComprehension | SK::ObjectComprehension => self.comprehension(node),
             SK::Pair => self.pair(node),
-            SK::IterBinding => self.spaced_punct(node),
+            SK::SpreadExpr => self.spread(node),
+            SK::IterBinding => self.iter_binding(node),
             SK::CompoundExpr => self.compound(node),
             _ => self.emit(&node.text().to_string()),
         }
@@ -200,7 +201,7 @@ impl Formatter {
         for (i, c) in ntc(node).enumerate() {
             if let rowan::NodeOrToken::Token(t) = &c {
                 match t.kind() {
-                    SK::Colon => { self.emit(": "); after_punct = true; continue; }
+                    SK::Colon => { self.emit(":"); after_punct = true; continue; }
                     SK::Eq => { self.emit(" = "); after_punct = true; continue; }
                     SK::Arrow => { self.emit(" -> "); after_punct = true; continue; }
                     SK::Comma => { self.emit(", "); after_punct = true; continue; }
@@ -298,7 +299,7 @@ impl Formatter {
                     }
                     SK::KwEnd => {
                         if body_multiline {
-                            self.indent -= 1;
+                            if self.indent > 0 { self.indent -= 1; }
                             self.newline();
                         } else {
                             self.emit(" ");
@@ -365,19 +366,20 @@ impl Formatter {
     // ── Array: [a, b, c] or multiline ──────────────────────────────
 
     fn array(&mut self, node: &SyntaxNode) {
+        let indexed = node.kind() == SK::IndexedArrayExpr;
         if is_multiline(node) {
-            self.collection_multiline(node, "[", "]");
+            self.collection_multiline(node, if indexed { "[#" } else { "[" }, "]");
         } else {
             let has_commas = node.children_with_tokens()
                 .any(|c| c.as_token().map_or(false, |t| t.kind() == SK::Comma));
             let sep = if has_commas { ", " } else { " " };
             let items: Vec<_> = ntc(node)
-                .filter(|c| !is_bracket(c_kind(c)) && c_kind(c) != SK::Comma)
+                .filter(|c| !is_bracket(c_kind(c)) && c_kind(c) != SK::Comma && c_kind(c) != SK::Hash)
                 .collect();
             if items.is_empty() {
-                self.emit("[]");
+                self.emit(if indexed { "[#]" } else { "[]" });
             } else {
-                self.emit("[ ");
+                self.emit(if indexed { "[# " } else { "[ " });
                 for (i, c) in items.iter().enumerate() {
                     if i > 0 { self.emit(sep); }
                     self.child(c);
@@ -390,17 +392,21 @@ impl Formatter {
     // ── Object: {a: 1 b: 2} or multiline ──────────────────────────
 
     fn object(&mut self, node: &SyntaxNode) {
+        let indexed = node.kind() == SK::IndexedObjectExpr;
         if is_multiline(node) {
-            self.collection_multiline(node, "{", "}");
+            self.collection_multiline(node, if indexed { "{#" } else { "{" }, "}");
         } else {
-            let pairs: Vec<_> = node.children().filter(|n| n.kind() == SK::Pair).collect();
-            if pairs.is_empty() {
-                self.emit("{}");
+            let items: Vec<_> = node.children()
+                .filter(|n| n.kind() == SK::Pair || n.kind() == SK::SpreadExpr)
+                .collect();
+            if items.is_empty() {
+                self.emit(if indexed { "{#}" } else { "{}" });
             } else {
-                self.emit("{ ");
-                for (i, p) in pairs.iter().enumerate() {
+                self.emit(if indexed { "{# " } else { "{ " });
+                for (i, n) in items.iter().enumerate() {
                     if i > 0 { self.emit(" "); }
-                    self.pair(p);
+                    if n.kind() == SK::SpreadExpr { self.spread(n); }
+                    else { self.pair(n); }
                 }
                 self.emit(" }");
             }
@@ -426,11 +432,15 @@ impl Formatter {
                 self.emit(c.as_token().unwrap().text());
                 continue;
             }
-            if kind == SK::Comma { continue; }
+            if kind == SK::Comma || kind == SK::Hash { continue; }
             if kind == SK::LBracket || kind == SK::LBrace {
+                let indexed = matches!(node.kind(), SK::IndexedArrayExpr | SK::IndexedObjectExpr);
                 self.emit(c.as_token().unwrap().text());
+                if indexed { self.emit("#"); }
                 self.indent += 1;
-                if !next_has_newline(node, &c) { self.emit(" "); }
+                // For indexed containers, skip the Hash when checking for a newline
+                let has_nl = if indexed { next_has_newline_skip(node, &c, 1) } else { next_has_newline(node, &c) };
+                if !has_nl { self.emit(" "); }
                 continue;
             }
             if kind == SK::RBracket || kind == SK::RBrace {
@@ -443,16 +453,43 @@ impl Formatter {
         }
     }
 
-    // ── Pair: key: value ───────────────────────────────────────────
+    // ── Pair: key:value ────────────────────────────────────────────
 
     fn pair(&mut self, node: &SyntaxNode) {
         let mut after_colon = false;
         for (i, c) in ntc(node).enumerate() {
             if let rowan::NodeOrToken::Token(t) = &c {
-                if t.kind() == SK::Colon { self.emit(": "); after_colon = true; continue; }
+                if t.kind() == SK::Colon { self.emit(":"); after_colon = true; continue; }
             }
             if i > 0 && !after_colon { self.emit(" "); }
             after_colon = false;
+            self.child(&c);
+        }
+    }
+
+    fn iter_binding(&mut self, node: &SyntaxNode) {
+        let mut first = true;
+        for c in ntc(node) {
+            if c.as_token().map_or(false, |t| t.kind() == SK::Comma) { continue; }
+            if let rowan::NodeOrToken::Token(t) = &c {
+                match t.kind() {
+                    SK::KwIn | SK::KwOf => {
+                        self.emit(" "); self.emit(t.text()); self.emit(" ");
+                        first = true; continue;
+                    }
+                    _ => {}
+                }
+            }
+            if !first { self.emit(" "); }
+            first = false;
+            self.child(&c);
+        }
+    }
+
+    fn spread(&mut self, node: &SyntaxNode) {
+        self.emit("...");
+        for c in ntc(node) {
+            if c.as_token().map_or(false, |t| t.kind() == SK::DotDotDot) { continue; }
             self.child(&c);
         }
     }
@@ -558,15 +595,21 @@ fn is_bracket(kind: SK) -> bool {
 
 /// Check if the next sibling token after `current` in `parent` contains a newline.
 fn next_has_newline(parent: &SyntaxNode, current: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>) -> bool {
+    next_has_newline_skip(parent, current, 0)
+}
+
+/// Like next_has_newline but skips `skip` extra tokens after `current` before checking.
+fn next_has_newline_skip(parent: &SyntaxNode, current: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>, skip: usize) -> bool {
     let mut found = false;
+    let mut remaining = skip;
     for c in parent.children_with_tokens() {
         if found {
+            if remaining > 0 { remaining -= 1; continue; }
             if let Some(t) = c.as_token() {
                 return t.text().contains('\n');
             }
             return false;
         }
-        // Match by text range offset
         if c.text_range() == current.text_range() {
             found = true;
         }
@@ -666,8 +709,8 @@ mod tests {
 
     #[test]
     fn inline_object() {
-        assert_eq!(format("{a: 1 b: 2}"), "{ a: 1 b: 2 }\n");
-        assert_eq!(format("{a: 1, b: 2}"), "{ a: 1 b: 2 }\n");
+        assert_eq!(format("{a: 1 b: 2}"), "{ a:1 b:2 }\n");
+        assert_eq!(format("{a: 1, b: 2}"), "{ a:1 b:2 }\n");
     }
 
     #[test]
@@ -716,7 +759,7 @@ mod tests {
     fn range() { assert_eq!(format("1..10"), "1 .. 10\n"); }
 
     #[test]
-    fn object_comprehension() { assert_eq!(format("{(k): v for k in items}"), "{ (k): v for k in items }\n"); }
+    fn object_comprehension() { assert_eq!(format("{(k): v for k in items}"), "{ (k):v for k in items }\n"); }
 
     #[test]
     fn comment_in_block() {
