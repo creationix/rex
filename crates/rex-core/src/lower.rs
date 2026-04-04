@@ -324,10 +324,19 @@ fn lower_assign(node: &SyntaxNode) -> Value {
         .unwrap_or(Value::Ref("no".into()));
 
     let op_token = children.next();
-    let op = op_token
+    let mut op = op_token
         .as_ref()
         .and_then(|c| c.as_token())
         .map(|t| t.kind());
+
+    // Type-annotated assignment: name: Type = value — skip the type
+    if op == Some(SyntaxKind::Colon) {
+        children.next(); // skip type expression
+        op = children.next()
+            .as_ref()
+            .and_then(|c| c.as_token())
+            .map(|t| t.kind());
+    }
 
     let value = children
         .next()
