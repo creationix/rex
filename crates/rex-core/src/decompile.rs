@@ -64,8 +64,8 @@ impl Ctx {
                 }
             }
 
-            Value::Array(items) => self.write_list(items, out),
-            Value::Object(pairs) => self.write_map(pairs, out),
+            Value::Array(items) | Value::IndexedArray(items) => self.write_list(items, out),
+            Value::Object(pairs) | Value::IndexedObject(pairs) => self.write_map(pairs, out),
             Value::Block(items) => self.write_block(items, out, prec),
             Value::Call(items) => self.write_call(items, out, prec),
 

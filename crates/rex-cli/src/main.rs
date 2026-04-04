@@ -154,7 +154,7 @@ enum Command {
         domain: Option<PathBuf>,
     },
 
-    /// Format Rex source code (note: currently lossy — strips comments and type annotations)
+    /// Format Rex source code
     #[command(alias = "f", after_help = "\x1b[2mExamples:\x1b[0m
   rex format app.rex                     Format and print to stdout
   rex format app.rex -o app.rex          Format in place
@@ -167,6 +167,14 @@ declarations, type annotations, and dynamic navigation. See KNOWN-ISSUES.md.")]
         /// Output file (prints to stdout if omitted)
         #[arg(short, long)]
         output: Option<PathBuf>,
+    },
+
+    /// Format Rex code blocks inside a markdown file
+    #[command(alias = "fmd", after_help = "\x1b[2mExamples:\x1b[0m
+  rex format-md docs/spec.md               Format rex blocks in place")]
+    FormatMd {
+        /// Input .md file
+        input: PathBuf,
     },
 
     /// Start the Language Server Protocol server over stdio (for editors)
@@ -215,6 +223,7 @@ fn main() {
         } => cmd_run(input, expr, domain, gas, args, cli.time),
         Command::Repl { gas } => cmd_repl(gas),
         Command::Format { input, output } => cmd_format(input, output, cli.time),
+        Command::FormatMd { input } => cmd_format_md(input),
         Command::Check { input, domain } => cmd_check(input, domain),
         Command::Lsp { domain } => lsp::run(domain),
         Command::Mcp { domain } => mcp::run(domain),
@@ -316,6 +325,40 @@ fn cmd_format(
         report_timing("format", source.len(), formatted.len(), elapsed);
     }
     write_output(output, &formatted)
+}
+
+fn cmd_format_md(input: PathBuf) -> io::Result<()> {
+    let content = std::fs::read_to_string(&input)?;
+    let mut out = String::with_capacity(content.len());
+    let mut in_rex = false;
+    let mut rex_body = String::new();
+
+    for line in content.lines() {
+        if in_rex {
+            if line.starts_with("```") {
+                // Format and emit the accumulated rex block
+                let formatted = rex_core::format(&rex_body);
+                out.push_str(formatted.trim_end());
+                out.push('\n');
+                rex_body.clear();
+                in_rex = false;
+                out.push_str(line);
+                out.push('\n');
+            } else {
+                rex_body.push_str(line);
+                rex_body.push('\n');
+            }
+        } else if line.starts_with("```rex") && !line.starts_with("```rexc") && !line.starts_with("```rexd") && !line.starts_with("```rext") {
+            out.push_str(line);
+            out.push('\n');
+            in_rex = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    std::fs::write(&input, &out)
 }
 
 fn cmd_decompile(

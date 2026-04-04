@@ -40,8 +40,10 @@ fn lower_node(node: &SyntaxNode) -> Option<Value> {
         SyntaxKind::ForExpr => Some(lower_for(node)),
         SyntaxKind::WhileExpr => Some(lower_while(node)),
         SyntaxKind::ArrayExpr => Some(lower_array(node)),
+        SyntaxKind::IndexedArrayExpr => Some(lower_indexed_array(node)),
         SyntaxKind::ArrayComprehension => Some(lower_array_comprehension(node)),
         SyntaxKind::ObjectExpr => Some(lower_object(node)),
+        SyntaxKind::IndexedObjectExpr => Some(lower_indexed_object(node)),
         SyntaxKind::ObjectComprehension => Some(lower_object_comprehension(node)),
         SyntaxKind::TemplateExpr => Some(lower_template_expr(node)),
         SyntaxKind::ReturnExpr => Some(lower_return(node)),
@@ -709,6 +711,11 @@ fn lower_iter_binding(node: &SyntaxNode) -> (Vec<Value>, bool) {
 }
 
 fn lower_array(node: &SyntaxNode) -> Value {
+    let has_spread = node.children().any(|c| c.kind() == SyntaxKind::SpreadExpr);
+    if has_spread {
+        return lower_spread_array(node);
+    }
+
     let mut items = Vec::new();
     for child in non_trivia_children(node) {
         if let Some(t) = child.as_token() {
@@ -723,6 +730,64 @@ fn lower_array(node: &SyntaxNode) -> Value {
     }
 
     Value::Array(items)
+}
+
+/// Lower an array with spread expressions into a Chain.
+/// Groups consecutive non-spread items into Array segments,
+/// and spreads become direct segments.
+fn lower_spread_array(node: &SyntaxNode) -> Value {
+    let mut segments: Vec<Value> = Vec::new();
+    let mut pending: Vec<Value> = Vec::new();
+
+    let flush = |pending: &mut Vec<Value>, segments: &mut Vec<Value>| {
+        if !pending.is_empty() {
+            segments.push(Value::Array(std::mem::take(pending)));
+        }
+    };
+
+    for child in non_trivia_children(node) {
+        if let Some(t) = child.as_token() {
+            match t.kind() {
+                SyntaxKind::LBracket | SyntaxKind::RBracket | SyntaxKind::Comma => continue,
+                _ => {}
+            }
+        }
+        if let Some(n) = child.as_node() {
+            if n.kind() == SyntaxKind::SpreadExpr {
+                flush(&mut pending, &mut segments);
+                // Lower the inner expression (skip the `...` token)
+                if let Some(inner) = non_trivia_children(n)
+                    .filter(|c| c.as_token().map_or(true, |t| t.kind() != SyntaxKind::DotDotDot))
+                    .find_map(|c| lower_child(c))
+                {
+                    segments.push(inner);
+                }
+                continue;
+            }
+        }
+        if let Some(v) = lower_child(child) {
+            pending.push(v);
+        }
+    }
+    flush(&mut pending, &mut segments);
+
+    Value::Chain(segments)
+}
+
+fn lower_indexed_array(node: &SyntaxNode) -> Value {
+    let mut items = Vec::new();
+    for child in non_trivia_children(node) {
+        if let Some(t) = child.as_token() {
+            match t.kind() {
+                SyntaxKind::LBracket | SyntaxKind::RBracket | SyntaxKind::Comma | SyntaxKind::Hash => continue,
+                _ => {}
+            }
+        }
+        if let Some(v) = lower_child(child) {
+            items.push(v);
+        }
+    }
+    Value::IndexedArray(items)
 }
 
 fn lower_array_comprehension(node: &SyntaxNode) -> Value {
@@ -774,6 +839,11 @@ fn lower_array_comprehension(node: &SyntaxNode) -> Value {
 }
 
 fn lower_object(node: &SyntaxNode) -> Value {
+    let has_spread = node.children().any(|c| c.kind() == SyntaxKind::SpreadExpr);
+    if has_spread {
+        return lower_spread_object(node);
+    }
+
     let mut pairs = Vec::new();
     for child in node.children_with_tokens().filter_map(|c| c.into_node()) {
         if child.kind() == SyntaxKind::Pair {
@@ -783,6 +853,49 @@ fn lower_object(node: &SyntaxNode) -> Value {
     }
 
     Value::Object(pairs)
+}
+
+/// Lower an object with spread expressions into a Chain.
+/// Groups consecutive pairs into Object segments,
+/// and spreads become direct segments.
+fn lower_spread_object(node: &SyntaxNode) -> Value {
+    let mut segments: Vec<Value> = Vec::new();
+    let mut pending: Vec<(Value, Value)> = Vec::new();
+
+    let flush = |pending: &mut Vec<(Value, Value)>, segments: &mut Vec<Value>| {
+        if !pending.is_empty() {
+            segments.push(Value::Object(std::mem::take(pending)));
+        }
+    };
+
+    for child in node.children() {
+        if child.kind() == SyntaxKind::SpreadExpr {
+            flush(&mut pending, &mut segments);
+            if let Some(inner) = non_trivia_children(&child)
+                .filter(|c| c.as_token().map_or(true, |t| t.kind() != SyntaxKind::DotDotDot))
+                .find_map(|c| lower_child(c))
+            {
+                segments.push(inner);
+            }
+        } else if child.kind() == SyntaxKind::Pair {
+            let (key, val) = lower_pair(&child);
+            pending.push((key, val));
+        }
+    }
+    flush(&mut pending, &mut segments);
+
+    Value::Chain(segments)
+}
+
+fn lower_indexed_object(node: &SyntaxNode) -> Value {
+    let mut pairs = Vec::new();
+    for child in node.children_with_tokens().filter_map(|c| c.into_node()) {
+        if child.kind() == SyntaxKind::Pair {
+            let (key, val) = lower_pair(&child);
+            pairs.push((key, val));
+        }
+    }
+    Value::IndexedObject(pairs)
 }
 
 fn lower_pair(node: &SyntaxNode) -> (Value, Value) {
@@ -1009,33 +1122,40 @@ fn lower_untagged_template(parts: &[TemplatePart]) -> Value {
 }
 
 /// Lower a tagged template: tag function receives (string_parts_array, ...exprs).
+/// Follows the sandwich rule: string_parts always has N+1 entries for N interpolations,
+/// with empty strings inserted where no static text appears.
 fn lower_tagged_template(tag: &str, parts: &[TemplatePart]) -> Value {
-    let mut string_parts = Vec::new();
+    let mut string_parts: Vec<Value> = Vec::new();
     let mut exprs = Vec::new();
+    let mut pending_static = false; // true = last item was an interpolation without a following static
 
     for part in parts {
         match part {
             TemplatePart::Static(s) => {
                 string_parts.push(Value::String(s.clone()));
+                pending_static = false;
             }
             TemplatePart::Interpolation(expr_src) => {
+                // If two interpolations are adjacent, insert empty string between
+                if pending_static || string_parts.is_empty() {
+                    string_parts.push(Value::String(String::new()));
+                }
                 let tokens = crate::lexer::lex(expr_src);
                 let (green, _errors) = crate::parser::parse(expr_src, &tokens);
                 let root = crate::syntax::SyntaxNode::new_root(green);
-                let value = lower(&root);
-                exprs.push(value);
+                exprs.push(lower(&root));
+                pending_static = true;
             }
         }
     }
 
-    // If there are interpolations, we need one more static part at the end
-    // (like JS: `a${x}b` → ["a", "b"], [x])
-    // The parts already alternate correctly, but ensure string_parts bookend properly.
-    // Actually, the parser already handles this: static parts appear between/around interpolations.
+    // Trailing empty string after last interpolation
+    if pending_static {
+        string_parts.push(Value::String(String::new()));
+    }
 
     // Build: call(tag, [string_parts...], expr1, expr2, ...)
     let mut call_items = Vec::new();
-    // Tag as opcode (built-in) — use Variable for user-defined tags
     call_items.push(Value::Variable(tag.to_string()));
     call_items.push(Value::Array(string_parts));
     call_items.extend(exprs);

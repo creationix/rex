@@ -93,7 +93,9 @@ pub enum Value {
     Pointer(u32),
 
     Array(Vec<Value>),
+    IndexedArray(Vec<Value>),
     Object(Vec<(Value, Value)>),
+    IndexedObject(Vec<(Value, Value)>),
     Block(Vec<Value>),
     Call(Vec<Value>),
 
@@ -167,6 +169,9 @@ fn encode_into(value: &Value, out: &mut String) {
 
         // Paired containers
         Value::Array(items) => encode_paired('[', ']', items, out),
+        Value::IndexedArray(items) => {
+            out.push_str(&encode_indexed_array(items));
+        }
         Value::Object(pairs) => {
             out.push('{');
             for (k, v) in pairs {
@@ -174,6 +179,9 @@ fn encode_into(value: &Value, out: &mut String) {
                 encode_into(v, out);
             }
             out.push('}');
+        }
+        Value::IndexedObject(pairs) => {
+            out.push_str(&encode_indexed_object(pairs));
         }
         Value::Block(items) => {
             // Blocks encode as a call with the empty opcode: (%expr0 expr1 ...)
@@ -265,6 +273,16 @@ fn encode_fixed_b64(n: u64, width: usize, out: &mut String) {
     for &d in &digits[..width] {
         out.push(d as char);
     }
+}
+
+/// Encode a fixed-width b64 number into a byte buffer, returning the width.
+fn encode_fixed_b64_buf(n: u64, width: usize, buf: &mut [u8; 8]) -> usize {
+    let mut val = n;
+    for i in (0..width).rev() {
+        buf[i] = B64[(val % 64) as usize];
+        val /= 64;
+    }
+    width
 }
 
 /// Decode a fixed-width b64 number from `width` bytes at `pos`.
@@ -669,7 +687,9 @@ impl RevEncoder {
             Value::Array(items) => self.emit_paired(b'[', b']', skippable, |s| {
                 for i in items.iter().rev() { s.write(i, false); }
             }),
+            Value::IndexedArray(items) => self.emit_indexed_array(items),
             Value::Object(pairs) => self.emit_object(pairs, skippable),
+            Value::IndexedObject(pairs) => self.emit_indexed_object(pairs),
             Value::Block(items) => self.emit_paired(b'(', b')', skippable, |s| {
                 for i in items.iter().rev() { s.write(i, false); }
                 s.write(&Value::Opcode(String::new()), false); // empty opcode
@@ -848,6 +868,105 @@ impl RevEncoder {
             k.hash(&mut h);
         }
         h.finish()
+    }
+
+    fn emit_indexed_array(&mut self, items: &[Value]) {
+        if items.is_empty() {
+            self.push(b']');
+            self.push(b'[');
+            return;
+        }
+
+        // 1. Emit closer
+        self.push(b']');
+
+        // 2. Emit elements in reverse, recording each element's encoded size
+        let mut sizes = Vec::with_capacity(items.len());
+        for item in items.iter().rev() {
+            let before = self.pos;
+            self.write(item, false);
+            sizes.push(self.pos - before);
+        }
+        sizes.reverse(); // now sizes[i] = encoded byte count of items[i]
+
+        // 3. Compute forward offsets from sizes
+        let mut offsets = Vec::with_capacity(items.len());
+        let mut offset = 0usize;
+        for &sz in &sizes {
+            offsets.push(offset);
+            offset += sz;
+        }
+
+        // 4. Emit pointer table (in reverse for RevEncoder)
+        let max_offset = offsets.last().copied().unwrap_or(0);
+        let width = b64_width(max_offset as u64);
+        for &off in offsets.iter().rev() {
+            let mut buf = [0u8; 8];
+            let w = encode_fixed_b64_buf(off as u64, width, &mut buf);
+            self.push_str_rev(&buf[..w]);
+        }
+
+        // 5. Emit # and packed header and opener
+        self.push(b'#');
+        let packed = ((items.len() as u64) << 3) | ((width as u64) - 1);
+        self.push_varint(packed);
+        self.push(b'[');
+    }
+
+    fn emit_indexed_object(&mut self, pairs: &[(Value, Value)]) {
+        if pairs.is_empty() {
+            self.push(b'}');
+            self.push(b'{');
+            return;
+        }
+
+        // 1. Emit closer
+        self.push(b'}');
+
+        // 2. Emit key-value pairs in reverse, recording sizes and encoded keys
+        let mut sizes = Vec::with_capacity(pairs.len());
+        let mut encoded_keys: Vec<Vec<u8>> = Vec::with_capacity(pairs.len());
+        for (k, v) in pairs.iter().rev() {
+            let before = self.pos;
+            self.write(v, false);
+            let key_start = self.pos;
+            self.write(k, false);
+            let key_bytes = &self.buf[self.buf.len() - (self.pos - key_start)..];
+            // Key is stored reversed in buf; reverse it to get forward order for sorting
+            let mut fwd_key: Vec<u8> = key_bytes.to_vec();
+            fwd_key.reverse();
+            encoded_keys.push(fwd_key);
+            sizes.push(self.pos - before);
+        }
+        sizes.reverse();
+        encoded_keys.reverse();
+
+        // 3. Compute forward offsets
+        let mut offsets = Vec::with_capacity(pairs.len());
+        let mut offset = 0usize;
+        for &sz in &sizes {
+            offsets.push(offset);
+            offset += sz;
+        }
+
+        // 4. Sort indices by encoded key for binary search
+        let mut sorted: Vec<usize> = (0..pairs.len()).collect();
+        sorted.sort_by(|&a, &b| encoded_keys[a].cmp(&encoded_keys[b]));
+
+        // 5. Emit sorted pointer table (in reverse for RevEncoder)
+        let max_offset = offsets.iter().copied().max().unwrap_or(0);
+        let width = b64_width(max_offset as u64);
+        for &idx in sorted.iter().rev() {
+            let mut buf = [0u8; 8];
+            let w = encode_fixed_b64_buf(offsets[idx] as u64, width, &mut buf);
+            self.push_str_rev(&buf[..w]);
+        }
+
+        // 6. Emit # and packed header and opener
+        self.push(b'#');
+        let packed = ((pairs.len() as u64) << 3) | ((width as u64) - 1);
+        self.push_varint(packed);
+        self.push(b'{');
     }
 
     fn emit_compound(&mut self, modifier: u8, open: u8, close: u8, items: &[Value], skippable: bool) {

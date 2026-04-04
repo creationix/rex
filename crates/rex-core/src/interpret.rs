@@ -353,6 +353,7 @@ impl<'a> Interpreter<'a> {
             b'#' => self.eval_while(),
             // Mutation
             b'=' => self.eval_set(),
+            b'/' => self.eval_swap(),
             b'~' => self.eval_delete(),
 
             0 => Ok(Value::NONE),
@@ -985,6 +986,48 @@ impl<'a> Interpreter<'a> {
                 self.pos = save;
                 let val = self.eval()?;
                 Ok(val)
+            }
+        } else {
+            let _place = self.eval()?;
+            let val = self.eval()?;
+            Ok(val)
+        }
+    }
+
+    fn eval_swap(&mut self) -> Result<Value, RexError> {
+        let raw = self.read_raw();
+        let tag = self.peek();
+
+        if tag == b'$' {
+            // Simple variable: /var newval → returns old, sets new
+            self.read_byte();
+            let name = Self::raw_to_str(raw);
+            let kid = self.heap.intern(name);
+            let old = self.vars.get(&kid).copied().unwrap_or(Value::NONE);
+            let val = self.eval()?;
+            self.vars.insert(kid, val);
+            Ok(old)
+        } else if tag == b'(' {
+            // Navigation: /(target keys...) newval → returns old, sets new
+            self.read_byte();
+            let mut parts = Vec::new();
+            while self.peek() != b')' && !self.at_end() {
+                parts.push(self.eval()?);
+            }
+            self.read_byte(); // consume ')'
+            let val = self.eval()?;
+
+            if parts.len() >= 2 {
+                let mut target = parts[0];
+                for i in 1..parts.len() - 1 {
+                    target = self.read_property(target, parts[i])?;
+                }
+                let last_key = parts[parts.len() - 1];
+                let old = self.read_property(target, last_key).unwrap_or(Value::NONE);
+                self.write_property(target, last_key, val)?;
+                Ok(old)
+            } else {
+                Ok(Value::NONE)
             }
         } else {
             let _place = self.eval()?;
