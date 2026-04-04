@@ -919,7 +919,7 @@ production these manifests can have hundreds of thousands of entries.
 }
 ```
 
-```rexc
+```rext
 {F#001g0M3n201,/{2d^4,Home3n^7,landing7,scripts[9,analytics]}6,/about{1o^8,About Us2u^4,page}5,/blog{W^4,Blog24^7,listing8,children7,/blog/*}h,/blog/hello-world{5,titleb,Hello WorldZ^4,post6,author5,alice9,publisheda,2026-01-15}d,/api/v1/users{8,template8,json-api7,methods[3,GET4,POST]4,autht'}}
 ```
 
@@ -937,7 +937,7 @@ roles = {#
 }
 ```
 
-```rexc
+```rext
 =roles${w#0XjD5,admin{U^t't't't'}6,editor{A^t't'f'f'}6,viewer{g^t'f'f'f'}5,guest{4,readf'5,writef'6,removef'6,managef'}}
 ```
 
@@ -951,7 +951,7 @@ Then we can read a single item.
 roles.viewer.read
 ```
 
-```rexc
+```rext
 (roles$6,viewer4,read)
 ```
 
@@ -966,9 +966,9 @@ derived values are computed inline.
 
 ```rex
 // These can be overridden by seeding the interpreter state
-app: str = app or "myapp"
-port: int = port or 8080
-host: str = host or "0.0.0.0"
+app = app or "myapp"
+port = port or 8080
+host = host or "0.0.0.0"
 {
   name:app
   listen:`${host}:${port}`
@@ -986,6 +986,14 @@ host: str = host or "0.0.0.0"
     methods:[ "GET" "POST" "PUT" "DELETE" ]
   }
 }
+```
+
+```rext
+(%=app$|(app$5,myapp)=port$|(port$3Yw+)=host$|(host$7,0.0.0.0){4,nameapp$6,listend.host$1,:port$8,database{13^w.q,postgres://localhost:5432/app$9,pool-sizek+7,timeoutY+}5,cache{3,urlo,redis://localhost:6379/03,ttl9o+}4,cors{7,origins[o.h,http://localhost:port$h,https://myapp.com]7,methods[3,GET4,POST3,PUT6,DELETE]}})
+```
+
+```json
+{"name": "myapp", "listen": "0.0.0.0:8080", "database": {"url": "postgres://localhost:5432/myapp", "pool-size": 10, "timeout": 30}, "cache": {"url": "redis://localhost:6379/0", "ttl": 300}, "cors": {"origins": ["http://localhost:8080", "https://myapp.com"], "methods": ["GET", "POST", "PUT", "DELETE"]}}
 ```
 
 ### Lookup Table from List
@@ -1013,6 +1021,10 @@ collects each new term until it exceeds the limit.
 ```rex
 a = 0; b = 1
 [ c = a + b; a = b; b = c while a <= 100 ]
+```
+
+```rext
+(%(%=a$+=b$2+)#[(le%a$38+)(%=c$(ad%a$b$)=a$b$=b$c$)])
 ```
 
 ```json

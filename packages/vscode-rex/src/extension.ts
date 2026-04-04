@@ -10,7 +10,7 @@ let client: LanguageClient | undefined;
 export async function activate(context: vscode.ExtensionContext) {
 	// Register rext semantic tokens first — doesn't depend on rex CLI
 	const legend = new vscode.SemanticTokensLegend(
-		["keyword", "operator", "string", "number", "variable", "property", "type"],
+		["keyword", "operator", "string", "number", "variable", "property", "type", "regexp"],
 		[]
 	);
 	const rextProvider = new RextSemanticTokensProvider(legend);
@@ -72,7 +72,7 @@ export async function deactivate(): Promise<void> {
 const B64 = new Set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_");
 const B64_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
 
-const enum Tok { keyword, operator, string, number, variable, property, type }
+const enum Tok { keyword, operator, string, number, variable, property, type, regexp }
 
 class RextSemanticTokensProvider implements vscode.DocumentSemanticTokensProvider {
 	public legend: vscode.SemanticTokensLegend;
@@ -162,7 +162,7 @@ class RextSemanticTokensProvider implements vscode.DocumentSemanticTokensProvide
 						col++; afterValue(); break;
 
 					case "^":   // pointer (forward delta)
-						builder.push(absLine, spanStart, spanLen, isKey ? Tok.property : Tok.type);
+						builder.push(absLine, spanStart, spanLen, isKey ? Tok.property : Tok.regexp);
 						col++; afterValue(); break;
 
 					case ",": { // string — varint = byte length, then raw body
@@ -239,9 +239,17 @@ class RextSemanticTokensProvider implements vscode.DocumentSemanticTokensProvide
 						col++; break;
 
 					// ── Container delimiters — no semantic token, let bracket pair colorization handle these
-					case "{":
-						stack.push({ isObject: true, isKey: true });
+					case "{": {
+						// Peek at first tag after b64 digits — if it's ',' the object
+						// has inline string keys (regular key-value pairs). Otherwise
+						// it's a schema-shared or indexed object — don't alternate.
+						let peek = col + 1;
+						while (peek < line.length && B64.has(line[peek]!)) peek++;
+						const firstTag = peek < line.length ? line[peek] : "";
+						const hasInlineKeys = firstTag === ",";
+						stack.push({ isObject: hasInlineKeys, isKey: hasInlineKeys });
 						col++; break;
+					}
 					case "[":
 						stack.push({ isObject: false, isKey: false });
 						col++; break;
