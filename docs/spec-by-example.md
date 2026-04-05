@@ -346,6 +346,16 @@ x = 42
 {"x": 42}
 ```
 
+Type annotations are used by the typechecker but don't affect the bytecode:
+
+```rex
+scores: { *: int } = { alice:95 bob:42 }
+```
+
+```json
+{"alice": 95, "bob": 42}
+```
+
 ## Swap Assignment
 
 `:=` assigns a new value and returns the previous one:
@@ -791,7 +801,7 @@ extern "H" html(parts: [string], ...values: some) -> string
 extern "Jp" json.parse(text: string) -> some
 extern "Js" json.stringify(value: some) -> string
 extern "Mf" math.floor(n: number) -> integer
-extern "E" env = {name: string, version: string}
+extern "E" env = { name: string version: string }
 ```
 
 Convention: host shortcodes use initial caps (`Jp`, `Mf`) to avoid conflicts
@@ -966,9 +976,9 @@ derived values are computed inline.
 
 ```rex
 // These can be overridden by seeding the interpreter state
-app = app or "myapp"
-port = port or 8080
-host = host or "0.0.0.0"
+app: str = app or "myapp"
+port: int = port or 8080
+host: str = host or "0.0.0.0"
 {
   name:app
   listen:`${host}:${port}`
@@ -1055,3 +1065,233 @@ scores = {
 (%=scores${5,alice2-+3,bob1k+5,carol2s+4,dave-+3,eve2M+}{6,passed>{scores$k$v$k$&((ge%v$1A+)v$)}a,honor-roll>[scores$k$v$&((ge%v$2G+)k$)]7,average(%=a$+=n$+>(scores$k$v$(%=a$(ad%a$v$)=n$(ad%n$2+)))(dv%a$n$))})
 ```
 
+
+---
+
+# Built-in Methods
+
+## Array Methods
+
+### push
+
+Appends a value and returns the array.
+
+```rex
+a = [ 1, 2 ]
+a.push(3)
+```
+
+```json
+[1, 2, 3]
+```
+
+### pop
+
+Removes and returns the last element.
+
+```rex
+a = [ 1, 2, 3 ]
+a.pop()
+```
+
+```json
+3
+```
+
+### join
+
+Concatenates elements with a separator.
+
+```rex
+[ "a", "b", "c" ].join("-")
+```
+
+```json
+"a-b-c"
+```
+
+### indexOf (array)
+
+Returns the index of the first match, or none.
+
+```rex
+[ 10, 20, 30 ].indexOf(20)
+```
+
+```json
+1
+```
+
+```rex
+[ 10, 20, 30 ].indexOf(99)
+```
+
+```json
+null
+```
+
+### contains (array)
+
+Returns the value if found (existence-style), none otherwise.
+
+```rex
+[ 1, 2, 3 ].contains(2)
+```
+
+```json
+2
+```
+
+```rex
+[ 1, 2, 3 ].contains(9)
+```
+
+```json
+null
+```
+
+### slice (array)
+
+Returns a sub-array from start (inclusive) to end (exclusive).
+
+```rex
+[ 1, 2, 3, 4, 5 ].slice(1, 3)
+```
+
+```json
+[2, 3]
+```
+
+## String Methods
+
+### split
+
+Splits a string by separator.
+
+```rex
+"a,b,c".split(",")
+```
+
+```json
+["a", "b", "c"]
+```
+
+### trim
+
+Strips leading and trailing whitespace.
+
+```rex
+"  hello  ".trim()
+```
+
+```json
+"hello"
+```
+
+### indexOf (string)
+
+Returns the character index of the first match, or none.
+
+```rex
+"hello world".indexOf("world")
+```
+
+```json
+6
+```
+
+### contains (string)
+
+Returns the substring if found, none otherwise.
+
+```rex
+"hello world".contains("world")
+```
+
+```json
+"world"
+```
+
+```rex
+"hello".contains("xyz")
+```
+
+```json
+null
+```
+
+### starts-with
+
+Returns the string if it starts with the prefix, none otherwise.
+
+```rex
+"hello".starts-with("hel")
+```
+
+```json
+"hello"
+```
+
+```rex
+"hello".starts-with("xyz")
+```
+
+```json
+null
+```
+
+### ends-with
+
+Returns the string if it ends with the suffix, none otherwise.
+
+```rex
+"hello".ends-with("llo")
+```
+
+```json
+"hello"
+```
+
+### upper
+
+```rex
+"hello".upper()
+```
+
+```json
+"HELLO"
+```
+
+### lower
+
+```rex
+"HELLO".lower()
+```
+
+```json
+"hello"
+```
+
+### replace
+
+Replaces the first occurrence.
+
+```rex
+"hello world".replace("world", "Rex")
+```
+
+```json
+"hello Rex"
+```
+
+### slice (string)
+
+Returns a substring from start to end (character indices).
+
+```rex
+"hello".slice(1, 3)
+```
+
+```json
+"el"
+```

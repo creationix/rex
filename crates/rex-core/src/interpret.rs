@@ -130,6 +130,7 @@ pub fn run<'a>(bytecode: &'a str, mut ctx: Context<'a>) -> Result<RunResult, Rex
         opcodes: ctx.opcodes,
         gas: 0,
         gas_limit: ctx.gas_limit,
+        last_method_target: None,
     };
 
     // Intern string keys from context vars/refs into heap
@@ -171,6 +172,9 @@ struct Interpreter<'a> {
     opcodes: HashMap<String, fn(&[Value], &mut Heap) -> Result<Value, RexError>>,
     gas: u64,
     gas_limit: u64,
+    /// When navigation resolves to a method opcode, stash the target here
+    /// so the outer call can prepend it to the args.
+    last_method_target: Option<Value>,
 }
 
 impl<'a> Interpreter<'a> {
@@ -370,6 +374,19 @@ impl<'a> Interpreter<'a> {
             args.push(self.eval()?);
         }
         self.read_byte(); // consume ')'
+
+        // Method call: if callee is "%opcode", it came from method navigation.
+        // The method's target was lost during inner eval, but we stored it.
+        if let Some(s) = callee.as_str(&self.heap) {
+            if let Some(opname) = s.strip_prefix('%') {
+                if let Some(target) = self.last_method_target.take() {
+                    let opname = opname.to_string();
+                    let mut method_args = vec![target];
+                    method_args.extend(args);
+                    return self.apply_opcode(&opname, &method_args);
+                }
+            }
+        }
         self.dispatch_call(callee, args)
     }
 
@@ -845,7 +862,16 @@ impl<'a> Interpreter<'a> {
         // Navigation
         let mut target = callee;
         for arg in &args {
-            target = self.read_property(target, *arg)?;
+            let prop = self.read_property(target, *arg)?;
+            // If navigation resolved to a method opcode, stash the target
+            // for the outer eval_call to pick up
+            if let Some(s) = prop.as_str(&self.heap) {
+                if s.starts_with('%') {
+                    self.last_method_target = Some(target);
+                    return Ok(prop);
+                }
+            }
+            target = prop;
         }
         Ok(target)
     }
@@ -861,7 +887,10 @@ impl<'a> Interpreter<'a> {
         if target.is_array() {
             if let Some(k) = key.as_str(&self.heap) {
                 if k == "size" { return Ok(Value::int(self.heap.array_len(target) as i64)); }
-                // String index: try to parse as integer (e.g., .0, .1)
+                // Built-in methods → return opcode string
+                if let Some(op) = array_method(k) {
+                    return Ok(self.heap.intern_value(op));
+                }
                 if let Ok(idx) = k.parse::<usize>() {
                     return Ok(self.heap.array_get(target, idx));
                 }
@@ -876,6 +905,9 @@ impl<'a> Interpreter<'a> {
 
         if target.is_string() {
             if let Some(k) = key.as_str(&self.heap) {
+                if let Some(op) = string_method(k) {
+                    return Ok(self.heap.intern_value(op));
+                }
                 if k == "size" {
                     let s = target.as_str(&self.heap).unwrap();
                     return Ok(Value::int(s.chars().count() as i64));
@@ -1305,6 +1337,20 @@ impl<'a> Interpreter<'a> {
             "ob" => Ok(if args.first().map_or(false, |a| a.is_object() || a.is_host()) { args[0] } else { Value::NONE }),
             "ar" => Ok(if args.first().map_or(false, |a| a.is_array()) { args[0] } else { Value::NONE }),
             "bt" => Ok(if args.first().map_or(false, |a| a.as_bool().is_some()) { args[0] } else { Value::NONE }),
+            // Built-in methods (target is args[0])
+            "pu" => self.op_push(args),
+            "po" => self.op_pop(args),
+            "jn" => self.op_join(args),
+            "ix" => self.op_index_of(args),
+            "cn" => self.op_contains(args),
+            "sl" => self.op_slice(args),
+            "sp" => self.op_split(args),
+            "tm" => self.op_trim(args),
+            "sw" => self.op_starts_with(args),
+            "ew" => self.op_ends_with(args),
+            "uc" => self.op_upper(args),
+            "lc" => self.op_lower(args),
+            "rp" => self.op_replace(args),
             _ => Ok(Value::NONE),
         }
     }
@@ -1354,6 +1400,177 @@ impl<'a> Interpreter<'a> {
         if pred(ord) { Ok(args[0]) } else { Ok(Value::NONE) }
     }
 
+    // ── Built-in methods ─────────────────────────────────────────
+
+    fn op_push(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.len() < 2 { return Ok(Value::NONE); }
+        let arr = args[0];
+        self.heap.array_push(arr, args[1]);
+        Ok(arr)
+    }
+
+    fn op_pop(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.is_empty() { return Ok(Value::NONE); }
+        let arr = args[0];
+        if let Some(id) = arr.array_id() {
+            let vec = &mut self.heap.arrays[id as usize];
+            if vec.is_empty() { return Ok(Value::NONE); }
+            Ok(vec.pop().unwrap())
+        } else {
+            Ok(Value::NONE)
+        }
+    }
+
+    fn op_join(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.is_empty() { return Ok(Value::NONE); }
+        let arr = args[0];
+        let sep = args.get(1).and_then(|v| v.as_str(&self.heap)).unwrap_or(",");
+        let sep = sep.to_string();
+        let items = self.heap.array_items(arr);
+        let parts: Vec<String> = items.iter().map(|&v| {
+            if let Some(s) = v.as_str(&self.heap) { s.to_string() }
+            else if let Some(n) = v.as_i64() { n.to_string() }
+            else if let Some(f) = v.as_f64(&self.heap) { f.to_string() }
+            else if v.is_null() { "null".into() }
+            else if v.is_none() { String::new() }
+            else if let Some(b) = v.as_bool() { b.to_string() }
+            else { String::new() }
+        }).collect();
+        Ok(self.heap.intern_value(&parts.join(&sep)))
+    }
+
+    fn op_index_of(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.len() < 2 { return Ok(Value::NONE); }
+        let target = args[0];
+        let needle = args[1];
+        if target.is_array() {
+            let items = self.heap.array_items(target);
+            for (i, &item) in items.iter().enumerate() {
+                if values_equal(item, needle, &self.heap) {
+                    return Ok(Value::int(i as i64));
+                }
+            }
+            Ok(Value::NONE)
+        } else if target.is_string() {
+            let s = target.as_str(&self.heap).unwrap().to_string();
+            if let Some(needle_s) = needle.as_str(&self.heap) {
+                match s.find(needle_s) {
+                    Some(pos) => Ok(Value::int(s[..pos].chars().count() as i64)),
+                    None => Ok(Value::NONE),
+                }
+            } else {
+                Ok(Value::NONE)
+            }
+        } else {
+            Ok(Value::NONE)
+        }
+    }
+
+    fn op_contains(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.len() < 2 { return Ok(Value::NONE); }
+        let target = args[0];
+        let needle = args[1];
+        if target.is_array() {
+            let items = self.heap.array_items(target);
+            for &item in items {
+                if values_equal(item, needle, &self.heap) {
+                    return Ok(needle);
+                }
+            }
+            Ok(Value::NONE)
+        } else if target.is_string() {
+            let s = target.as_str(&self.heap).unwrap().to_string();
+            if let Some(needle_s) = needle.as_str(&self.heap) {
+                if s.contains(needle_s) { Ok(needle) } else { Ok(Value::NONE) }
+            } else {
+                Ok(Value::NONE)
+            }
+        } else {
+            Ok(Value::NONE)
+        }
+    }
+
+    fn op_slice(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.is_empty() { return Ok(Value::NONE); }
+        let target = args[0];
+        let start = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as usize;
+        let end = args.get(2).and_then(|v| v.as_i64());
+        if target.is_array() {
+            let items = self.heap.array_items(target);
+            let end = end.map(|e| e as usize).unwrap_or(items.len());
+            let end = end.min(items.len());
+            let start = start.min(end);
+            let sliced: Vec<Value> = items[start..end].to_vec();
+            Ok(self.heap.alloc_array(sliced))
+        } else if target.is_string() {
+            let s = target.as_str(&self.heap).unwrap().to_string();
+            let chars: Vec<char> = s.chars().collect();
+            let end = end.map(|e| e as usize).unwrap_or(chars.len());
+            let end = end.min(chars.len());
+            let start = start.min(end);
+            let sliced: String = chars[start..end].iter().collect();
+            Ok(self.heap.intern_value(&sliced))
+        } else {
+            Ok(Value::NONE)
+        }
+    }
+
+    fn op_split(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.is_empty() { return Ok(Value::NONE); }
+        let s = match args[0].as_str(&self.heap) {
+            Some(s) => s.to_string(),
+            None => return Ok(Value::NONE),
+        };
+        let sep = args.get(1).and_then(|v| v.as_str(&self.heap)).unwrap_or(",");
+        let sep = sep.to_string();
+        let parts: Vec<Value> = s.split(&sep).map(|p| self.heap.intern_value(p)).collect();
+        Ok(self.heap.alloc_array(parts))
+    }
+
+    fn op_trim(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.is_empty() { return Ok(Value::NONE); }
+        let s = match args[0].as_str(&self.heap) { Some(s) => s.trim().to_string(), None => return Ok(Value::NONE) };
+        Ok(self.heap.intern_value(&s))
+    }
+
+    fn op_starts_with(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.len() < 2 { return Ok(Value::NONE); }
+        let s = match args[0].as_str(&self.heap) { Some(s) => s.to_string(), None => return Ok(Value::NONE) };
+        let prefix = match args[1].as_str(&self.heap) { Some(s) => s.to_string(), None => return Ok(Value::NONE) };
+        if s.starts_with(&prefix) { Ok(args[0]) } else { Ok(Value::NONE) }
+    }
+
+    fn op_ends_with(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.len() < 2 { return Ok(Value::NONE); }
+        let s = match args[0].as_str(&self.heap) { Some(s) => s.to_string(), None => return Ok(Value::NONE) };
+        let suffix = match args[1].as_str(&self.heap) { Some(s) => s.to_string(), None => return Ok(Value::NONE) };
+        if s.ends_with(&suffix) { Ok(args[0]) } else { Ok(Value::NONE) }
+    }
+
+    fn op_upper(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.is_empty() { return Ok(Value::NONE); }
+        match args[0].as_str(&self.heap) {
+            Some(s) => Ok(self.heap.intern_value(&s.to_uppercase())),
+            None => Ok(Value::NONE),
+        }
+    }
+
+    fn op_lower(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.is_empty() { return Ok(Value::NONE); }
+        match args[0].as_str(&self.heap) {
+            Some(s) => Ok(self.heap.intern_value(&s.to_lowercase())),
+            None => Ok(Value::NONE),
+        }
+    }
+
+    fn op_replace(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.len() < 3 { return Ok(Value::NONE); }
+        let s = match args[0].as_str(&self.heap) { Some(s) => s.to_string(), None => return Ok(Value::NONE) };
+        let from = match args[1].as_str(&self.heap) { Some(s) => s.to_string(), None => return Ok(Value::NONE) };
+        let to = match args[2].as_str(&self.heap) { Some(s) => s.to_string(), None => return Ok(Value::NONE) };
+        Ok(self.heap.intern_value(&s.replacen(&from, &to, 1)))
+    }
+
     fn op_bitwise(&self, args: &[Value], f: fn(i64, i64) -> i64) -> Result<Value, RexError> {
         if args.len() < 2 { return Ok(Value::NONE); }
         let a = args[0].as_i64()
@@ -1374,6 +1591,45 @@ impl<'a> Interpreter<'a> {
             Ok(Value::NONE)
         }
     }
+}
+
+// ── Method dispatch tables ─────────────────────────────────────────────
+
+fn array_method(name: &str) -> Option<&'static str> {
+    match name {
+        "push" => Some("%pu"),
+        "pop" => Some("%po"),
+        "join" => Some("%jn"),
+        "indexOf" => Some("%ix"),
+        "contains" => Some("%cn"),
+        "slice" => Some("%sl"),
+        _ => None,
+    }
+}
+
+fn string_method(name: &str) -> Option<&'static str> {
+    match name {
+        "indexOf" => Some("%ix"),
+        "contains" => Some("%cn"),
+        "slice" => Some("%sl"),
+        "split" => Some("%sp"),
+        "trim" => Some("%tm"),
+        "starts-with" => Some("%sw"),
+        "ends-with" => Some("%ew"),
+        "upper" => Some("%uc"),
+        "lower" => Some("%lc"),
+        "replace" => Some("%rp"),
+        _ => None,
+    }
+}
+
+fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
+    if a == b { return true; } // same handle
+    if let (Some(ai), Some(bi)) = (a.as_i64(), b.as_i64()) { return ai == bi; }
+    if let (Some(af), Some(bf)) = (a.as_f64(heap), b.as_f64(heap)) { return af == bf; }
+    if let (Some(sa), Some(sb)) = (a.as_str(heap), b.as_str(heap)) { return sa == sb; }
+    if let (Some(ba), Some(bb)) = (a.as_bool(), b.as_bool()) { return ba == bb; }
+    a.is_null() && b.is_null()
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
