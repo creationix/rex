@@ -468,6 +468,7 @@ fn cmd_run(
 
     let mut ctx = rex_core::interpret::Context::default();
     ctx.gas_limit = gas;
+    ctx.opcodes.insert("P".into(), op_print as fn(&[rex_core::heap::Value], &mut rex_core::heap::Heap) -> Result<rex_core::heap::Value, rex_core::interpret::RexError>);
 
     // Process trailing key=value args into vars
     for arg in &args {
@@ -492,6 +493,70 @@ fn cmd_run(
     print_runtime_value(result.value, &result.heap);
     println!();
     Ok(())
+}
+
+/// Debug print opcode — like console.log.
+/// Single string arg: print as-is. Otherwise: pretty-print all values.
+fn op_print(args: &[rex_core::heap::Value], heap: &mut rex_core::heap::Heap) -> Result<rex_core::heap::Value, rex_core::interpret::RexError> {
+    if args.len() == 1 {
+        if let Some(s) = args[0].as_str(heap) {
+            eprintln!("{s}");
+            return Ok(args[0]);
+        }
+    }
+
+    let mut first = true;
+    for &v in args {
+        if !first { eprint!(" "); }
+        first = false;
+        // In multi-arg mode, print strings without quotes
+        if let Some(s) = v.as_str(heap) {
+            eprint!("{s}");
+        } else {
+            debug_print_value(v, heap);
+        }
+    }
+    eprintln!();
+    Ok(if args.len() == 1 { args[0] } else { rex_core::heap::Value::NONE })
+}
+
+fn debug_print_value(value: rex_core::heap::Value, heap: &rex_core::heap::Heap) {
+    use rex_core::heap::FloatValue;
+
+    if value.is_none() { eprint!("none"); return; }
+    if value.is_null() { eprint!("null"); return; }
+    if let Some(b) = value.as_bool() { eprint!("{b}"); return; }
+    if let Some(n) = value.as_i64() { eprint!("{n}"); return; }
+    if let Some(id) = value.float_id() {
+        match &heap.floats[id as usize] {
+            FloatValue::Float(n) => eprint!("{n}"),
+            FloatValue::Decimal { sig, exp } => eprint!("{sig}e{exp}"),
+        }
+        return;
+    }
+    if let Some(s) = value.as_str(heap) { eprint!("{s:?}"); return; }
+    if value.is_array() {
+        let items = heap.array_items(value);
+        eprint!("[ ");
+        for (i, &item) in items.iter().enumerate() {
+            if i > 0 { eprint!(", "); }
+            debug_print_value(item, heap);
+        }
+        eprint!(" ]");
+        return;
+    }
+    if value.is_object() {
+        let pairs = heap.object_pairs(value);
+        eprint!("{{ ");
+        for (i, &(k, v)) in pairs.iter().enumerate() {
+            if i > 0 { eprint!(" "); }
+            eprint!("{}: ", heap.resolve_str(k));
+            debug_print_value(v, heap);
+        }
+        eprint!(" }}");
+        return;
+    }
+    eprint!("{value:?}");
 }
 
 /// Auto-type a CLI value string into the best-fit RexValue.
@@ -563,6 +628,7 @@ fn cmd_repl(gas: u64) -> io::Result<()> {
         let bytecode = rex_core::compile(line);
         let mut ctx = rex_core::interpret::Context::default();
         ctx.gas_limit = gas;
+        ctx.opcodes.insert("P".into(), op_print as fn(&[rex_core::heap::Value], &mut rex_core::heap::Heap) -> Result<rex_core::heap::Value, rex_core::interpret::RexError>);
         ctx.vars = std::mem::take(&mut vars);
         ctx.heap = std::mem::take(&mut heap);
 
