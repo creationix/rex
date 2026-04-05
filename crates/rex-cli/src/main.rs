@@ -509,54 +509,14 @@ fn op_print(args: &[rex_core::heap::Value], heap: &mut rex_core::heap::Heap) -> 
     for &v in args {
         if !first { eprint!(" "); }
         first = false;
-        // In multi-arg mode, print strings without quotes
         if let Some(s) = v.as_str(heap) {
             eprint!("{s}");
         } else {
-            debug_print_value(v, heap);
+            eprint_runtime_value(v, heap);
         }
     }
     eprintln!();
     Ok(if args.len() == 1 { args[0] } else { rex_core::heap::Value::NONE })
-}
-
-fn debug_print_value(value: rex_core::heap::Value, heap: &rex_core::heap::Heap) {
-    use rex_core::heap::FloatValue;
-
-    if value.is_none() { eprint!("none"); return; }
-    if value.is_null() { eprint!("null"); return; }
-    if let Some(b) = value.as_bool() { eprint!("{b}"); return; }
-    if let Some(n) = value.as_i64() { eprint!("{n}"); return; }
-    if let Some(id) = value.float_id() {
-        match &heap.floats[id as usize] {
-            FloatValue::Float(n) => eprint!("{n}"),
-            FloatValue::Decimal { sig, exp } => eprint!("{sig}e{exp}"),
-        }
-        return;
-    }
-    if let Some(s) = value.as_str(heap) { eprint!("{s:?}"); return; }
-    if value.is_array() {
-        let items = heap.array_items(value);
-        eprint!("[ ");
-        for (i, &item) in items.iter().enumerate() {
-            if i > 0 { eprint!(", "); }
-            debug_print_value(item, heap);
-        }
-        eprint!(" ]");
-        return;
-    }
-    if value.is_object() {
-        let pairs = heap.object_pairs(value);
-        eprint!("{{ ");
-        for (i, &(k, v)) in pairs.iter().enumerate() {
-            if i > 0 { eprint!(" "); }
-            eprint!("{}: ", heap.resolve_str(k));
-            debug_print_value(v, heap);
-        }
-        eprint!(" }}");
-        return;
-    }
-    eprint!("{value:?}");
 }
 
 /// Auto-type a CLI value string into the best-fit RexValue.
@@ -652,43 +612,59 @@ fn cmd_repl(gas: u64) -> io::Result<()> {
 }
 
 fn print_runtime_value(value: rex_core::heap::Value, heap: &rex_core::heap::Heap) {
+    write_value(&mut std::io::stdout(), value, heap);
+}
+
+fn eprint_runtime_value(value: rex_core::heap::Value, heap: &rex_core::heap::Heap) {
+    write_value(&mut std::io::stderr(), value, heap);
+}
+
+fn write_value(w: &mut dyn std::io::Write, value: rex_core::heap::Value, heap: &rex_core::heap::Heap) {
     use rex_core::heap::FloatValue;
 
-    if value.is_none() { print!("{}", dim("none")); return; }
-    if value.is_null() { print!("{}", dim("null")); return; }
-    if let Some(b) = value.as_bool() { print!("{}", magenta(&format!("{b}"))); return; }
-    if let Some(n) = value.as_i64() { print!("{}", yellow(&format!("{n}"))); return; }
+    if value.is_none() { let _ = write!(w, "{}", dim("none")); return; }
+    if value.is_null() { let _ = write!(w, "{}", dim("null")); return; }
+    if let Some(b) = value.as_bool() { let _ = write!(w, "{}", magenta(&format!("{b}"))); return; }
+    if let Some(n) = value.as_i64() { let _ = write!(w, "{}", yellow(&format!("{n}"))); return; }
     if let Some(id) = value.float_id() {
         match &heap.floats[id as usize] {
-            FloatValue::Float(n) => print!("{}", yellow(&format!("{n}"))),
-            FloatValue::Decimal { sig, exp } => print!("{}", yellow(&format!("{sig}e{exp}"))),
+            FloatValue::Float(n) => { let _ = write!(w, "{}", yellow(&format!("{n}"))); }
+            FloatValue::Decimal { sig, exp } => { let _ = write!(w, "{}", yellow(&format!("{sig}e{exp}"))); }
         }
         return;
     }
-    if let Some(s) = value.as_str(heap) { print!("{}", green(&format!("{s:?}"))); return; }
+    if let Some(s) = value.as_str(heap) { let _ = write!(w, "{}", green(&format!("{s:?}"))); return; }
     if value.is_array() {
         let items = heap.array_items(value);
-        print!("[");
-        for (i, &item) in items.iter().enumerate() {
-            if i > 0 { print!(", "); }
-            print_runtime_value(item, heap);
+        if items.is_empty() {
+            let _ = write!(w, "[]");
+        } else {
+            let _ = write!(w, "[ ");
+            for (i, &item) in items.iter().enumerate() {
+                if i > 0 { let _ = write!(w, ", "); }
+                write_value(w, item, heap);
+            }
+            let _ = write!(w, " ]");
         }
-        print!("]");
         return;
     }
     if value.is_object() {
         let pairs = heap.object_pairs(value);
-        print!("{{");
-        for (i, &(k, v)) in pairs.iter().enumerate() {
-            if i > 0 { print!(", "); }
-            print!("{}: ", green(&format!("{:?}", heap.resolve_str(k))));
-            print_runtime_value(v, heap);
+        if pairs.is_empty() {
+            let _ = write!(w, "{{}}");
+        } else {
+            let _ = write!(w, "{{ ");
+            for (i, &(k, v)) in pairs.iter().enumerate() {
+                if i > 0 { let _ = write!(w, " "); }
+                let _ = write!(w, "{}: ", green(heap.resolve_str(k)));
+                write_value(w, v, heap);
+            }
+            let _ = write!(w, " }}");
         }
-        print!("}}");
         return;
     }
-    if let Some(idx) = value.host_id() { print!("{}", dim(&format!("<host:{idx}>"))); return; }
-    print!("{}", dim(&format!("{value:?}")));
+    if let Some(idx) = value.host_id() { let _ = write!(w, "{}", dim(&format!("<host:{idx}>"))); return; }
+    let _ = write!(w, "{}", dim(&format!("{value:?}")));
 }
 
 // ── Value → JSON ────────────────────────────────────────────────────────
