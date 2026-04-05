@@ -1301,8 +1301,8 @@ impl<'a> Interpreter<'a> {
                     Ok(Value::NONE)
                 }
             }
-            "eq" => self.op_compare(args, |o| o == std::cmp::Ordering::Equal),
-            "nq" => self.op_compare(args, |o| o != std::cmp::Ordering::Equal),
+            "eq" => self.op_eq(args, false),
+            "nq" => self.op_eq(args, true),
             "gt" => self.op_compare(args, |o| o == std::cmp::Ordering::Greater),
             "ge" => self.op_compare(args, |o| o != std::cmp::Ordering::Less),
             "lt" => self.op_compare(args, |o| o == std::cmp::Ordering::Less),
@@ -1384,6 +1384,13 @@ impl<'a> Interpreter<'a> {
             return Ok(self.heap.alloc_float(r));
         }
         Ok(Value::NONE)
+    }
+
+    fn op_eq(&self, args: &[Value], negate: bool) -> Result<Value, RexError> {
+        if args.len() < 2 { return Ok(Value::NONE); }
+        let equal = values_deep_equal(args[0], args[1], &self.heap);
+        let matches = if negate { !equal } else { equal };
+        if matches { Ok(args[0]) } else { Ok(Value::NONE) }
     }
 
     fn op_compare(&self, args: &[Value], pred: fn(std::cmp::Ordering) -> bool) -> Result<Value, RexError> {
@@ -1621,6 +1628,31 @@ fn string_method(name: &str) -> Option<&'static str> {
         "replace" => Some("%rp"),
         _ => None,
     }
+}
+
+fn values_deep_equal(a: Value, b: Value, heap: &Heap) -> bool {
+    if a == b { return true; }
+    if let (Some(ai), Some(bi)) = (a.as_i64(), b.as_i64()) { return ai == bi; }
+    if let (Some(af), Some(bf)) = (a.as_f64(heap), b.as_f64(heap)) { return af == bf; }
+    if let (Some(sa), Some(sb)) = (a.as_str(heap), b.as_str(heap)) { return sa == sb; }
+    if let (Some(ba), Some(bb)) = (a.as_bool(), b.as_bool()) { return ba == bb; }
+    if a.is_null() && b.is_null() { return true; }
+    if a.is_none() && b.is_none() { return true; }
+    if a.is_array() && b.is_array() {
+        let aa = heap.array_items(a);
+        let ba = heap.array_items(b);
+        return aa.len() == ba.len()
+            && aa.iter().zip(ba.iter()).all(|(&x, &y)| values_deep_equal(x, y, heap));
+    }
+    if a.is_object() && b.is_object() {
+        let ap = heap.object_pairs(a);
+        let bp = heap.object_pairs(b);
+        return ap.len() == bp.len()
+            && ap.iter().zip(bp.iter()).all(|(&(ak, av), &(bk, bv))| {
+                ak == bk && values_deep_equal(av, bv, heap)
+            });
+    }
+    false
 }
 
 fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
