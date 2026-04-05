@@ -59,15 +59,17 @@ pub fn hover(schema: &DomainSchema, word: &str, is_type_context: bool) -> Option
         });
     }
 
-    // Check built-in type keywords (only in type contexts like .rexd files)
+    // Check built-in type keywords (only in type context — inside TypeExpr CST nodes)
     let builtin_desc = if !is_type_context { None } else { match word {
-        "string" | "str" => Some("Built-in string type"),
-        "integer" | "int" => Some("Built-in integer type (whole numbers)"),
-        "number" => Some("Built-in number type (integer or float)"),
-        "bool" | "boolean" => Some("Built-in boolean type (true or false)"),
+        "str" => Some("Built-in string type"),
+        "int" => Some("Built-in integer type (whole numbers)"),
+        "num" => Some("Built-in number type (integer or decimal)"),
+        "bool" => Some("Built-in boolean type (true or false)"),
         "null" => Some("The null value"),
         "none" => Some("The absence of a value — only `none` is falsy in Rex"),
-        "some" => Some("Any value that is not `none`"),
+        "some" => Some("Any defined value — must narrow before use"),
+        "unknown" => Some("Any value or none — alias for `some | none`"),
+        "never" => Some("Unreachable — function doesn't return"),
         _ => None,
     }};
     if let Some(desc) = builtin_desc {

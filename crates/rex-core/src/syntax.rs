@@ -114,6 +114,15 @@ pub enum SyntaxKind {
     SpreadExpr,
     CompoundExpr,
 
+    // Type expression nodes (distinct from value expressions)
+    TypeExpr,       // wrapper for a type in annotation position
+    TypeArray,      // [T]
+    TypeObject,     // {key: T, *: U}
+    TypePair,       // key: T (inside TypeObject)
+    TypeUnion,      // T | U
+    TypeIntersection, // T & U
+    TypeGroup,      // (T)
+
     /// Rowan requires a dedicated root kind.
     Root,
 }

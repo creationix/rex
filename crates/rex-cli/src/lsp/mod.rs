@@ -388,12 +388,10 @@ fn handle_hover(state: &LspState, params: HoverParams) -> Option<lsp_types::Hove
 
     let is_rexd = uri.as_str().ends_with(".rexd");
 
-    // In .rex files, check if cursor is in a type annotation position (after : or ->)
+    // Check if cursor is inside a type node by walking the CST
     let is_type_context = is_rexd || {
         let offset = position_to_offset(source, pos);
-        let before = source[..offset].trim_end();
-        before.ends_with(':') || before.ends_with("->")
-            || before.ends_with("= {") || before.ends_with(", ")
+        is_in_type_node(source, offset)
     };
 
     // Try dotted word (e.g., "json.parse") — but only if cursor is past the dot,
@@ -618,8 +616,15 @@ fn handle_semantic_tokens(
                     // Before paren: function call
                     (TT_FUNCTION, 0)
                 } else if next_nonws == Some(TokenKind::Colon) {
-                    // Before colon: object key inside {}, variable outside
-                    if is_in_braces(source, tok.span.start) {
+                    // Before tight colon (key:value) inside {}: property
+                    // Before spaced colon (name: Type): variable/type annotation
+                    let colon_tok = tokens[i + 1..].iter()
+                        .find(|t| t.kind == TokenKind::Colon);
+                    let tight = colon_tok.map_or(false, |c| {
+                        let after = c.span.end;
+                        after < source.len() && source.as_bytes()[after] != b' '
+                    });
+                    if tight && is_in_braces(source, tok.span.start) {
                         (TT_PROPERTY, 0)
                     } else {
                         (TT_VARIABLE, 0)
@@ -679,6 +684,45 @@ fn offset_to_line_col_0(source: &str, offset: usize) -> (u32, u32) {
         }
     }
     (line, col)
+}
+
+/// Check if a byte offset is inside a type expression node in the CST.
+fn is_in_type_node(source: &str, offset: usize) -> bool {
+    use rex_core::syntax::SyntaxKind as SK;
+
+    let tokens = rex_core::lexer::lex(source);
+    let (green, _errors) = rex_core::parser::parse(source, &tokens);
+    let root = rex_core::syntax::SyntaxNode::new_root(green);
+
+    fn is_type_kind(kind: SK) -> bool {
+        matches!(kind,
+            SK::TypeExpr | SK::TypeArray | SK::TypeObject
+            | SK::TypePair | SK::TypeUnion | SK::TypeIntersection
+            | SK::TypeGroup
+        )
+    }
+
+    // Walk the CST tree to find the deepest node containing the offset,
+    // checking if any ancestor is a type node.
+    fn check(node: &rex_core::syntax::SyntaxNode, offset: usize) -> bool {
+        let range = node.text_range();
+        let start: usize = range.start().into();
+        let end: usize = range.end().into();
+        if offset < start || offset >= end { return false; }
+
+        if is_type_kind(node.kind()) {
+            return true;
+        }
+
+        for child in node.children() {
+            if check(&child, offset) {
+                return true;
+            }
+        }
+        false
+    }
+
+    check(&root, offset)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

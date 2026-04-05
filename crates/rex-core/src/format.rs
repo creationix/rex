@@ -61,6 +61,15 @@ impl Formatter {
             SK::UnaryExpr => self.unary(node),
             SK::AssignExpr => self.assign(node),
             SK::ReturnExpr | SK::TypeDecl | SK::ExternDecl => self.spaced_punct(node),
+            SK::TypeExpr => {
+                for c in ntc(node) { self.child(&c); }
+            }
+            SK::TypeArray => self.type_array(node),
+            SK::TypeObject => self.type_object(node),
+            SK::TypePair => self.type_pair(node),
+            SK::TypeUnion => self.type_binary(" | ", node),
+            SK::TypeIntersection => self.type_binary(" & ", node),
+            SK::TypeGroup => self.tight(node),
             SK::CallExpr => self.call(node),
             SK::NavExpr | SK::GroupExpr => self.tight(node),
             SK::ConditionalExpr | SK::ForExpr | SK::WhileExpr => self.block_kw(node),
@@ -201,7 +210,7 @@ impl Formatter {
         for (i, c) in ntc(node).enumerate() {
             if let rowan::NodeOrToken::Token(t) = &c {
                 match t.kind() {
-                    SK::Colon => { self.emit(":"); after_punct = true; continue; }
+                    SK::Colon => { self.emit(": "); after_punct = true; continue; }
                     SK::Eq => { self.emit(" = "); after_punct = true; continue; }
                     SK::Arrow => { self.emit(" -> "); after_punct = true; continue; }
                     SK::Comma => { self.emit(", "); after_punct = true; continue; }
@@ -481,6 +490,55 @@ impl Formatter {
                 }
             }
             if !first { self.emit(" "); }
+            first = false;
+            self.child(&c);
+        }
+    }
+
+    // ── Type expressions ───────────────────────────────────────────
+
+    fn type_array(&mut self, node: &SyntaxNode) {
+        self.emit("[");
+        for c in ntc(node) {
+            if is_bracket(c_kind(&c)) { continue; }
+            self.child(&c);
+        }
+        self.emit("]");
+    }
+
+    fn type_object(&mut self, node: &SyntaxNode) {
+        let pairs: Vec<_> = node.children()
+            .filter(|n| n.kind() == SK::TypePair)
+            .collect();
+        if pairs.is_empty() {
+            self.emit("{}");
+        } else {
+            self.emit("{ ");
+            for (i, p) in pairs.iter().enumerate() {
+                if i > 0 { self.emit(" "); }
+                self.type_pair(p);
+            }
+            self.emit(" }");
+        }
+    }
+
+    fn type_pair(&mut self, node: &SyntaxNode) {
+        let mut after_colon = false;
+        for (i, c) in ntc(node).enumerate() {
+            if let rowan::NodeOrToken::Token(t) = &c {
+                if t.kind() == SK::Colon { self.emit(": "); after_colon = true; continue; }
+            }
+            if i > 0 && !after_colon { self.emit(" "); }
+            after_colon = false;
+            self.child(&c);
+        }
+    }
+
+    fn type_binary(&mut self, op: &str, node: &SyntaxNode) {
+        let mut first = true;
+        for c in ntc(node) {
+            if matches!(c_kind(&c), SK::Pipe | SK::Amp) { continue; }
+            if !first { self.emit(op); }
             first = false;
             self.child(&c);
         }

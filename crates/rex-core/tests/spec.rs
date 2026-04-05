@@ -53,7 +53,7 @@ fn parse_table_row(line: &str) -> Vec<String> {
     cells[start..end].to_vec()
 }
 
-fn parse_spec(markdown: &str) -> Vec<SpecTest> {
+fn parse_spec(markdown: &str) -> (Vec<SpecTest>, Vec<String>) {
     let mut tests = Vec::new();
     let mut headers: Vec<String> = Vec::new();
     let mut steps: Vec<Step> = Vec::new();
@@ -63,6 +63,7 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
     let mut fence_body = String::new();
     let mut fence_start: usize = 0;
     let mut active_domain: Option<String> = None;
+    let mut format_errors: Vec<String> = Vec::new();
 
     // Table state
     let mut table_cols: Vec<String> = Vec::new(); // column names from header row
@@ -79,7 +80,13 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
                     "json" => steps.push(Step::CheckJson(body, fence_start, 1)),
                     "json vars" => steps.push(Step::CheckJsonVars(body, fence_start)),
                     "rexc" | "rext" => steps.push(Step::CheckBytecode(body, fence_start)),
-                    "rexd" => { active_domain = Some(body); }
+                    "rexd" => {
+                        if let Some(err) = check_format(&body, fence_start) {
+                            // Collect format errors for rexd blocks but don't add as steps
+                            format_errors.push(err);
+                        }
+                        active_domain = Some(body);
+                    }
                     _ => {} // ignore unknown
                 }
                 in_fence = false;
@@ -192,7 +199,7 @@ fn parse_spec(markdown: &str) -> Vec<SpecTest> {
         });
     }
 
-    tests
+    (tests, format_errors)
 }
 
 // ── Host environment for spec tests ──────────────────────────────────
@@ -476,9 +483,9 @@ fn main() {
     let markdown = std::fs::read_to_string(&spec_path)
         .unwrap_or_else(|_| { eprintln!("{SPEC_FILE} not found"); std::process::exit(1); });
 
-    let tests = parse_spec(&markdown);
+    let (tests, format_errors) = parse_spec(&markdown);
 
-    let mut errors: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = format_errors;
     for test in &tests {
         errors.extend(run_test(test));
     }

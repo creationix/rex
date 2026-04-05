@@ -98,7 +98,7 @@
 				"language": "rex",
 				"scopes": {
 					"variable": ["variable.other.rex"],
-					"property": ["variable.other.property.rex"],
+					"property": ["support.type.property-name.rex"],
 					"function": ["entity.name.function.rex"],
 					"function.defaultLibrary": ["support.function.rex"],
 					"type": ["entity.name.type.rex"],
