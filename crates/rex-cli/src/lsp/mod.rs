@@ -61,6 +61,27 @@ fn format_type(ty: &typecheck::Type) -> String {
     }
 }
 
+fn builtin_method_hover(name: &str) -> Option<&'static str> {
+    match name {
+        // Array methods
+        "push"       => Some("array.push(val: some) -> array"),
+        "pop"        => Some("array.pop() -> some | none"),
+        "join"       => Some("array.join(sep: str) -> str"),
+        "indexOf"    => Some("array.indexOf(val: some) -> int | none\nstr.indexOf(sub: str) -> int | none"),
+        "contains"   => Some("array.contains(val: some) -> some | none\nstr.contains(sub: str) -> str | none"),
+        "slice"      => Some("array.slice(start: int, end: int) -> array\nstr.slice(start: int, end: int) -> str"),
+        // String methods
+        "split"      => Some("str.split(sep: str) -> [str]"),
+        "trim"       => Some("str.trim() -> str"),
+        "upper"      => Some("str.upper() -> str"),
+        "lower"      => Some("str.lower() -> str"),
+        "replace"    => Some("str.replace(from: str, to: str) -> str"),
+        "starts-with" => Some("str.starts-with(prefix: str) -> str | none"),
+        "ends-with"  => Some("str.ends-with(suffix: str) -> str | none"),
+        _ => None,
+    }
+}
+
 fn is_type_name(word: &str) -> bool {
     matches!(word, "str" | "int" | "num" | "bool" | "some" | "none" | "null" | "unknown" | "never")
 }
@@ -415,6 +436,26 @@ fn handle_hover(state: &LspState, params: HoverParams) -> Option<lsp_types::Hove
     if is_rexd {
         if let Some(hover) = hover_rexd_param(&state.schema, source, pos, &word) {
             return Some(hover);
+        }
+    }
+
+    // Check built-in methods (only when cursor follows a dot)
+    let offset = position_to_offset(source, pos);
+    let word_start = source[..offset]
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let after_dot = word_start > 0 && source.as_bytes()[word_start - 1] == b'.';
+    if after_dot {
+        if let Some(desc) = builtin_method_hover(&word) {
+            let text = format!("```rex\n{desc}\n```");
+            return Some(lsp_types::Hover {
+                contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                    kind: lsp_types::MarkupKind::Markdown,
+                    value: text,
+                }),
+                range: None,
+            });
         }
     }
 

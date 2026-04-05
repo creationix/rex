@@ -2032,6 +2032,8 @@ impl<'a> TypeEnv<'a> {
         if callee_parts.len() == 1 {
             if let Some(nav_node) = callee_parts[0].as_node() {
                 if nav_node.kind() == SyntaxKind::NavExpr {
+                    // Infer the full NavExpr so all children get span entries
+                    self.infer_node(nav_node);
                     let nav_children: Vec<_> = non_trivia_children(nav_node).collect();
                     if nav_children.len() >= 3 {
                         let target_type = self.infer_child(&nav_children[0]);
@@ -2047,6 +2049,9 @@ impl<'a> TypeEnv<'a> {
                 }
             }
         }
+
+        // Infer callee for span types (hover) — after all known checks
+        for c in callee_parts { self.infer_child(c); }
 
         // Unknown function — if it's a navigation call (user.name), resolve property
         if let Some(name) = func_name {
