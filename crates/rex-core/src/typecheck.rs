@@ -1778,16 +1778,32 @@ impl<'a> TypeEnv<'a> {
             }
         }
 
-        // Record spans for parameter names
+        // Record spans for parameter names (may be bare idents or inside AssignExpr nodes)
         for c in &call_children[lparen+1..] {
             if as_token_kind(c) == Some(SyntaxKind::RParen) { break; }
+            // Bare ident parameter
             if let Some(t) = c.as_token() {
                 if t.kind() == SyntaxKind::Ident {
-                    // Find this param in args
                     let param_name = t.text();
                     if let Some((_, param_ty)) = args.iter().find(|(n, _)| n == param_name) {
                         let range = t.text_range();
                         self.span_types.push((range.start().into()..range.end().into(), param_ty.clone()));
+                    }
+                }
+            }
+            // Type-annotated parameter: AssignExpr(ident, colon, type)
+            if let Some(n) = c.as_node() {
+                if n.kind() == SyntaxKind::AssignExpr {
+                    if let Some(first_tok) = n.children_with_tokens()
+                        .find_map(|c| c.into_token())
+                    {
+                        if first_tok.kind() == SyntaxKind::Ident {
+                            let param_name = first_tok.text();
+                            if let Some((_, param_ty)) = args.iter().find(|(n, _)| n == param_name) {
+                                let range = first_tok.text_range();
+                                self.span_types.push((range.start().into()..range.end().into(), param_ty.clone()));
+                            }
+                        }
                     }
                 }
             }
