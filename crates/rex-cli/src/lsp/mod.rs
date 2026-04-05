@@ -122,6 +122,8 @@ struct LspState {
     rexd_uri: Option<Uri>,
     /// Cached span→type map per document URI (updated on each diagnostics pass).
     span_types: std::collections::HashMap<Uri, Vec<(std::ops::Range<usize>, typecheck::Type)>>,
+    /// Inline function signatures per document URI.
+    inline_functions: std::collections::HashMap<Uri, std::collections::HashMap<String, typecheck::FunctionSig>>,
 }
 
 impl LspState {
@@ -137,6 +139,7 @@ impl LspState {
             rexd_source,
             rexd_uri,
             span_types: std::collections::HashMap::new(),
+            inline_functions: std::collections::HashMap::new(),
         }
     }
 
@@ -161,13 +164,13 @@ impl LspState {
             return;
         };
         let is_rexd = uri.as_str().ends_with(".rexd");
-        let (diags, types) = if is_rexd {
-            // .rexd files are type declarations — don't infer expression types
-            (Vec::new(), Vec::new())
+        let (diags, types, fns) = if is_rexd {
+            (Vec::new(), Vec::new(), std::collections::HashMap::new())
         } else {
             diagnostics::compute_diagnostics_with_types(source, &self.schema)
         };
         self.span_types.insert(uri.clone(), types);
+        self.inline_functions.insert(uri.clone(), fns);
         let params = PublishDiagnosticsParams {
             uri: uri.clone(),
             diagnostics: diags,
@@ -412,6 +415,27 @@ fn handle_hover(state: &LspState, params: HoverParams) -> Option<lsp_types::Hove
     if is_rexd {
         if let Some(hover) = hover_rexd_param(&state.schema, source, pos, &word) {
             return Some(hover);
+        }
+    }
+
+    // Check inline function signatures from the current file
+    if let Some(inline_fns) = state.inline_functions.get(uri) {
+        if let Some(sig) = inline_fns.get(&word) {
+            let args_str: Vec<String> = sig.args.iter()
+                .map(|(n, t)| format!("{n}: {}", format_type(t)))
+                .collect();
+            let text = format!(
+                "```rex\nextern {word}({}) -> {}\n```",
+                args_str.join(", "),
+                format_type(&sig.returns)
+            );
+            return Some(lsp_types::Hover {
+                contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                    kind: lsp_types::MarkupKind::Markdown,
+                    value: text,
+                }),
+                range: None,
+            });
         }
     }
 
