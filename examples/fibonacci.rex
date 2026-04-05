@@ -5,7 +5,7 @@ extern max: int | none
 max = max or 100
 
 // Declare an external function to print the results
-extern "P" print(some) -> some
+extern "P" print(val: some) -> some
 
 // Imperative: build with push
 fibs = []
