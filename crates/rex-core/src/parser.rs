@@ -284,7 +284,7 @@ impl<'s, 'c> Parser<'s, 'c> {
             // Type-annotated assignment: name: Type = value
             self.start_node_at(cp, SyntaxKind::AssignExpr);
             self.bump(); // :
-            self.parse_pratt_expr(0); // type expression (no assignment — must not consume `=`)
+            self.parse_type_expr(); // type annotation
             if self.eat(SyntaxKind::Eq) {
                 self.parse_assign_expr(); // value (right-assoc)
             }
@@ -473,7 +473,7 @@ impl<'s, 'c> Parser<'s, 'c> {
         self.bump(); // type
         self.expect(SyntaxKind::Ident); // Name
         self.expect(SyntaxKind::Eq); // =
-        self.parse_expr(); // type expression
+        self.parse_type_expr(); // type expression
         self.finish_node();
     }
 
@@ -491,17 +491,132 @@ impl<'s, 'c> Parser<'s, 'c> {
             self.bump(); // mut (consumed as Ident — it's contextual)
         }
 
-        // Parse the body as a regular expression.
-        // For `extern name = type-expr`, parse_expr produces an AssignExpr.
-        // For `extern name.fn(args)`, a CallExpr.
-        self.parse_expr();
+        // Parse extern body: name part first (ident or ident.ident(args))
+        // Then `:` or `=` followed by a type, or `->` for return type.
+        let cp = self.checkpoint();
+        self.parse_pratt_expr(0); // parse name / call expression
+
+        if self.current() == SyntaxKind::Colon || self.current() == SyntaxKind::Eq {
+            // Binding: extern name: Type  or  extern name = Type
+            self.start_node_at(cp, SyntaxKind::AssignExpr);
+            self.bump(); // : or =
+            self.parse_type_expr();
+            self.finish_node();
+        }
 
         // Check for `-> ReturnType` after the expression (function return type)
         if self.current() == SyntaxKind::Arrow {
             self.bump(); // ->
-            self.parse_expr(); // return type expression
+            self.parse_type_expr();
         }
 
+        self.finish_node();
+    }
+
+    // ── Type expressions ────────────────────────────────────────────
+    // Separate parser for type positions. Produces TypeExpr, TypeArray,
+    // TypeObject, TypePair, TypeUnion, TypeIntersection, TypeGroup nodes.
+
+    /// Parse a type expression: handles `|` (union) at lowest precedence.
+    fn parse_type_expr(&mut self) {
+        self.start_node(SyntaxKind::TypeExpr);
+        self.parse_type_union();
+        self.finish_node();
+    }
+
+    /// Union: T | U | V
+    fn parse_type_union(&mut self) {
+        let cp = self.checkpoint();
+        self.parse_type_intersection();
+        if self.current() == SyntaxKind::Pipe {
+            self.start_node_at(cp, SyntaxKind::TypeUnion);
+            while self.eat(SyntaxKind::Pipe) {
+                self.parse_type_intersection();
+            }
+            self.finish_node();
+        }
+    }
+
+    /// Intersection: T & U & V
+    fn parse_type_intersection(&mut self) {
+        let cp = self.checkpoint();
+        self.parse_type_atom();
+        if self.current() == SyntaxKind::Amp {
+            self.start_node_at(cp, SyntaxKind::TypeIntersection);
+            while self.eat(SyntaxKind::Amp) {
+                self.parse_type_atom();
+            }
+            self.finish_node();
+        }
+    }
+
+    /// Type atom: scalar, [T], {k: T}, (T)
+    fn parse_type_atom(&mut self) {
+        match self.current() {
+            SyntaxKind::LBracket => self.parse_type_array(),
+            SyntaxKind::LBrace => self.parse_type_object(),
+            SyntaxKind::LParen => self.parse_type_group(),
+            SyntaxKind::Ident | SyntaxKind::KwNull | SyntaxKind::KwNone
+            | SyntaxKind::DoubleString | SyntaxKind::SingleString => {
+                self.bump(); // scalar type name, literal string type, or null/none
+            }
+            _ => {
+                let span = self.current_span();
+                self.errors.push(ParseError {
+                    span,
+                    message: "expected type expression".into(),
+                });
+            }
+        }
+    }
+
+    /// Type array: [T]
+    fn parse_type_array(&mut self) {
+        self.start_node(SyntaxKind::TypeArray);
+        self.bump(); // [
+        if self.current() != SyntaxKind::RBracket {
+            self.parse_type_union();
+        }
+        self.expect(SyntaxKind::RBracket);
+        self.finish_node();
+    }
+
+    /// Type object: {key: T, key2: U, *: V}
+    fn parse_type_object(&mut self) {
+        self.start_node(SyntaxKind::TypeObject);
+        self.bump(); // {
+        while self.current() != SyntaxKind::RBrace && !self.at_end() {
+            self.parse_type_pair();
+            self.eat(SyntaxKind::Comma);
+        }
+        self.expect(SyntaxKind::RBrace);
+        self.finish_node();
+    }
+
+    /// Type pair: [mut] key: T  or  [mut] *: T
+    fn parse_type_pair(&mut self) {
+        self.start_node(SyntaxKind::TypePair);
+        // Optional `mut`
+        if self.current() == SyntaxKind::Ident && self.current_text() == "mut" {
+            self.bump();
+        }
+        // Key: identifier or *
+        if self.current() == SyntaxKind::Star {
+            self.bump(); // wildcard
+        } else if self.current() == SyntaxKind::Ident {
+            self.bump(); // field name
+        }
+        self.expect(SyntaxKind::Colon);
+        self.parse_type_union(); // value type
+        self.finish_node();
+    }
+
+    /// Type group: (T) — parenthesized type
+    fn parse_type_group(&mut self) {
+        self.start_node(SyntaxKind::TypeGroup);
+        self.bump(); // (
+        self.parse_type_union();
+        self.expect(SyntaxKind::RParen);
         self.finish_node();
     }
 
@@ -570,7 +685,7 @@ impl<'s, 'c> Parser<'s, 'c> {
     fn parse_optional_type_annotation(&mut self) {
         if self.current() == SyntaxKind::Colon {
             self.bump(); // :
-            self.parse_pratt_expr(0); // type expression
+            self.parse_type_expr();
         }
     }
 

@@ -295,7 +295,11 @@ impl Type {
                 if let Some(w) = wildcard {
                     parts.push(format!("*: {}", w.display()));
                 }
-                format!("{{{}}}", parts.join(", "))
+                if parts.is_empty() {
+                    "{}".into()
+                } else {
+                    format!("{{ {} }}", parts.join(" "))
+                }
             }
             Type::Union(types) => {
                 types.iter().map(|t| t.display()).collect::<Vec<_>>().join(" | ")
@@ -490,8 +494,11 @@ fn extract_extern_assign(
 ) {
     let children: Vec<_> = non_trivia_children(node).collect();
 
-    // Find `:` token to split LHS and RHS
-    let sep_idx = children.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::Colon));
+    // Find `=` or `:` token to split LHS and RHS
+    let sep_idx = children.iter().position(|c| {
+        let k = as_token_kind(c);
+        k == Some(SyntaxKind::Eq) || k == Some(SyntaxKind::Colon)
+    });
     let sep_idx = match sep_idx {
         Some(i) => i,
         Option::None => return,
@@ -706,11 +713,43 @@ fn interpret_type_token(token: &SyntaxToken) -> Type {
 /// Interpret a composite node as a type.
 fn interpret_type_node(node: &SyntaxNode) -> Type {
     match node.kind() {
+        // New type-specific nodes
+        SyntaxKind::TypeExpr => {
+            // Unwrap: TypeExpr contains one child (the actual type)
+            for child in node.children_with_tokens() {
+                match &child {
+                    rowan::NodeOrToken::Node(n) => return interpret_type_node(n),
+                    rowan::NodeOrToken::Token(t) if !t.kind().is_trivia() => {
+                        return interpret_type_token(t);
+                    }
+                    _ => {}
+                }
+            }
+            Type::unknown()
+        }
+        SyntaxKind::TypeUnion => interpret_type_binary(node),
+        SyntaxKind::TypeIntersection => interpret_type_binary(node),
+        SyntaxKind::TypeArray => interpret_type_array(node),
+        SyntaxKind::TypeObject => interpret_type_object(node),
+        SyntaxKind::TypeGroup => {
+            for child in node.children_with_tokens() {
+                match &child {
+                    rowan::NodeOrToken::Node(n) => return interpret_type_node(n),
+                    rowan::NodeOrToken::Token(t) if !t.kind().is_trivia()
+                        && t.kind() != SyntaxKind::LParen
+                        && t.kind() != SyntaxKind::RParen => {
+                        return interpret_type_token(t);
+                    }
+                    _ => {}
+                }
+            }
+            Type::unknown()
+        }
+        // Legacy nodes (from expression parser — still used in some contexts)
         SyntaxKind::BinaryExpr => interpret_type_binary(node),
         SyntaxKind::ArrayExpr => interpret_type_array(node),
         SyntaxKind::ObjectExpr => interpret_type_object(node),
         SyntaxKind::GroupExpr => {
-            // Parenthesized type — unwrap
             for child in node.children_with_tokens() {
                 match &child {
                     rowan::NodeOrToken::Node(n) => return interpret_type_node(n),
@@ -735,8 +774,15 @@ fn extract_mutable_fields_from_cst(
     let mut result = Vec::new();
     for child in children {
         if let Some(n) = as_node(child) {
-            if n.kind() == SyntaxKind::ObjectExpr {
+            if n.kind() == SyntaxKind::ObjectExpr || n.kind() == SyntaxKind::TypeObject {
                 extract_mut_from_object_node(n, &mut result);
+            } else if n.kind() == SyntaxKind::TypeExpr {
+                // Unwrap TypeExpr wrapper
+                for inner in n.children() {
+                    if inner.kind() == SyntaxKind::TypeObject || inner.kind() == SyntaxKind::ObjectExpr {
+                        extract_mut_from_object_node(&inner, &mut result);
+                    }
+                }
             }
         }
     }
@@ -746,7 +792,7 @@ fn extract_mutable_fields_from_cst(
 /// Walk an ObjectExpr node looking for `mut` annotations on Pair children.
 fn extract_mut_from_object_node(node: &SyntaxNode, result: &mut Vec<String>) {
     for child in node.children() {
-        if child.kind() == SyntaxKind::Pair {
+        if child.kind() == SyntaxKind::Pair || child.kind() == SyntaxKind::TypePair {
             let children: Vec<_> = non_trivia_children(&child).collect();
             // Check if first child is Ident("mut")
             if children.len() >= 3 {
@@ -765,11 +811,24 @@ fn extract_mut_from_object_node(node: &SyntaxNode, result: &mut Vec<String>) {
     }
 }
 
-/// Interpret a BinaryExpr as a union type (the `|` operator).
+/// Interpret a BinaryExpr/TypeUnion/TypeIntersection as a union or intersection type.
 fn interpret_type_binary(node: &SyntaxNode) -> Type {
     let children: Vec<_> = non_trivia_children(node).collect();
 
-    // Find the operator — | for union, & for intersection
+    // For flat TypeUnion/TypeIntersection nodes: collect all non-operator children
+    if matches!(node.kind(), SyntaxKind::TypeUnion | SyntaxKind::TypeIntersection) {
+        let types: Vec<Type> = children.iter()
+            .filter(|c| !matches!(as_token_kind(c), Some(SyntaxKind::Pipe | SyntaxKind::Amp)))
+            .map(|c| interpret_type_child(c))
+            .collect();
+        return if node.kind() == SyntaxKind::TypeUnion {
+            Type::Union(types)
+        } else {
+            Type::Intersection(types)
+        };
+    }
+
+    // Legacy BinaryExpr: find first operator and split left/right
     let op_idx = children.iter().position(|c| {
         matches!(as_token_kind(c), Some(SyntaxKind::Pipe | SyntaxKind::Amp))
     });
@@ -835,7 +894,7 @@ fn interpret_type_object(node: &SyntaxNode) -> Type {
     let mut wildcard = Option::None;
 
     for child in node.children() {
-        if child.kind() == SyntaxKind::Pair {
+        if child.kind() == SyntaxKind::Pair || child.kind() == SyntaxKind::TypePair {
             let pair_children: Vec<_> = non_trivia_children(&child).collect();
 
             // Find colon
@@ -1639,12 +1698,15 @@ impl<'a> TypeEnv<'a> {
         }
     }
 
-    /// Process `extern name: Type` — a global variable declaration.
+    /// Process `extern name = Type` — a global variable declaration.
     fn process_extern_var(&mut self, assign_node: &SyntaxNode, decl_node: &SyntaxNode) {
         let children: Vec<_> = non_trivia_children(assign_node).collect();
 
-        // Find `:` to split name and type
-        let sep_idx = match children.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::Colon)) {
+        // Find `=` or `:` to split name and type
+        let sep_idx = match children.iter().position(|c| {
+            let k = as_token_kind(c);
+            k == Some(SyntaxKind::Eq) || k == Some(SyntaxKind::Colon)
+        }) {
             Some(i) => i,
             _ => return,
         };

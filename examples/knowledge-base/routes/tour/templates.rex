@@ -59,7 +59,7 @@ them freely via <code>fs.read()</code>.</p>
 <pre>${hl-self}</pre>`
 
 template.render(layout, {
-  title: "Templates"
-  body: body
-  footer: "<a href='/tour/middleware'>&larr; Middleware</a> &middot; <a href='/tour/api'>API &rarr;</a>"
+  title:"Templates"
+  body:body
+  footer:"<a href='/tour/middleware'>&larr; Middleware</a> &middot; <a href='/tour/api'>API &rarr;</a>"
 })
