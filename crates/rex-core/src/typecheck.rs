@@ -922,6 +922,46 @@ fn interpret_type_object(node: &SyntaxNode) -> Type {
     Type::Object { fields, wildcard }
 }
 
+// ── Built-in method types ─────────────────────────────────────────────────
+
+/// Returns the return type for a built-in method call, or None if not a built-in.
+fn builtin_method_type(target: &Type, method: &str, _args: &[Type]) -> Option<Type> {
+    match target {
+        Type::Array(elem) => match method {
+            "push" => Some(Type::Array(elem.clone())),
+            "pop" => Some(Type::Union(vec![*elem.clone(), Type::None])),
+            "join" => Some(Type::Str),
+            "indexOf" => Some(Type::Union(vec![Type::Int, Type::None])),
+            "contains" => Some(Type::Union(vec![*elem.clone(), Type::None])),
+            "slice" => Some(Type::Array(elem.clone())),
+            _ => None,
+        },
+        Type::Str => match method {
+            "split" => Some(Type::Array(Box::new(Type::Str))),
+            "trim" => Some(Type::Str),
+            "upper" => Some(Type::Str),
+            "lower" => Some(Type::Str),
+            "replace" => Some(Type::Str),
+            "slice" => Some(Type::Str),
+            "indexOf" => Some(Type::Union(vec![Type::Int, Type::None])),
+            "contains" => Some(Type::Union(vec![Type::Str, Type::None])),
+            "starts-with" => Some(Type::Union(vec![Type::Str, Type::None])),
+            "ends-with" => Some(Type::Union(vec![Type::Str, Type::None])),
+            _ => None,
+        },
+        // For unknown target types, still resolve if the method is known on any type
+        Type::Some | Type::Union(_) => match method {
+            "push" | "slice" => Some(Type::Some),
+            "pop" => Some(Type::Some),
+            "join" | "trim" | "upper" | "lower" | "replace" | "split" => Some(Type::Some),
+            "indexOf" => Some(Type::Union(vec![Type::Int, Type::None])),
+            "contains" | "starts-with" | "ends-with" => Some(Type::Some),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 // ── Type helpers ──────────────────────────────────────────────────────────
 
 /// Remove None from a type (comprehensions filter out none values).
@@ -1988,6 +2028,26 @@ impl<'a> TypeEnv<'a> {
             }
         }
 
+        // Check for built-in method call: target.method(args)
+        if callee_parts.len() == 1 {
+            if let Some(nav_node) = callee_parts[0].as_node() {
+                if nav_node.kind() == SyntaxKind::NavExpr {
+                    let nav_children: Vec<_> = non_trivia_children(nav_node).collect();
+                    if nav_children.len() >= 3 {
+                        let target_type = self.infer_child(&nav_children[0]);
+                        let method_name = nav_children.last()
+                            .and_then(|c| c.as_token())
+                            .map(|t| t.text().to_string());
+                        if let Some(method) = method_name {
+                            if let Some(ret) = builtin_method_type(&target_type, &method, &arg_types) {
+                                return ret;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Unknown function — if it's a navigation call (user.name), resolve property
         if let Some(name) = func_name {
             if let Some(var_type) = self.lookup_var(&name) {
@@ -2031,6 +2091,11 @@ impl<'a> TypeEnv<'a> {
             rowan::NodeOrToken::Token(t) if t.kind().is_keyword() => t.text().to_string(),
             _ => return Type::unknown(),
         };
+
+        // Check built-in methods before property lookup
+        if let Some(ret) = builtin_method_type(&base_type, &key, &[]) {
+            return ret;
+        }
 
         match base_type.resolve_property(&key) {
             PropertyResult::Known(ty) => self.resolve_type(&ty),
