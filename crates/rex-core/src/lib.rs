@@ -13,11 +13,19 @@ pub mod typecheck;
 
 /// Compile Rex source to REXC bytecode with full optimizations.
 /// Always uses the full Rex pipeline (lex → parse → CST → lower → encode).
+/// Inline extern shortcodes (e.g. `extern "P" print(...)`) are applied automatically.
 pub fn compile(source: &str) -> String {
     let tokens = lexer::lex(source);
     let (green, _errors) = parser::parse(source, &tokens);
     let root = syntax::SyntaxNode::new_root(green);
-    let value = lower::lower(&root);
+    let mut value = lower::lower(&root);
+
+    // Extract and apply shortcodes from inline extern declarations
+    let shortcodes = extract_shortcodes(source);
+    if !shortcodes.is_empty() {
+        rewrite_shortcodes(&mut value, &shortcodes);
+    }
+
     bytecode::encode_dedup(&value)
 }
 
