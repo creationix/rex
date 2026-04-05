@@ -1079,14 +1079,14 @@ pub fn check_source(source: &str, schema: &DomainSchema) -> Vec<Diagnostic> {
 pub fn check_source_with_types(
     source: &str,
     schema: &DomainSchema,
-) -> (Vec<Diagnostic>, Vec<(std::ops::Range<usize>, Type)>) {
+) -> (Vec<Diagnostic>, Vec<(std::ops::Range<usize>, Type)>, HashMap<String, FunctionSig>) {
     let tokens = crate::lexer::lex(source);
     let (green, _errors) = crate::parser::parse(source, &tokens);
     let root = SyntaxNode::new_root(green);
     let mut env = TypeEnv::new(schema);
     env.infer_program(&root);
     env.check_unused_vars();
-    (env.diagnostics, env.span_types)
+    (env.diagnostics, env.span_types, env.inline_functions)
 }
 
 /// A narrowing constraint extracted from a condition expression.
@@ -1761,6 +1761,37 @@ impl<'a> TypeEnv<'a> {
         let returns = return_type.unwrap_or(Type::None);
         let span = Self::span_of(decl_node);
         self.validate_type(&returns, &span);
+
+        // Set variable type to the return type so hover on the name shows the function
+        let returns_clone = returns.clone();
+        if !name.contains('.') {
+            self.set_var(&name, returns_clone);
+        }
+
+        // Record span for the function name for hover
+        let call_children: Vec<_> = non_trivia_children(call_node).collect();
+        let lparen = call_children.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::LParen)).unwrap_or(0);
+        for c in &call_children[..lparen] {
+            if let Some(t) = c.as_token() {
+                let range = t.text_range();
+                self.span_types.push((range.start().into()..range.end().into(), returns.clone()));
+            }
+        }
+
+        // Record spans for parameter names
+        for c in &call_children[lparen+1..] {
+            if as_token_kind(c) == Some(SyntaxKind::RParen) { break; }
+            if let Some(t) = c.as_token() {
+                if t.kind() == SyntaxKind::Ident {
+                    // Find this param in args
+                    let param_name = t.text();
+                    if let Some((_, param_ty)) = args.iter().find(|(n, _)| n == param_name) {
+                        let range = t.text_range();
+                        self.span_types.push((range.start().into()..range.end().into(), param_ty.clone()));
+                    }
+                }
+            }
+        }
 
         self.inline_functions.insert(name, FunctionSig { args, rest, returns, doc: None });
     }
