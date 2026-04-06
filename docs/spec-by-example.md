@@ -1022,24 +1022,24 @@ y = c or d
 
 ```csv types
 text , type            , line, col
-a    , int             , 1   , 1  
-100  , int             , 1   , 5  
-b    , str             , 2   , 1  
-"""hi""", str             , 2   , 5  
-c    , int | none      , 3   , 1  
-int  , int             , 3   , 4  
-none , none            , 3   , 10 
-200  , int             , 3   , 17 
-d    , str | none      , 4   , 1  
-str  , str             , 4   , 4  
-none , none            , 4   , 10 
-"""wow""", str             , 4   , 17 
-x    , int | str       , 5   , 1  
-a    , int             , 5   , 5  
-b    , str             , 5   , 10 
-y    , int | str | none, 6   , 1  
-c    , int | none      , 6   , 5  
-d    , str | none      , 6   , 10 
+a    , int             , 1   , 1
+100  , int             , 1   , 5
+b    , str             , 2   , 1
+"""hi""", str             , 2   , 5
+c    , int | none      , 3   , 1
+int  , int             , 3   , 4
+none , none            , 3   , 10
+200  , int             , 3   , 17
+d    , str | none      , 4   , 1
+str  , str             , 4   , 4
+none , none            , 4   , 10
+"""wow""", str             , 4   , 17
+x    , int             , 5   , 1
+a    , int             , 5   , 5
+b    , str             , 5   , 10
+y    , int | str | none, 6   , 1
+c    , int | none      , 6   , 5
+d    , str | none      , 6   , 10
 ```
 
 ```rext
@@ -1253,6 +1253,43 @@ for k of { a:1 b:2 } do k end
 
 ```json
 "b"
+```
+
+Iterating over a typed array narrows the loop variable to the element type:
+
+```rex
+users: [{ name: str score: int }] = [
+  { name:"Ada" score:95 }
+  { name:"Ben" score:72 }
+]
+scores = { (u.name):u.score for u in users }
+```
+
+```csv types
+text   , type                      , line, col
+users  , [{ name: str score: int }], 1   , 1
+name   , str                       , 1   , 11
+str    , str                       , 1   , 17
+score  , int                       , 1   , 21
+int    , int                       , 1   , 28
+name   , str                       , 2   , 5
+"""Ada""", str                       , 2   , 10
+score  , int                       , 2   , 16
+95     , int                       , 2   , 22
+name   , str                       , 3   , 5
+"""Ben""", str                       , 3   , 10
+score  , int                       , 3   , 16
+72     , int                       , 3   , 22
+scores , { *: int }                , 5   , 1
+u      , { name: str score: int }  , 5   , 13
+u.name , str                       , 5   , 13
+u      , { name: str score: int }  , 5   , 21
+u.score, int                       , 5   , 21
+users  , [{ name: str score: int }], 5   , 38
+```
+
+```json
+{"Ada": 95, "Ben": 72}
 ```
 
 ## `while` Loops
