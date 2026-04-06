@@ -6,8 +6,11 @@
 //!
 //! - `rex` — input: compile and run in the shared VM, preserving state
 //! - `json` — output check: structural match against the last expression result
+//!   (order-sensitive for arrays and objects)
 //! - `json vars` — output check: structural match against all current variables
-//! - `rexc` — output check: exact match against compiled bytecode of previous rex block
+//! - `json types` — output check: structural match against inferred type spans
+//! - `csv types` — output check: exact CSV snapshot of inferred type spans
+//! - `rext` — output check: exact match against compiled bytecode of previous rex block
 //!
 //! Multiple blocks per test, interleaved freely. State carries across rex blocks.
 
@@ -19,7 +22,17 @@ enum Step {
     CompileOnly(String, Option<String>, usize), // source, domain, line
     CheckJson(String, usize, usize),            // expected, line, col
     CheckJsonVars(String, usize),
+    CheckJsonTypes(String, usize),
+    CheckCsvTypes(String, usize),
     CheckBytecode(String, usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TypeSnapshotRow {
+    text: String,
+    ty: String,
+    line: Option<usize>,
+    col: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -79,7 +92,14 @@ fn parse_spec(markdown: &str) -> (Vec<SpecTest>, Vec<String>) {
                     "rex" => steps.push(Step::Rex(body, active_domain.clone(), fence_start)),
                     "json" => steps.push(Step::CheckJson(body, fence_start, 1)),
                     "json vars" => steps.push(Step::CheckJsonVars(body, fence_start)),
-                    "rexc" | "rext" => steps.push(Step::CheckBytecode(body, fence_start)),
+                    "json types" => steps.push(Step::CheckJsonTypes(body, fence_start)),
+                    "csv types" => steps.push(Step::CheckCsvTypes(body, fence_start)),
+                    "rext" => steps.push(Step::CheckBytecode(body, fence_start)),
+                    "rexc" => {
+                        format_errors.push(format!(
+                            "line {fence_start}: unsupported fence language `rexc`; use `rext`"
+                        ));
+                    }
                     "rexd" => {
                         if let Some(err) = check_format(&body, fence_start) {
                             // Collect format errors for rexd blocks but don't add as steps
@@ -114,7 +134,7 @@ fn parse_spec(markdown: &str) -> (Vec<SpecTest>, Vec<String>) {
                 0 => {
                     // Potential header row — check if cells look like column names
                     let names: Vec<String> = cells.iter().map(|c| c.trim().to_lowercase()).collect();
-                    if names.iter().any(|n| n == "rex" || n == "rext" || n == "json" || n == "rexd") {
+                    if names.iter().any(|n| n == "rex" || n == "rext" || n == "json" || n == "json types" || n == "rexd") {
                         table_cols = names;
                         table_state = 1;
                     }
@@ -149,10 +169,12 @@ fn parse_spec(markdown: &str) -> (Vec<SpecTest>, Vec<String>) {
 
                     if let Some(rex_src) = get("rex") {
                         let has_json = table_cols.iter().any(|n| n == "json");
+                        let has_json_types = table_cols.iter().any(|n| n == "json types");
                         let json_with_col = get_with_col("json");
+                        let json_types = get("json types");
                         let domain = get("rexd");
 
-                        if has_json && json_with_col.is_some() {
+                        if (has_json && json_with_col.is_some()) || (has_json_types && json_types.is_some()) {
                             steps.push(Step::Rex(rex_src, domain, line_num));
                         } else {
                             steps.push(Step::CompileOnly(rex_src, domain, line_num));
@@ -167,6 +189,9 @@ fn parse_spec(markdown: &str) -> (Vec<SpecTest>, Vec<String>) {
                                 other => other.to_string(),
                             };
                             steps.push(Step::CheckJson(json_str, line_num, col));
+                        }
+                        if let Some(types_json) = json_types {
+                            steps.push(Step::CheckJsonTypes(types_json, line_num));
                         }
                     }
                 }
@@ -336,6 +361,8 @@ fn run_test(test: &SpecTest) -> Vec<String> {
     let mut heap = rex_core::heap::Heap::new();
     let mut last_value = rex_core::heap::Value::NONE;
     let mut last_bytecode = String::new();
+    let mut last_types_rows: Vec<TypeSnapshotRow> = Vec::new();
+    let mut last_types_json = serde_json::Value::Array(Vec::new());
     let mut errors = Vec::new();
 
     for step in &test.steps {
@@ -349,6 +376,8 @@ fn run_test(test: &SpecTest) -> Vec<String> {
                     None => rex_core::compile(source),
                 };
                 last_bytecode = bytecode.clone();
+                last_types_rows = inferred_type_rows(source, domain.as_deref());
+                last_types_json = type_rows_to_json(&last_types_rows);
 
                 let mut ctx = rex_core::interpret::Context::default();
                 ctx.vars = std::mem::take(&mut vars);
@@ -378,13 +407,17 @@ fn run_test(test: &SpecTest) -> Vec<String> {
                     Some(d) => rex_core::compile_with_domain(source, d),
                     None => rex_core::compile(source),
                 };
+                last_types_rows = inferred_type_rows(source, domain.as_deref());
+                last_types_json = type_rows_to_json(&last_types_rows);
             }
             Step::CheckJson(expected, line, col) => {
                 let actual = value_to_json(last_value, &heap);
                 match serde_json::from_str::<serde_json::Value>(expected.trim()) {
                     Err(e) => {
                         let ecol = col + e.column() - 1;
-                        errors.push(format!("line {line}:{ecol}: invalid JSON `{expected}`"));
+                        errors.push(format!(
+                            "line {line}:{ecol}: invalid JSON: {e}\nexpected:\n{expected}\nactual:\n{actual}"
+                        ));
                     }
                     Ok(expected_json) => {
                         if !json_eq_ordered(&actual, &expected_json) {
@@ -394,12 +427,45 @@ fn run_test(test: &SpecTest) -> Vec<String> {
                 }
             }
             Step::CheckJsonVars(expected, line) => {
+                let actual = vars_to_json(&vars, &heap);
                 match serde_json::from_str::<serde_json::Value>(expected.trim()) {
-                    Err(e) => errors.push(format!("line {line}: invalid JSON: {e}")),
+                    Err(e) => errors.push(format!(
+                        "line {line}: invalid JSON: {e}\nexpected:\n{expected}\nactual:\n{actual}"
+                    )),
                     Ok(expected_json) => {
-                        let actual = vars_to_json(&vars, &heap);
                         if !json_eq_ordered(&actual, &expected_json) {
                             errors.push(format!("line {line}: vars expected {expected_json}, got {actual}"));
+                        }
+                    }
+                }
+            }
+            Step::CheckJsonTypes(expected, line) => {
+                match serde_json::from_str::<serde_json::Value>(expected.trim()) {
+                    Err(e) => errors.push(format!(
+                        "line {line}: invalid JSON: {e}\nexpected:\n{expected}\nactual:\n{last_types_json}"
+                    )),
+                    Ok(expected_json) => {
+                        if !json_types_match(&last_types_json, &expected_json) {
+                            errors.push(format!(
+                                "line {line}: types expected {expected_json}, got {last_types_json}"
+                            ));
+                        }
+                    }
+                }
+            }
+            Step::CheckCsvTypes(expected, line) => {
+                match parse_csv_types(expected) {
+                    Err(e) => errors.push(format!(
+                        "line {line}: invalid csv types: {e}\nexpected:\n{expected}\nactual:\n{}",
+                        format_csv_types(&last_types_rows, true)
+                    )),
+                    Ok(expected_rows) => {
+                        if expected_rows != last_types_rows {
+                            errors.push(format!(
+                                "line {line}: csv types mismatch\nexpected:\n{}\ngot:\n{}",
+                                format_csv_types(&expected_rows, true),
+                                format_csv_types(&last_types_rows, true),
+                            ));
                         }
                     }
                 }
@@ -447,10 +513,212 @@ fn value_to_json(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> serde
 }
 
 fn vars_to_json(vars: &HashMap<String, rex_core::heap::Value>, heap: &rex_core::heap::Heap) -> serde_json::Value {
-    let map: serde_json::Map<String, serde_json::Value> = vars.iter()
-        .map(|(k, &v)| (k.clone(), value_to_json(v, heap)))
-        .collect();
+    // `json vars` snapshots are about variable state, not HashMap iteration order.
+    // Keep output stable by sorting variable names before building the JSON object.
+    let mut keys: Vec<&String> = vars.keys().collect();
+    keys.sort();
+
+    let mut map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    for key in keys {
+        if let Some(&value) = vars.get(key) {
+            map.insert(key.clone(), value_to_json(value, heap));
+        }
+    }
     serde_json::Value::Object(map)
+}
+
+fn inferred_type_rows(source: &str, domain: Option<&str>) -> Vec<TypeSnapshotRow> {
+    let schema = match domain {
+        Some(rexd) => rex_core::typecheck::parse_rexd(rexd),
+        None => rex_core::typecheck::DomainSchema::default(),
+    };
+    let (_diags, span_types, _fns, _aliases) = rex_core::typecheck::check_source_with_types(source, &schema);
+
+    let mut rows: Vec<(usize, usize, usize, usize, String, String)> = span_types
+        .into_iter()
+        .map(|(span, ty)| {
+            let text = source.get(span.clone()).unwrap_or("").to_string();
+            let (line, col) = offset_to_line_col_1(source, span.start);
+            (span.start, span.end, line, col, text, ty.simplify().display())
+        })
+        .collect();
+
+    rows.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.3.cmp(&b.3))
+            .then_with(|| a.4.cmp(&b.4))
+            .then_with(|| a.5.cmp(&b.5))
+    });
+    rows.dedup();
+
+    rows
+        .into_iter()
+        .map(|(_start, _end, line, col, text, ty)| {
+            TypeSnapshotRow {
+                text,
+                ty,
+                line: Some(line),
+                col: Some(col),
+            }
+        })
+        .collect()
+}
+
+fn type_rows_to_json(rows: &[TypeSnapshotRow]) -> serde_json::Value {
+    serde_json::Value::Array(rows.iter().map(|row| {
+        let mut obj = serde_json::Map::new();
+        obj.insert("text".to_string(), serde_json::json!(row.text));
+        obj.insert("type".to_string(), serde_json::json!(row.ty));
+        if let Some(line) = row.line {
+            obj.insert("line".to_string(), serde_json::json!(line));
+        }
+        if let Some(col) = row.col {
+            obj.insert("col".to_string(), serde_json::json!(col));
+        }
+        serde_json::Value::Object(obj)
+    }).collect())
+}
+
+fn offset_to_line_col_1(source: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1usize;
+    let mut col = 1usize;
+    for (i, ch) in source.char_indices() {
+        if i >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// Matching for `json types` blocks.
+///
+/// Supported forms:
+/// - exact snapshot: JSON array of span entries (order-sensitive)
+/// - subset assertions: `{ "contains": [ {"text":"a", "type":"int"}, ... ] }`
+///   Each `contains` item must match at least one actual span entry.
+fn json_types_match(actual: &serde_json::Value, expected: &serde_json::Value) -> bool {
+    json_eq_ordered(actual, expected)
+}
+
+fn parse_csv_types(csv: &str) -> Result<Vec<TypeSnapshotRow>, String> {
+    let mut lines = csv.lines().filter(|l| !l.trim().is_empty());
+    let header = lines.next().ok_or_else(|| "missing header".to_string())?;
+    let cols = parse_csv_line(header)?;
+    if cols.len() < 2 {
+        return Err("header must include at least text,type".to_string());
+    }
+
+    let col_index = |name: &str| cols.iter().position(|c| c.trim() == name);
+    let i_text = col_index("text").ok_or_else(|| "missing 'text' column".to_string())?;
+    let i_type = col_index("type").ok_or_else(|| "missing 'type' column".to_string())?;
+    let i_line = col_index("line");
+    let i_col = col_index("col");
+
+    let mut out = Vec::new();
+    for (idx, line) in lines.enumerate() {
+        let fields = parse_csv_line(line)?;
+        let get = |i: usize| fields.get(i).map(|s| s.as_str()).unwrap_or("");
+
+        let line_num = if let Some(i) = i_line {
+            let v = get(i).trim();
+            if v.is_empty() { None } else { Some(v.parse::<usize>().map_err(|_| format!("row {} invalid line", idx + 2))?) }
+        } else { None };
+        let col_num = if let Some(i) = i_col {
+            let v = get(i).trim();
+            if v.is_empty() { None } else { Some(v.parse::<usize>().map_err(|_| format!("row {} invalid col", idx + 2))?) }
+        } else { None };
+
+        out.push(TypeSnapshotRow {
+            text: get(i_text).to_string(),
+            ty: get(i_type).to_string(),
+            line: line_num,
+            col: col_num,
+        });
+    }
+    Ok(out)
+}
+
+fn parse_csv_line(line: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut chars = line.chars().peekable();
+    let mut in_quotes = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                if in_quotes {
+                    if chars.peek() == Some(&'"') {
+                        chars.next();
+                        cur.push('"');
+                    } else {
+                        in_quotes = false;
+                    }
+                } else {
+                    in_quotes = true;
+                }
+            }
+            ',' if !in_quotes => {
+                out.push(cur.trim().to_string());
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if in_quotes {
+        return Err("unterminated quote".to_string());
+    }
+    out.push(cur.trim().to_string());
+    Ok(out)
+}
+
+fn format_csv_types(rows: &[TypeSnapshotRow], aligned: bool) -> String {
+    let mut table: Vec<[String; 4]> = Vec::new();
+    table.push(["text".into(), "type".into(), "line".into(), "col".into()]);
+    for r in rows {
+        table.push([
+            r.text.clone(),
+            r.ty.clone(),
+            r.line.map(|v| v.to_string()).unwrap_or_default(),
+            r.col.map(|v| v.to_string()).unwrap_or_default(),
+        ]);
+    }
+
+    if !aligned {
+        return table.into_iter()
+            .map(|r| r.into_iter().map(csv_escape).collect::<Vec<_>>().join(","))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+
+    let mut widths = [0usize; 4];
+    for row in &table {
+        for i in 0..4 {
+            widths[i] = widths[i].max(row[i].len());
+        }
+    }
+    table.into_iter().map(|row| {
+        (0..4).map(|i| {
+            let cell = csv_escape(row[i].clone());
+            format!("{cell:width$}", width = widths[i])
+        }).collect::<Vec<_>>().join(", ")
+    }).collect::<Vec<_>>().join("\n")
+}
+
+fn csv_escape(s: String) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s
+    }
 }
 
 /// Order-sensitive deep comparison of JSON values.

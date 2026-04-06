@@ -3,6 +3,18 @@
 A guided tour of every Rex language feature, doubling as the golden test
 suite. Starts with the simplest values and builds toward full programs.
 
+## How To Run
+
+Run this spec suite from the repo root:
+
+```sh
+cargo test -p rex-core --test spec
+```
+
+```sh
+cargo test -p rex-cli hover_ -- --nocapture
+```
+
 ## Test Format
 
 The test runner (`crates/rex-core/tests/spec.rs`) parses this file:
@@ -10,6 +22,8 @@ The test runner (`crates/rex-core/tests/spec.rs`) parses this file:
 - `rex` — compile and run in a shared VM (state carries across tests)
 - `json` — structural match against the last expression result
 - `json vars` — structural match against all current variables
+- `json types` — structural match against inferred type spans from the last `rex` block
+- `csv types` — exact CSV snapshot of inferred type spans from the last `rex` block
 - `rext` — exact match against bytecode of previous rex block
 
 Prose is ignored by the runner. Multiple blocks per section, interleaved freely.
@@ -193,6 +207,20 @@ a = [ 2 a 2 ]
 a = [ 3 a 3 ]
 ```
 
+```csv types
+text, type                 , line, col
+a   , [int]                , 1   , 1
+1   , int                  , 1   , 7
+a   , [int | [int]]        , 2   , 1
+2   , int                  , 2   , 7
+a   , [int]                , 2   , 9
+2   , int                  , 2   , 11
+a   , [int | [int | [int]]], 3   , 1
+3   , int                  , 3   , 7
+a   , [int | [int]]        , 3   , 9
+3   , int                  , 3   , 11
+```
+
 ```rext
 (%=a$[2+]=a$[4+a$4+]=a$[6+a$6+])
 ```
@@ -200,6 +228,113 @@ a = [ 3 a 3 ]
 ```json
 [3,[2,[1],2],3]
 ```
+
+## Inline Expanded
+
+```rex
+a = [ 1 ]
+a = [ 2 ...a 2 ]
+a = [ 3 ...a 3 ]
+```
+
+```csv types
+text, type , line, col
+a   , [int], 1   , 1
+1   , int  , 1   , 7
+a   , [int], 2   , 1
+2   , int  , 2   , 7
+a   , [int], 2   , 12
+2   , int  , 2   , 14
+a   , [int], 3   , 1
+3   , int  , 3   , 7
+a   , [int], 3   , 12
+3   , int  , 3   , 14
+```
+
+```rext
+(%=a$[2+]=a$8.2^a$[4+]=a$8.2^a$[6+])
+```
+
+```json
+[3,2,1,2,3]
+```
+
+## Object Nesting
+
+```rex
+a = { c:3 x:4 }
+a = { b:1 _:a y:5 }
+a = { a:1 _:a z:6 }
+```
+
+```csv types
+text, type                                                       , line, col
+a   , { c: int x: int }                                          , 1   , 1
+c   , int                                                        , 1   , 7
+3   , int                                                        , 1   , 9
+x   , int                                                        , 1   , 11
+4   , int                                                        , 1   , 13
+a   , { b: int _: { c: int x: int } y: int }                     , 2   , 1
+b   , int                                                        , 2   , 7
+1   , int                                                        , 2   , 9
+_   , { c: int x: int }                                          , 2   , 11
+a   , { c: int x: int }                                          , 2   , 13
+y   , int                                                        , 2   , 15
+5   , int                                                        , 2   , 17
+a   , { a: int _: { b: int _: { c: int x: int } y: int } z: int }, 3   , 1
+a   , int                                                        , 3   , 7
+1   , int                                                        , 3   , 9
+_   , { b: int _: { c: int x: int } y: int }                     , 3   , 11
+a   , { b: int _: { c: int x: int } y: int }                     , 3   , 13
+z   , int                                                        , 3   , 15
+6   , int                                                        , 3   , 17
+```
+
+```rext
+(%=a${1,c6+1,x8+}=a${1,b2+1,_a$1,ya+}=a${1,a2+1,_a$1,zc+})
+```
+
+```json
+{"a":1,"_":{"b":1,"_":{"c":3,"x":4},"y":5},"z":6}
+```
+
+## Spread Objects
+
+```rex
+a = { c:3 x:4 }
+a = { b:2 ...a y:5 }
+a = { a:1 ...a z:6 }
+```
+
+```csv types
+text, type                                         , line, col
+a   , { c: int x: int }                            , 1   , 1
+c   , int                                          , 1   , 7
+3   , int                                          , 1   , 9
+x   , int                                          , 1   , 11
+4   , int                                          , 1   , 13
+a   , { b: int c: int x: int y: int }              , 2   , 1
+b   , int                                          , 2   , 7
+2   , int                                          , 2   , 9
+a   , { c: int x: int }                            , 2   , 14
+y   , int                                          , 2   , 16
+5   , int                                          , 2   , 18
+a   , { a: int b: int c: int x: int y: int z: int }, 3   , 1
+a   , int                                          , 3   , 7
+1   , int                                          , 3   , 9
+a   , { b: int c: int x: int y: int }              , 3   , 14
+z   , int                                          , 3   , 16
+6   , int                                          , 3   , 18
+```
+
+```rext
+(%=a${1,c6+1,x8+}=a$g.{1,b4+}a${1,ya+}=a$g.{1,a2+}a${1,zc+})
+```
+
+```json
+{"a":1,"b":2,"c":3,"x":4,"y":5,"z":6}
+```
+
 
 ## Template Literals
 
@@ -322,6 +457,152 @@ Dots read nested values. Compiles to a navigation/call with string arguments:
 |---------------|-------------------|
 | `map.(x + 1)` | `(map$(ad%x$2+))` |
 
+### Exact Automatic Types
+
+```rex
+db = {
+  bob:{ name:"Bob" color:0x44ff44 }
+  tim:{ name:"Tim" color:0x0088ff }
+}
+
+first-name = db.bob
+tim-color = db.tim.color
+```
+
+```csv types
+text        , type                                                           , line, col
+db          , { bob: { name: str color: int } tim: { name: str color: int } }, 1   , 1
+bob         , { name: str color: int }                                       , 2   , 3
+name        , str                                                            , 2   , 9
+"""Bob"""   , str                                                            , 2   , 14
+color       , int                                                            , 2   , 20
+0x44ff44    , int                                                            , 2   , 26
+tim         , { name: str color: int }                                       , 3   , 3
+name        , str                                                            , 3   , 9
+"""Tim"""   , str                                                            , 3   , 14
+color       , int                                                            , 3   , 20
+0x0088ff    , int                                                            , 3   , 26
+first-name  , { name: str color: int }                                       , 6   , 1
+db          , { bob: { name: str color: int } tim: { name: str color: int } }, 6   , 14
+db.bob      , { name: str color: int }                                       , 6   , 14
+tim-color   , int                                                            , 7   , 1
+db          , { bob: { name: str color: int } tim: { name: str color: int } }, 7   , 13
+db.tim      , { name: str color: int }                                       , 7   , 13
+db.tim.color, int                                                            , 7   , 13
+```
+
+```rext
+(%=db${Q^{d^3,BobyvW8+}V^{4,name3,TimM^h7-+}}=first-name$(db$3,bob)=tim-color$(db$3,tim5,color))
+```
+
+```json
+35071
+```
+
+### More Generic types
+
+```rex
+db: { *: { name: str color: int } } = {
+  bob:{ name:"Bob" color:0x44ff44 }
+  tim:{ name:"Tim" color:0x0088ff }
+}
+
+first-name = db.bob
+tim-color = db.tim.color
+```
+
+```csv types
+text        , type                           , line, col
+db          , { *: { name: str color: int } }, 1   , 1
+name        , str                            , 1   , 12
+str         , str                            , 1   , 18
+color       , int                            , 1   , 22
+int         , int                            , 1   , 29
+bob         , { name: str color: int }       , 2   , 3
+name        , str                            , 2   , 9
+"""Bob"""   , str                            , 2   , 14
+color       , int                            , 2   , 20
+0x44ff44    , int                            , 2   , 26
+tim         , { name: str color: int }       , 3   , 3
+name        , str                            , 3   , 9
+"""Tim"""   , str                            , 3   , 14
+color       , int                            , 3   , 20
+0x0088ff    , int                            , 3   , 26
+first-name  , { name: str color: int } | none, 6   , 1
+db          , { *: { name: str color: int } }, 6   , 14
+db.bob      , { name: str color: int } | none, 6   , 14
+tim-color   , int | none                     , 7   , 1
+db          , { *: { name: str color: int } }, 7   , 13
+db.tim      , { name: str color: int } | none, 7   , 13
+db.tim.color, int | none                     , 7   , 13
+```
+
+```rext
+(%=db${Q^{d^3,BobyvW8+}V^{4,name3,TimM^h7-+}}=first-name$(db$3,bob)=tim-color$(db$3,tim5,color))
+```
+
+```json
+35071
+```
+
+### Heper Types
+
+```rex
+type Person = { name: str color: int }
+
+db: { bob: Person tim: Person } = {
+  bob:{ name:"Bob" color:0x44ff44 }
+  tim:{ name:"Tim" color:0x0088ff }
+}
+
+first-name = db.bob
+
+tim-color = db.tim.color
+
+[ first-name tim-color ]
+```
+
+```csv types
+text        , type                                                           , line, col
+Person      , { name: str color: int }                                       , 1   , 6
+name        , str                                                            , 1   , 17
+str         , str                                                            , 1   , 23
+color       , int                                                            , 1   , 27
+int         , int                                                            , 1   , 34
+db          , { bob: { name: str color: int } tim: { name: str color: int } }, 3   , 1
+bob         , { name: str color: int }                                       , 3   , 7
+Person      , { name: str color: int }                                       , 3   , 12
+tim         , { name: str color: int }                                       , 3   , 19
+Person      , { name: str color: int }                                       , 3   , 24
+bob         , { name: str color: int }                                       , 4   , 3
+name        , str                                                            , 4   , 9
+"""Bob"""   , str                                                            , 4   , 14
+color       , int                                                            , 4   , 20
+0x44ff44    , int                                                            , 4   , 26
+tim         , { name: str color: int }                                       , 5   , 3
+name        , str                                                            , 5   , 9
+"""Tim"""   , str                                                            , 5   , 14
+color       , int                                                            , 5   , 20
+0x0088ff    , int                                                            , 5   , 26
+first-name  , { name: str color: int }                                       , 8   , 1
+db          , { bob: { name: str color: int } tim: { name: str color: int } }, 8   , 14
+db.bob      , { name: str color: int }                                       , 8   , 14
+tim-color   , int                                                            , 10  , 1
+db          , { bob: { name: str color: int } tim: { name: str color: int } }, 10  , 13
+db.tim      , { name: str color: int }                                       , 10  , 13
+db.tim.color, int                                                            , 10  , 13
+first-name  , { name: str color: int }                                       , 12  , 3
+tim-color   , int                                                            , 12  , 14
+```
+
+```rext
+(%=db${Q^{d^3,BobyvW8+}V^{4,name3,TimM^h7-+}}=first-name$(db$3,bob)=tim-color$(db$3,tim5,color)[first-name$tim-color$])
+```
+
+```json
+[{"name":"Bob","color":4521796},35071]
+```
+
 ---
 
 # Variables and Assignment
@@ -332,6 +613,12 @@ Dots read nested values. Compiles to a navigation/call with string arguments:
 
 ```rex
 x = 42
+```
+
+```csv types
+text, type, line, col
+x   , int , 1   , 1
+42  , int , 1   , 5
 ```
 
 ```rext
@@ -369,6 +656,14 @@ x = 42
 x := 99
 ```
 
+```csv types
+text, type, line, col
+x   , int , 1   , 1
+42  , int , 1   , 5
+x   , int , 2   , 1
+99  , int , 2   , 6
+```
+
 ```json
 42
 ```
@@ -382,6 +677,21 @@ C-style `i++` — swap-set in a while comprehension collects pre-increment value
 ```rex
 i = 0
 [ i := i + 1 while i < 5 ]
+```
+
+```csv types
+text, type, line, col
+i   , int , 1   , 1
+0   , int , 1   , 5
+i   , int , 2   , 3
+i   , int , 2   , 8
+1   , int , 2   , 12
+i   , int , 2   , 20
+5   , int , 2   , 24
+```
+
+```rext
+(%=i$+#[(lt%i$a+)/i$(ad%i$2+)])
 ```
 
 ```json
@@ -408,6 +718,18 @@ x = 10
 x += 5
 ```
 
+```csv types
+text, type, line, col
+x   , int , 1   , 1
+10  , int , 1   , 5
+x   , int , 2   , 1
+5   , int , 2   , 6
+```
+
+```rext
+(%=x$k+=x$(ad%x$a+))
+```
+
 ```json
 15
 ```
@@ -421,12 +743,23 @@ Semicolons let you pack multiple expressions into a single expression slot,
 like C's comma operator. Evaluates left to right, returns last:
 
 ```rex
-// This whole line is a single expression, not 3
-a = 1; b = 2; a + b
+// multiple expressions as a single expression (uses last)
+all = (a = 1; b = 2; a + b)
+```
+
+```csv types
+text, type, line, col
+all , int , 2   , 1
+a   , int , 2   , 8
+1   , int , 2   , 12
+b   , int , 2   , 15
+2   , int , 2   , 19
+a   , int , 2   , 22
+b   , int , 2   , 26
 ```
 
 ```rext
-(%=a$2+=b$4+(ad%a$b$))
+=all$(%=a$2+=b$4+(ad%a$b$))
 ```
 
 ```json
@@ -450,6 +783,20 @@ a = 1; b = 2; a + b
 [ 1 + 2, 10 - 3, 4 * 5, 7 / 2, 10 % 3 ]
 ```
 
+```csv types
+text, type, line, col
+1   , int , 1   , 3
+2   , int , 1   , 7
+10  , int , 1   , 10
+3   , int , 1   , 15
+4   , int , 1   , 18
+5   , int , 1   , 22
+7   , int , 1   , 25
+2   , int , 1   , 29
+10  , int , 1   , 32
+3   , int , 1   , 37
+```
+
 ```rext
 [(ad%2+4+)(sb%k+6+)(ml%8+a+)(dv%e+4+)(md%k+6+)]
 ```
@@ -462,6 +809,13 @@ String concatenation uses `+`:
 
 ```rex
 "hello" + " world"
+```
+
+```json types
+[
+  {"text":"\"hello\"", "type":"str","line":1,"col":1},
+  {"text":"\" world\"","type":"str","line":1,"col":11}
+]
 ```
 
 ```rext
@@ -486,11 +840,29 @@ Comparisons return the **left-hand value** on success, `none` on failure:
 | `3 != 3` | `none` |
 
 ```rex
-[ 3 > 2, 3 > 5 ]
+c = {
+  a:3 > 2
+  b:3 > 5
+}
+```
+
+```csv types
+text, type                           , line, col
+c   , { a: int | none b: int | none }, 1   , 1
+a   , int | none                     , 2   , 3
+3   , int                            , 2   , 5
+2   , int                            , 2   , 9
+b   , int | none                     , 3   , 3
+3   , int                            , 3   , 5
+5   , int                            , 3   , 9
+```
+
+```rext
+=c${1,a(gt%6+4+)1,b(gt%6+a+)}
 ```
 
 ```json
-[3, null]
+{"a":3}
 ```
 
 All comparison opcodes:
@@ -517,7 +889,23 @@ Symbol operators (`&`, `|`, `^`, `~`) operate on **values** — bitwise for numb
 | `~true` | `(nt%t')`   | `false` |
 
 ```rex
-[ 5 & 3, ~5, ~true ]
+d = [ a = 5 & 3, b = ~5, c = ~true ]
+```
+
+```csv types
+text, type        , line, col
+d   , [int | bool], 1   , 1
+a   , int         , 1   , 7
+5   , int         , 1   , 11
+3   , int         , 1   , 15
+b   , int         , 1   , 18
+5   , int         , 1   , 23
+c   , bool        , 1   , 26
+true, bool        , 1   , 31
+```
+
+```rext
+=d$[=a$(an%a+6+)=b$(nt%a+)=c$(nt%t')]
 ```
 
 ```json
@@ -574,10 +962,30 @@ x = 10
 ```
 
 ```rex
-when x > 5 do
-  "big"
-else "small"
+extern x: int
+a = when c = x > 5 do
+  b = "big"
+else
+  c = "small"
 end
+```
+
+```csv types
+text   , type      , line, col
+x      , int       , 1   , 8
+int    , int       , 1   , 11
+a      , str       , 2   , 1
+c      , int | none, 2   , 10
+x      , int       , 2   , 14
+5      , int       , 2   , 18
+b      , str       , 3   , 3
+"""big""", str       , 3   , 7
+c      , str       , 5   , 3
+"""small""", str       , 5   , 7
+```
+
+```rext
+=a$?(=c$(gt%x$a+)=b$3,big=c$5,small)
 ```
 
 ```json
@@ -589,8 +997,10 @@ Chained conditions:
 ```rex
 when x > 100 do
   "huge"
-else when x > 5 do "big"
-else "small"
+else when x > 5 do
+  "big"
+else
+  "small"
 end
 ```
 
@@ -646,6 +1056,36 @@ Halts execution and produces a value:
 |-------------|--------|
 | `return 42` | `;1k+` |
 
+```rex
+res = when c = 1 > 2 do
+  return "impossible"
+  42
+else
+  return "likely"
+  56
+end
+```
+
+```csv types
+text        , type      , line, col
+res         , never     , 1   , 1
+c           , int | none, 1   , 12
+1           , int       , 1   , 16
+2           , int       , 1   , 20
+"""impossible""", str       , 2   , 10
+42          , never     , 3   , 3
+"""likely""", str       , 5   , 10
+56          , never     , 6   , 3
+```
+
+```rext
+=res$?(=c$(gt%2+4+)h(%;a,impossible1k+)d(%;6,likely1M+))
+```
+
+```json
+"likely"
+```
+
 ## `delete`
 
 Removes a key from an object:
@@ -653,6 +1093,34 @@ Removes a key from an object:
 | rex              | rext           |
 |------------------|----------------|
 | `delete obj.key` | `~(obj$3,key)` |
+
+```rex
+obj = { a:1 b:2 c:3 }
+delete obj.b
+obj
+```
+
+```csv types
+text , type                    , line, col
+obj  , { a: int b: int c: int }, 1   , 1
+a    , int                     , 1   , 9
+1    , int                     , 1   , 11
+b    , int                     , 1   , 13
+2    , int                     , 1   , 15
+c    , int                     , 1   , 17
+3    , int                     , 1   , 19
+obj  , { a: int b: int c: int }, 2   , 8
+obj.b, int                     , 2   , 8
+obj  , { a: int c: int }       , 3   , 1
+```
+
+```rext
+(%=obj${1,a2+1,b4+1,c6+}~(obj$1,b)obj$)
+```
+
+```json
+{"a":1,"c":3}
+```
 
 ---
 
@@ -952,7 +1420,7 @@ roles = {#
 ```
 
 ```json
-{"admin":{"manage":true,"read":true,"remove":true,"write":true},"editor":{"manage":false,"read":true,"remove":false,"write":true},"guest":{"manage":false,"read":false,"remove":false,"write":false},"viewer":{"manage":false,"read":true,"remove":false,"write":false}}
+{"admin":{"read":true,"write":true,"remove":true,"manage":true},"editor":{"read":true,"write":true,"remove":false,"manage":false},"viewer":{"read":true,"write":false,"remove":false,"manage":false},"guest":{"read":false,"write":false,"remove":false,"manage":false}}
 ```
 
 Then we can read a single item.

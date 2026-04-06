@@ -2,6 +2,9 @@
 
 REXC is the bytecode for Rex, serialized as printable UTF-8. It is a strict superset of [RX](rx-format.md) — every valid RX document is valid REXC. This document covers only the extensions; see [rx-format.md](rx-format.md) for the base data format.
 
+For the generic C ABI lazy-decoder interface used by LuaJIT FFI and other hosts,
+see [rex-ffi-decoder.md](rex-ffi-decoder.md).
+
 ---
 
 ## Scalars
