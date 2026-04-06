@@ -1119,14 +1119,24 @@ pub fn check_source(source: &str, schema: &DomainSchema) -> Vec<Diagnostic> {
 pub fn check_source_with_types(
     source: &str,
     schema: &DomainSchema,
-) -> (Vec<Diagnostic>, Vec<(std::ops::Range<usize>, Type)>, HashMap<String, FunctionSig>) {
+) -> (
+    Vec<Diagnostic>,
+    Vec<(std::ops::Range<usize>, Type)>,
+    HashMap<String, FunctionSig>,
+    HashMap<String, Type>,
+) {
     let tokens = crate::lexer::lex(source);
     let (green, _errors) = crate::parser::parse(source, &tokens);
     let root = SyntaxNode::new_root(green);
     let mut env = TypeEnv::new(schema);
     env.infer_program(&root);
     env.check_unused_vars();
-    (env.diagnostics, env.span_types, env.inline_functions)
+    let inline_aliases: HashMap<String, Type> = env
+        .inline_aliases
+        .iter()
+        .map(|(name, ty)| (name.clone(), env.resolve_type(ty)))
+        .collect();
+    (env.diagnostics, env.span_types, env.inline_functions, inline_aliases)
 }
 
 /// A narrowing constraint extracted from a condition expression.
@@ -1277,6 +1287,29 @@ impl<'a> TypeEnv<'a> {
                     }
                 }
                 rowan::NodeOrToken::Node(n) => {
+                    if n.kind() == SyntaxKind::TypePair {
+                        let pair_children: Vec<_> = non_trivia_children(n).collect();
+                        if let Some(ci) = pair_children
+                            .iter()
+                            .position(|c| as_token_kind(c) == Some(SyntaxKind::Colon))
+                        {
+                            let key_parts = &pair_children[..ci];
+                            let val_parts = &pair_children[ci + 1..];
+                            let val_ty = self.resolve_type(&interpret_type_expr_from_children(val_parts));
+
+                            for key_part in key_parts {
+                                if let rowan::NodeOrToken::Token(t) = key_part {
+                                    if t.kind() == SyntaxKind::Ident {
+                                        let r = t.text_range();
+                                        self.span_types.push((r.start().into()..r.end().into(), val_ty.clone()));
+                                    }
+                                }
+                            }
+
+                            self.record_type_annotation_spans(val_parts, ty);
+                            continue;
+                        }
+                    }
                     // Recurse into composite nodes (BinaryExpr for unions, etc.)
                     let inner: Vec<_> = non_trivia_children(n).collect();
                     self.record_type_annotation_spans(&inner, ty);
@@ -1309,17 +1342,77 @@ impl<'a> TypeEnv<'a> {
     // ── Program-level inference ────────────────────────────────────────
 
     fn infer_program(&mut self, root: &SyntaxNode) {
+        let mut unreachable = false;
         for child in root.children_with_tokens() {
+            if unreachable {
+                self.mark_unreachable_child(&child);
+                continue;
+            }
             match child {
                 rowan::NodeOrToken::Node(n) => {
-                    self.infer_node(&n);
+                    let ty = self.infer_node(&n);
                     // After processing a conditional, apply flow narrowing for subsequent code
                     if n.kind() == SyntaxKind::ConditionalExpr {
                         self.apply_flow_narrowing(&n);
                     }
+                    if ty == Type::Never {
+                        unreachable = true;
+                    }
                 }
-                rowan::NodeOrToken::Token(t) if !t.kind().is_trivia() => { self.infer_token(&t); }
+                rowan::NodeOrToken::Token(t) if !t.kind().is_trivia() => {
+                    let ty = self.infer_token(&t);
+                    if ty == Type::Never {
+                        unreachable = true;
+                    }
+                }
                 _ => {}
+            }
+        }
+    }
+
+    fn mark_unreachable_child(&mut self, child: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>) {
+        let span = match child {
+            rowan::NodeOrToken::Node(n) => Self::span_of(n),
+            rowan::NodeOrToken::Token(t) => {
+                let r = t.text_range();
+                r.start().into()..r.end().into()
+            }
+        };
+
+        if span.start != span.end {
+            self.error(span, "unreachable code".to_string());
+        }
+        self.mark_unreachable_spans(child);
+    }
+
+    fn mark_unreachable_spans(&mut self, child: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>) {
+        match child {
+            rowan::NodeOrToken::Token(t) => {
+                let kind = t.kind();
+                let should_record_span = matches!(
+                    kind,
+                    SyntaxKind::Ident
+                        | SyntaxKind::DecimalNumber
+                        | SyntaxKind::HexNumber
+                        | SyntaxKind::BinaryNumber
+                        | SyntaxKind::DoubleString
+                        | SyntaxKind::SingleString
+                        | SyntaxKind::KwTrue
+                        | SyntaxKind::KwFalse
+                        | SyntaxKind::KwNull
+                        | SyntaxKind::KwNone
+                        | SyntaxKind::KwNan
+                        | SyntaxKind::KwInf
+                );
+                if should_record_span {
+                    let r = t.text_range();
+                    self.span_types.push((r.start().into()..r.end().into(), Type::Never));
+                }
+            }
+            rowan::NodeOrToken::Node(n) => {
+                for inner in n.children_with_tokens() {
+                    self.mark_unreachable_spans(&inner);
+                }
             }
         }
     }
@@ -1342,6 +1435,7 @@ impl<'a> TypeEnv<'a> {
             SyntaxKind::CallExpr => self.infer_call(node),
             SyntaxKind::NavExpr => self.infer_nav(node),
             SyntaxKind::GroupExpr => self.infer_group(node),
+            SyntaxKind::CompoundExpr => self.infer_compound(node),
             SyntaxKind::ConditionalExpr => self.infer_conditional(node),
             SyntaxKind::ForExpr => self.infer_for(node),
             SyntaxKind::WhileExpr => self.infer_while(node),
@@ -1357,13 +1451,12 @@ impl<'a> TypeEnv<'a> {
             SyntaxKind::SelfExpr => Type::Some, // TODO: track self type through scopes
             _ => Type::unknown(),
         };
-        let range = node.text_range();
-        self.span_types.push((range.start().into()..range.end().into(), ty.clone()));
         ty
     }
 
     fn infer_token(&mut self, token: &SyntaxToken) -> Type {
-        let ty = match token.kind() {
+        let kind = token.kind();
+        let ty = match kind {
             SyntaxKind::DecimalNumber => {
                 let text = token.text();
                 if text.contains('.') || text.contains('e') || text.contains('E') {
@@ -1400,8 +1493,26 @@ impl<'a> TypeEnv<'a> {
             }
             _ => Type::unknown(),
         };
-        let range = token.text_range();
-        self.span_types.push((range.start().into()..range.end().into(), ty.clone()));
+        // Keep hover/type spans focused on directly hoverable symbols and literals.
+        let should_record_span = matches!(
+            kind,
+            SyntaxKind::Ident
+                | SyntaxKind::DecimalNumber
+                | SyntaxKind::HexNumber
+                | SyntaxKind::BinaryNumber
+                | SyntaxKind::DoubleString
+                | SyntaxKind::SingleString
+                | SyntaxKind::KwTrue
+                | SyntaxKind::KwFalse
+                | SyntaxKind::KwNull
+                | SyntaxKind::KwNone
+                | SyntaxKind::KwNan
+                | SyntaxKind::KwInf
+        );
+        if should_record_span {
+            let range = token.text_range();
+            self.span_types.push((range.start().into()..range.end().into(), ty.clone()));
+        }
         ty
     }
 
@@ -1500,10 +1611,66 @@ impl<'a> TypeEnv<'a> {
                 if t == Type::Bool { Type::Bool } else { Type::Int }
             }
             Some(SyntaxKind::KwDelete) => {
-                // Infer the operand to check it's valid, return none
+                // Infer operand and, for static object property delete, update object type.
+                let _ = self.infer_child(&children[1]);
+                if let rowan::NodeOrToken::Node(nav) = &children[1] {
+                    if nav.kind() == SyntaxKind::NavExpr {
+                        let nav_children: Vec<_> = non_trivia_children(nav).collect();
+                        if nav_children.len() >= 3 {
+                            let base_name = match &nav_children[0] {
+                                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Ident => {
+                                    Some(t.text().to_string())
+                                }
+                                _ => None,
+                            };
+                            let key_name = match &nav_children[2] {
+                                rowan::NodeOrToken::Token(t)
+                                    if t.kind() == SyntaxKind::Ident
+                                        || t.kind() == SyntaxKind::DecimalNumber
+                                        || t.kind().is_keyword() =>
+                                {
+                                    Some(t.text().to_string())
+                                }
+                                _ => None,
+                            };
+                            if let (Some(base), Some(key)) = (base_name, key_name) {
+                                if let Some(current) = self.lookup_var(&base) {
+                                    let updated = Self::remove_object_field_from_type(current, &key).simplify();
+                                    self.set_var(&base, updated);
+                                }
+                            }
+                        }
+                    }
+                }
                 Type::None
             }
             _ => operand_type,
+        }
+    }
+
+    fn remove_object_field_from_type(ty: Type, key: &str) -> Type {
+        match ty {
+            Type::Object { mut fields, wildcard } => {
+                fields.retain(|(k, _)| k != key);
+                Type::Object { fields, wildcard }
+            }
+            Type::Union(types) => {
+                Type::Union(
+                    types
+                        .into_iter()
+                        .map(|t| Self::remove_object_field_from_type(t, key))
+                        .collect(),
+                )
+            }
+            Type::Intersection(types) => {
+                Type::Intersection(
+                    types
+                        .into_iter()
+                        .map(|t| Self::remove_object_field_from_type(t, key))
+                        .collect(),
+                )
+            }
+            other => other,
         }
     }
 
@@ -1549,18 +1716,35 @@ impl<'a> TypeEnv<'a> {
                         self.var_assignments.insert(name.clone(), Self::span_of(node));
                     }
                     self.set_var(&name, rhs_type.clone());
+                    if let Some(range) = self.assign_lhs_ident_span(&children[..op_idx]) {
+                        self.span_types.push((range, rhs_type.clone()));
+                    }
                     rhs_type
                 }
                 Some(SyntaxKind::ColonEq) => {
                     // Swap: returns old value, sets new
                     let old = self.lookup_var(&name).unwrap_or(Type::None);
                     self.set_var(&name, rhs_type);
+                    if let Some(range) = self.assign_lhs_ident_span(&children[..op_idx]) {
+                        self.span_types.push((range, old.clone()));
+                    }
                     old
                 }
                 _ => {
-                    // Compound assignment: mark as read (compound uses the variable)
+                    // Compound assignment behaves like `x = x op rhs`.
                     self.var_reads.insert(name.clone());
-                    rhs_type
+                    let old = self.lookup_var(&name).unwrap_or(Type::None);
+                    let result = self.compound_assign_result(
+                        as_token_kind(&children[op_idx]),
+                        &old,
+                        &rhs_type,
+                        &Self::span_of(node),
+                    );
+                    self.set_var(&name, result.clone());
+                    if let Some(range) = self.assign_lhs_ident_span(&children[..op_idx]) {
+                        self.span_types.push((range, result.clone()));
+                    }
+                    result
                 }
             }
         } else {
@@ -1611,6 +1795,9 @@ impl<'a> TypeEnv<'a> {
         // Set the variable to the declared type
         if let Some(name) = self.extract_assign_target(&children[..colon_idx]) {
             self.set_var(&name, declared_type.clone());
+            if let Some(range) = self.assign_lhs_ident_span(&children[..colon_idx]) {
+                self.span_types.push((range, declared_type.clone()));
+            }
         }
 
         declared_type
@@ -1629,6 +1816,74 @@ impl<'a> TypeEnv<'a> {
             }
         } else {
             None
+        }
+    }
+
+    fn assign_lhs_ident_span(
+        &self,
+        children: &[rowan::NodeOrToken<SyntaxNode, SyntaxToken>],
+    ) -> Option<std::ops::Range<usize>> {
+        if children.len() != 1 {
+            return None;
+        }
+        match &children[0] {
+            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Ident => {
+                let r = t.text_range();
+                Some(r.start().into()..r.end().into())
+            }
+            _ => None,
+        }
+    }
+
+    fn compound_assign_result(
+        &mut self,
+        op: Option<SyntaxKind>,
+        lhs_type: &Type,
+        rhs_type: &Type,
+        span: &std::ops::Range<usize>,
+    ) -> Type {
+        match op {
+            Some(SyntaxKind::PlusEq) => {
+                let lt = self.resolve_type(lhs_type);
+                let rt = self.resolve_type(rhs_type);
+
+                let lt_has_str = self.type_contains_string(&lt);
+                let rt_has_str = self.type_contains_string(&rt);
+
+                if lt_has_str && rt_has_str {
+                    Type::Str
+                } else if lt == Type::Int && rt == Type::Int {
+                    Type::Int
+                } else if lt.is_numeric() && rt.is_numeric() {
+                    Type::Num
+                } else if self.type_contains_some(&lt) || self.type_contains_some(&rt) {
+                    self.error(span.clone(), "cannot use 'some' in arithmetic — narrow first".to_string());
+                    Type::Some
+                } else if lt_has_str != rt_has_str {
+                    self.error(span.clone(), format!(
+                        "cannot add {} and {} (use template literal for coercion)",
+                        lt.display(), rt.display()
+                    ));
+                    Type::Str
+                } else {
+                    Type::Num
+                }
+            }
+            Some(SyntaxKind::MinusEq | SyntaxKind::StarEq | SyntaxKind::PercentEq) => {
+                let lt = self.resolve_type(lhs_type);
+                let rt = self.resolve_type(rhs_type);
+                if lt == Type::Int && rt == Type::Int {
+                    Type::Int
+                } else {
+                    Type::Num
+                }
+            }
+            Some(SyntaxKind::SlashEq) => Type::Num,
+            Some(SyntaxKind::AmpEq | SyntaxKind::PipeEq | SyntaxKind::CaretEq) => {
+                let lt = self.resolve_type(lhs_type);
+                if lt == Type::Bool { Type::Bool } else { Type::Int }
+            }
+            _ => rhs_type.clone(),
         }
     }
 
@@ -1683,6 +1938,16 @@ impl<'a> TypeEnv<'a> {
         let ty = interpret_type_child(&type_child);
         let span = Self::span_of(node);
         self.validate_type(&ty, &span);
+        self.record_type_annotation_spans(std::slice::from_ref(&type_child), &ty);
+
+        let resolved = self.resolve_type(&ty);
+        if let rowan::NodeOrToken::Token(t) = &name_child {
+            if t.kind() == SyntaxKind::Ident {
+                let r = t.text_range();
+                self.span_types.push((r.start().into()..r.end().into(), resolved));
+            }
+        }
+
         self.inline_aliases.insert(name, ty);
     }
 
@@ -2102,7 +2367,7 @@ impl<'a> TypeEnv<'a> {
             return ret;
         }
 
-        match base_type.resolve_property(&key) {
+        let nav_type = match base_type.resolve_property(&key) {
             PropertyResult::Known(ty) => self.resolve_type(&ty),
             PropertyResult::Wildcard(ty) => self.resolve_type(&ty),
             PropertyResult::Unknown => {
@@ -2124,7 +2389,13 @@ impl<'a> TypeEnv<'a> {
                 ));
                 self.resolve_type(&ty)
             }
-        }
+        };
+
+        let r = node.text_range();
+        self.span_types
+            .push((r.start().into()..r.end().into(), nav_type.clone()));
+
+        nav_type
     }
 
     fn infer_group(&mut self, node: &SyntaxNode) -> Type {
@@ -2140,6 +2411,30 @@ impl<'a> TypeEnv<'a> {
             }
         }
         Type::unknown()
+    }
+
+    fn infer_compound(&mut self, node: &SyntaxNode) -> Type {
+        let mut last = Type::None;
+        let mut unreachable = false;
+        for child in node.children_with_tokens() {
+            if unreachable {
+                self.mark_unreachable_child(&child);
+                continue;
+            }
+            match child {
+                rowan::NodeOrToken::Node(n) => last = self.infer_node(&n),
+                rowan::NodeOrToken::Token(t)
+                    if !t.kind().is_trivia() && t.kind() != SyntaxKind::Semicolon =>
+                {
+                    last = self.infer_token(&t);
+                }
+                _ => {}
+            }
+            if last == Type::Never {
+                unreachable = true;
+            }
+        }
+        last
     }
 
     fn infer_conditional(&mut self, node: &SyntaxNode) -> Type {
@@ -2423,7 +2718,12 @@ impl<'a> TypeEnv<'a> {
 
     fn infer_block(&mut self, node: &SyntaxNode) -> Type {
         let mut last = Type::None;
+        let mut unreachable = false;
         for child in node.children_with_tokens() {
+            if unreachable {
+                self.mark_unreachable_child(&child);
+                continue;
+            }
             match child {
                 rowan::NodeOrToken::Node(n) => {
                     last = self.infer_node(&n);
@@ -2434,6 +2734,9 @@ impl<'a> TypeEnv<'a> {
                 }
                 rowan::NodeOrToken::Token(t) if !t.kind().is_trivia() => last = self.infer_token(&t),
                 _ => {}
+            }
+            if last == Type::Never {
+                unreachable = true;
             }
         }
         last
@@ -2612,6 +2915,10 @@ impl<'a> TypeEnv<'a> {
                 self.push_scope();
                 body_type = self.infer_block(&child);
                 self.pop_scope();
+            } else {
+                // Infer the condition expression for diagnostics, reads, and hover spans.
+                // This avoids falling back to enclosing spans when hovering condition variables.
+                let _ = self.infer_node(&child);
             }
         }
         body_type.add_none()
@@ -2624,6 +2931,30 @@ impl<'a> TypeEnv<'a> {
                 rowan::NodeOrToken::Token(t) if matches!(t.kind(),
                     SyntaxKind::LBracket | SyntaxKind::RBracket | SyntaxKind::Comma) => continue,
                 rowan::NodeOrToken::Token(t) if t.kind().is_trivia() => continue,
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::SpreadExpr => {
+                    // Spread contributes element types from the spread operand.
+                    let inner_type = non_trivia_children(n)
+                        .filter(|c| c.as_token().map_or(true, |t| t.kind() != SyntaxKind::DotDotDot))
+                        .find_map(|c| Some(self.infer_child(&c)))
+                        .unwrap_or(Type::unknown());
+                    let resolved = self.resolve_type(&inner_type);
+                    match resolved {
+                        Type::Array(elem) => elem_types.push(*elem),
+                        Type::Union(types) => {
+                            let mut any_array = false;
+                            for t in types {
+                                if let Type::Array(elem) = t {
+                                    elem_types.push(*elem);
+                                    any_array = true;
+                                }
+                            }
+                            if !any_array {
+                                elem_types.push(Type::unknown());
+                            }
+                        }
+                        _ => elem_types.push(Type::unknown()),
+                    }
+                }
                 _ => {
                     elem_types.push(self.infer_child(&child));
                 }
@@ -2646,16 +2977,21 @@ impl<'a> TypeEnv<'a> {
 
         // Skip brackets, find the body (first non-bracket child) and IterBinding
         let mut body_child = None;
+        let mut while_condition_child = None;
         let mut iterable_type = Type::unknown();
         let mut binding_names: Vec<String> = Vec::new();
         let mut is_of = false;
+        let mut saw_while = false;
 
         for child in &children {
             match child {
                 rowan::NodeOrToken::Token(t) if matches!(t.kind(),
                     SyntaxKind::LBracket | SyntaxKind::RBracket) => continue,
-                rowan::NodeOrToken::Token(t) if matches!(t.kind(),
-                    SyntaxKind::KwFor | SyntaxKind::KwWhile) => continue,
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::KwFor => continue,
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::KwWhile => {
+                    saw_while = true;
+                    continue;
+                }
                 rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::IterBinding => {
                     let mut past_keyword = false;
                     for bc in non_trivia_children(n) {
@@ -2680,7 +3016,11 @@ impl<'a> TypeEnv<'a> {
                     }
                 }
                 _ => {
-                    if body_child.is_none() {
+                    if saw_while {
+                        if while_condition_child.is_none() {
+                            while_condition_child = Some(child);
+                        }
+                    } else if body_child.is_none() {
                         body_child = Some(child);
                     }
                 }
@@ -2715,6 +3055,9 @@ impl<'a> TypeEnv<'a> {
         } else {
             Type::Some
         };
+        if let Some(child) = while_condition_child {
+            let _ = self.infer_child(child);
+        }
         self.pop_scope();
 
         // Comprehensions filter out none values, so strip none from element type
@@ -2723,30 +3066,86 @@ impl<'a> TypeEnv<'a> {
     }
 
     fn infer_object(&mut self, node: &SyntaxNode) -> Type {
-        let mut fields = Vec::new();
-        for child in node.children() {
-            if child.kind() == SyntaxKind::Pair {
-                let pair_children: Vec<_> = non_trivia_children(&child).collect();
-                let colon_idx = pair_children.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::Colon));
-                if let Some(ci) = colon_idx {
-                    let key = extract_dotted_name(&pair_children[..ci]).unwrap_or_default();
-                    let val_type = if ci + 1 < pair_children.len() {
-                        self.infer_child(&pair_children[ci + 1])
-                    } else {
-                        Type::unknown()
-                    };
-                    // Record span for each key token → value type (for hover on object keys)
-                    for key_child in &pair_children[..ci] {
-                        if let rowan::NodeOrToken::Token(t) = key_child {
-                            let range = t.text_range();
-                            self.span_types.push((range.start().into()..range.end().into(), val_type.clone()));
+        let mut fields: Vec<(String, Type)> = Vec::new();
+        let mut wildcard: Option<Type> = None;
+
+        let mut merge_field = |key: String, value: Type| {
+            if let Some((_, existing)) = fields.iter_mut().find(|(k, _)| *k == key) {
+                // Overwrite in place so first insertion order is stable.
+                *existing = value;
+            } else {
+                fields.push((key, value));
+            }
+        };
+
+        let merge_spread_type = |spread_ty: Type,
+                     merge_field: &mut dyn FnMut(String, Type),
+                     wildcard: &mut Option<Type>| {
+            let mut stack = vec![spread_ty];
+            while let Some(ty) = stack.pop() {
+                match ty {
+                    Type::Object { fields: spread_fields, wildcard: spread_wildcard } => {
+                        for (k, v) in spread_fields {
+                            merge_field(k, v);
+                        }
+                        if let Some(w) = spread_wildcard {
+                            let w = *w;
+                            *wildcard = Some(match wildcard.take() {
+                                Some(existing) => Type::Union(vec![existing, w]).simplify(),
+                                None => w,
+                            });
                         }
                     }
-                    fields.push((key, val_type));
+                    Type::Union(types) => {
+                        for t in types {
+                            stack.push(t);
+                        }
+                    }
+                    _ => {
+                        // Non-object spread operands do not contribute known fields.
+                    }
                 }
             }
+        };
+
+        for child in node.children() {
+            match child.kind() {
+                SyntaxKind::SpreadExpr => {
+                    // Infer the spread operand so identifier spans inside `...expr` are recorded.
+                    let spread_ty = non_trivia_children(&child)
+                        .filter(|c| c.as_token().map_or(true, |t| t.kind() != SyntaxKind::DotDotDot))
+                        .find_map(|c| Some(self.infer_child(&c)))
+                        .unwrap_or(Type::unknown());
+                    let resolved = self.resolve_type(&spread_ty);
+                    merge_spread_type(resolved, &mut merge_field, &mut wildcard);
+                }
+                SyntaxKind::Pair => {
+                    let pair_children: Vec<_> = non_trivia_children(&child).collect();
+                    let colon_idx = pair_children.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::Colon));
+                    if let Some(ci) = colon_idx {
+                        let key = extract_dotted_name(&pair_children[..ci]).unwrap_or_default();
+                        let val_type = if ci + 1 < pair_children.len() {
+                            self.infer_child(&pair_children[ci + 1])
+                        } else {
+                            Type::unknown()
+                        };
+                        // Record span for each key token → value type (for hover on object keys)
+                        for key_child in &pair_children[..ci] {
+                            if let rowan::NodeOrToken::Token(t) = key_child {
+                                let range = t.text_range();
+                                self.span_types.push((range.start().into()..range.end().into(), val_type.clone()));
+                            }
+                        }
+                        merge_field(key, val_type);
+                    }
+                }
+                _ => {}
+            }
         }
-        Type::Object { fields, wildcard: None }
+        Type::Object {
+            fields,
+            wildcard: wildcard.map(Box::new),
+        }
     }
 
     fn infer_object_comp(&mut self, node: &SyntaxNode) -> Type {
@@ -2754,15 +3153,21 @@ impl<'a> TypeEnv<'a> {
         let children: Vec<_> = non_trivia_children(node).collect();
 
         let mut body_children = Vec::new();
+        let mut while_condition_child = None;
         let mut iterable_type = Type::unknown();
         let mut binding_names: Vec<String> = Vec::new();
         let mut is_of = false;
+        let mut saw_while = false;
 
         for child in &children {
             match child {
                 rowan::NodeOrToken::Token(t) if matches!(t.kind(),
-                    SyntaxKind::LBrace | SyntaxKind::RBrace |
-                    SyntaxKind::KwFor | SyntaxKind::KwWhile) => continue,
+                    SyntaxKind::LBrace | SyntaxKind::RBrace) => continue,
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::KwFor => continue,
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::KwWhile => {
+                    saw_while = true;
+                    continue;
+                }
                 rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::IterBinding => {
                     let mut past_keyword = false;
                     for bc in non_trivia_children(n) {
@@ -2787,11 +3192,21 @@ impl<'a> TypeEnv<'a> {
                     }
                 }
                 _ => {
-                    body_children.push(child);
+                    if saw_while {
+                        if while_condition_child.is_none() {
+                            while_condition_child = Some(child);
+                        }
+                    } else {
+                        body_children.push(child);
+                    }
                 }
             }
         }
 
+
+        if let Some(child) = while_condition_child {
+            let _ = self.infer_child(child);
+        }
         // Set up scope with iteration variables
         self.push_scope();
         let iterable = self.resolve_type(&iterable_type);
@@ -3446,7 +3861,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn infer_template_literal() {
         // x is used inside the template interpolation — no errors
         // Note: unused variable warning may appear since template interpolation
@@ -3460,6 +3874,35 @@ mod tests {
     fn infer_return_is_never() {
         let diags = check("return 42");
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn unreachable_after_return_reports_error() {
+        let diags = check("return 42\n56");
+        assert!(has_error(&diags, "unreachable code"), "expected unreachable-code error, got: {diags:?}");
+    }
+
+    #[test]
+    fn unreachable_literals_are_typed_never() {
+        let source = "res = when 1 > 2 do\n  return \"impossible\"\n  42\nelse\n  return \"likely\"\n  56\nend";
+        let schema = parse_rexd("");
+        let (diags, span_types, _, _) = check_source_with_types(source, &schema);
+        assert!(has_error(&diags, "unreachable code"), "expected unreachable-code error, got: {diags:?}");
+
+        let forty_two = source.find("\n  42\n").expect("expected literal 42") + 3;
+        let fifty_six = source.find("\n  56\n").expect("expected literal 56") + 3;
+
+        let forty_two_type = span_types
+            .iter()
+            .find(|(range, _)| *range == (forty_two..forty_two + 2))
+            .map(|(_, ty)| ty.clone());
+        let fifty_six_type = span_types
+            .iter()
+            .find(|(range, _)| *range == (fifty_six..fifty_six + 2))
+            .map(|(_, ty)| ty.clone());
+
+        assert_eq!(forty_two_type, Some(Type::Never));
+        assert_eq!(fifty_six_type, Some(Type::Never));
     }
 
     #[test]
@@ -3639,6 +4082,264 @@ extern method: HttpMethod"#,
         // for k, v in items → k is integer, v is element type
         let diags = check("for k, v in [1, 2, 3] do\n  k + v\nend");
         assert!(diags.is_empty(), "unexpected errors: {:?}", diags);
+    }
+
+    #[test]
+    fn while_condition_preserves_variable_type() {
+        let source = r#"max = 100
+a = 1
+b = 1
+while a <= max do
+  c = a + b
+  a = b
+  b = c
+end"#;
+
+        let schema = parse_rexd("");
+        let (diags, span_types, _, _) = check_source_with_types(source, &schema);
+        assert!(errors(&diags).is_empty(), "unexpected errors: {:?}", errors(&diags));
+
+        let start = source.find("a <= max").expect("condition should contain 'a <= max'");
+        let a_span = start..start + 1;
+        let a_type = span_types
+            .iter()
+            .find(|(range, _)| *range == a_span)
+            .map(|(_, ty)| ty.clone());
+
+        assert_eq!(a_type, Some(Type::Int));
+    }
+
+    #[test]
+    fn span_types_allow_overlap_but_not_conflicting_exact_ranges() {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/fibonacci.rex")
+        ).expect("should read examples/fibonacci.rex");
+        let schema = parse_rexd("");
+        let (diags, span_types, _, _) = check_source_with_types(&source, &schema);
+        assert!(errors(&diags).is_empty(), "unexpected errors: {:?}", errors(&diags));
+
+        // Overlap is expected: nested expressions and tokens naturally share regions.
+        let has_overlap = span_types.iter().enumerate().any(|(i, (a, _))| {
+            span_types[i + 1..].iter().any(|(b, _)| {
+                a.start < b.end && b.start < a.end
+            })
+        });
+        assert!(has_overlap, "expected at least one overlapping span");
+
+        // Exact duplicate ranges should never disagree on type.
+        let mut by_range: std::collections::HashMap<(usize, usize), Type> = std::collections::HashMap::new();
+        for (range, ty) in span_types {
+            let key = (range.start, range.end);
+            let ty = ty.clone().simplify();
+            if let Some(existing) = by_range.get(&key) {
+                assert_eq!(
+                    existing,
+                    &ty,
+                    "conflicting types for exact span {}..{}: {} vs {}",
+                    key.0,
+                    key.1,
+                    existing.display(),
+                    ty.display()
+                );
+            } else {
+                by_range.insert(key, ty);
+            }
+        }
+    }
+
+    #[test]
+    fn object_spread_merges_fields_inferred_type() {
+        let source = r#"a = { c:3 x:4 }
+a = { b:2 ...a y:5 }
+a = { a:1 ...a z:6 }"#;
+
+        let schema = parse_rexd("");
+        let (diags, span_types, _, _) = check_source_with_types(source, &schema);
+        assert!(errors(&diags).is_empty(), "unexpected errors: {:?}", errors(&diags));
+
+        let line2_a = source.find("a = { b:2").expect("line 2 assignment should exist");
+        let line3_a = source.find("a = { a:1").expect("line 3 assignment should exist");
+
+        let line2_type = span_types
+            .iter()
+            .find(|(range, _)| *range == (line2_a..line2_a + 1))
+            .map(|(_, ty)| ty.clone());
+        let line3_type = span_types
+            .iter()
+            .find(|(range, _)| *range == (line3_a..line3_a + 1))
+            .map(|(_, ty)| ty.clone());
+
+        assert_eq!(
+            line2_type,
+            Some(Type::Object {
+                fields: vec![
+                    ("b".to_string(), Type::Int),
+                    ("c".to_string(), Type::Int),
+                    ("x".to_string(), Type::Int),
+                    ("y".to_string(), Type::Int),
+                ],
+                wildcard: None,
+            })
+        );
+        assert_eq!(
+            line3_type,
+            Some(Type::Object {
+                fields: vec![
+                    ("a".to_string(), Type::Int),
+                    ("b".to_string(), Type::Int),
+                    ("c".to_string(), Type::Int),
+                    ("x".to_string(), Type::Int),
+                    ("y".to_string(), Type::Int),
+                    ("z".to_string(), Type::Int),
+                ],
+                wildcard: None,
+            })
+        );
+    }
+
+    #[test]
+    fn object_spread_records_spread_operand_spans() {
+        let source = r#"a = { c:3 x:4 }
+a = { b:2 ...a y:5 }
+a = { a:1 ...a z:6 }"#;
+
+        let schema = parse_rexd("");
+        let (diags, span_types, _, _) = check_source_with_types(source, &schema);
+        assert!(errors(&diags).is_empty(), "unexpected errors: {:?}", errors(&diags));
+
+        let spread_line2 = source.find("...a y").expect("line 2 spread should exist") + 3;
+        let spread_line3 = source.find("...a z").expect("line 3 spread should exist") + 3;
+
+        let spread_line2_type = span_types
+            .iter()
+            .find(|(range, _)| *range == (spread_line2..spread_line2 + 1))
+            .map(|(_, ty)| ty.clone());
+        let spread_line3_type = span_types
+            .iter()
+            .find(|(range, _)| *range == (spread_line3..spread_line3 + 1))
+            .map(|(_, ty)| ty.clone());
+
+        assert_eq!(
+            spread_line2_type,
+            Some(Type::Object {
+                fields: vec![
+                    ("c".to_string(), Type::Int),
+                    ("x".to_string(), Type::Int),
+                ],
+                wildcard: None,
+            })
+        );
+        assert_eq!(
+            spread_line3_type,
+            Some(Type::Object {
+                fields: vec![
+                    ("b".to_string(), Type::Int),
+                    ("c".to_string(), Type::Int),
+                    ("x".to_string(), Type::Int),
+                    ("y".to_string(), Type::Int),
+                ],
+                wildcard: None,
+            })
+        );
+    }
+
+    #[test]
+    fn while_comprehension_condition_records_spans() {
+        let source = "i = 0\n[ i := i + 1 while i < 5 ]";
+
+        let schema = parse_rexd("");
+        let (diags, span_types, _, _) = check_source_with_types(source, &schema);
+        assert!(errors(&diags).is_empty(), "unexpected errors: {:?}", errors(&diags));
+
+        let cond_i = source.find("i < 5").expect("condition variable should exist");
+        let cond_five = source.find("5 ]").expect("condition literal should exist");
+
+        let cond_i_type = span_types
+            .iter()
+            .find(|(range, _)| *range == (cond_i..cond_i + 1))
+            .map(|(_, ty)| ty.clone());
+        let cond_five_type = span_types
+            .iter()
+            .find(|(range, _)| *range == (cond_five..cond_five + 1))
+            .map(|(_, ty)| ty.clone());
+
+        assert_eq!(cond_i_type, Some(Type::Int));
+        assert_eq!(cond_five_type, Some(Type::Int));
+    }
+
+    #[test]
+    fn compound_assignment_records_lhs_span() {
+        let source = "x = 10\nx += 5";
+
+        let schema = parse_rexd("");
+        let (diags, span_types, _, _) = check_source_with_types(source, &schema);
+        assert!(errors(&diags).is_empty(), "unexpected errors: {:?}", errors(&diags));
+
+        let lhs = source.rfind("x").expect("compound assignment lhs should exist");
+        let lhs_type = span_types
+            .iter()
+            .find(|(range, _)| *range == (lhs..lhs + 1))
+            .map(|(_, ty)| ty.clone());
+
+        assert_eq!(lhs_type, Some(Type::Int));
+    }
+
+    #[test]
+    fn compound_expression_records_child_spans() {
+        let source = "a = 1; b = 2; a + b";
+
+        let schema = parse_rexd("");
+        let (diags, span_types, _, _) = check_source_with_types(source, &schema);
+        assert!(errors(&diags).is_empty(), "unexpected errors: {:?}", errors(&diags));
+
+        let expected = [
+            (source.find("a = 1").expect("lhs a")..source.find("a = 1").unwrap() + 1, Type::Int),
+            (source.find("1;").expect("one")..source.find("1;").unwrap() + 1, Type::Int),
+            (source.find("b = 2").expect("lhs b")..source.find("b = 2").unwrap() + 1, Type::Int),
+            (source.find("2;").expect("two")..source.find("2;").unwrap() + 1, Type::Int),
+            (source.rfind("a + b").expect("rhs a")..source.rfind("a + b").unwrap() + 1, Type::Int),
+            (source.rfind("b").expect("rhs b")..source.rfind("b").unwrap() + 1, Type::Int),
+        ];
+
+        for (range, ty) in expected {
+            let actual = span_types
+                .iter()
+                .find(|(span, _)| *span == range)
+                .map(|(_, ty)| ty.clone());
+            assert_eq!(actual, Some(ty), "missing or wrong span for {range:?}");
+        }
+    }
+
+    #[test]
+    fn delete_records_nav_span_and_updates_object_type() {
+        let source = "obj = { a:1 b:2 c:3 }\ndelete obj.b\nobj";
+        let schema = parse_rexd("");
+        let (diags, span_types, _, _) = check_source_with_types(source, &schema);
+        assert!(errors(&diags).is_empty(), "unexpected errors: {:?}", errors(&diags));
+
+        let nav_span = source.find("obj.b").expect("delete target should exist");
+        let nav_type = span_types
+            .iter()
+            .find(|(range, _)| *range == (nav_span..nav_span + 5))
+            .map(|(_, ty)| ty.clone());
+        assert_eq!(nav_type, Some(Type::Int));
+
+        let line3_obj = source.rfind("obj").expect("line 3 obj should exist");
+        let line3_obj_type = span_types
+            .iter()
+            .find(|(range, _)| *range == (line3_obj..line3_obj + 3))
+            .map(|(_, ty)| ty.clone());
+
+        assert_eq!(
+            line3_obj_type,
+            Some(Type::Object {
+                fields: vec![
+                    ("a".to_string(), Type::Int),
+                    ("c".to_string(), Type::Int),
+                ],
+                wildcard: None,
+            })
+        );
     }
 
     // ── Intersection type tests ───────────────────────────────────────

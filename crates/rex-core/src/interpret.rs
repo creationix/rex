@@ -309,9 +309,53 @@ impl<'a> Interpreter<'a> {
             b'.' => {
                 let size = parse_uint(raw) as usize;
                 let end = self.pos + size;
-                let mut result = String::new();
+                let mut segments = Vec::new();
                 while self.pos < end {
-                    let seg = self.eval()?;
+                    segments.push(self.eval()?);
+                }
+
+                let has_array = segments.iter().any(|v| v.is_array());
+                let has_object = segments.iter().any(|v| v.is_object());
+
+                // Spread chains for arrays: [ ...a 42 ]
+                if has_array && !has_object {
+                    let mut items = Vec::new();
+                    for seg in segments {
+                        if seg.is_array() {
+                            items.extend_from_slice(self.heap.array_items(seg));
+                        } else if !seg.is_none() {
+                            // Non-array segments are kept as single items.
+                            items.push(seg);
+                        }
+                    }
+                    return Ok(self.heap.alloc_array(items));
+                }
+
+                // Spread chains for objects: { ...base k:v }
+                if has_object && !has_array {
+                    let mut pairs: Vec<(u32, Value)> = Vec::new();
+                    for seg in segments {
+                        if !seg.is_object() {
+                            continue;
+                        }
+                        for &(k, v) in self.heap.object_pairs(seg) {
+                            if v.is_none() {
+                                pairs.retain(|(ek, _)| *ek != k);
+                                continue;
+                            }
+                            if let Some(existing) = pairs.iter_mut().find(|(ek, _)| *ek == k) {
+                                existing.1 = v;
+                            } else {
+                                pairs.push((k, v));
+                            }
+                        }
+                    }
+                    return Ok(self.heap.alloc_object(pairs));
+                }
+
+                // Template string chain
+                let mut result = String::new();
+                for seg in segments {
                     if let Some(s) = seg.as_str(&self.heap) {
                         result.push_str(s);
                     } else if let Some(n) = seg.as_i64() {
@@ -436,7 +480,7 @@ impl<'a> Interpreter<'a> {
             let k = self.eval()?;
             let v = self.eval()?;
             let kid = self.heap.value_to_key(k);
-            pairs.push((kid, v));
+            Self::upsert_object_pair(&mut pairs, kid, v);
         }
         self.read_byte(); // consume '}'
         Ok(self.heap.alloc_object(pairs))
@@ -467,7 +511,7 @@ impl<'a> Interpreter<'a> {
                 let mut pairs = Vec::new();
                 for &key in &keys {
                     let v = self.eval()?;
-                    pairs.push((key, v));
+                    Self::upsert_object_pair(&mut pairs, key, v);
                 }
                 self.read_byte(); // consume '}'
                 return Ok(self.heap.alloc_object(pairs));
@@ -476,12 +520,12 @@ impl<'a> Interpreter<'a> {
                 let kid = first.string_id().unwrap();
                 let mut pairs = Vec::new();
                 let v = self.eval()?;
-                pairs.push((kid, v));
+                Self::upsert_object_pair(&mut pairs, kid, v);
                 while self.peek() != b'}' && !self.at_end() {
                     let k = self.eval()?;
                     let v = self.eval()?;
                     let kid = self.heap.value_to_key(k);
-                    pairs.push((kid, v));
+                    Self::upsert_object_pair(&mut pairs, kid, v);
                 }
                 self.read_byte(); // consume '}'
                 return Ok(self.heap.alloc_object(pairs));
@@ -494,7 +538,7 @@ impl<'a> Interpreter<'a> {
                 let mut pairs = Vec::new();
                 for &key in &keys {
                     let v = self.eval()?;
-                    pairs.push((key, v));
+                    Self::upsert_object_pair(&mut pairs, key, v);
                 }
                 self.read_byte(); // consume '}'
                 return Ok(self.heap.alloc_object(pairs));
@@ -528,10 +572,23 @@ impl<'a> Interpreter<'a> {
             let k = self.eval()?;
             let v = self.eval()?;
             let kid = self.heap.value_to_key(k);
-            pairs.push((kid, v));
+            Self::upsert_object_pair(&mut pairs, kid, v);
         }
         self.read_byte(); // consume '}'
         Ok(self.heap.alloc_object(pairs))
+    }
+
+    fn upsert_object_pair(pairs: &mut Vec<(u32, Value)>, key: u32, value: Value) {
+        // `none` means key deletion/omission for object construction.
+        if value.is_none() {
+            pairs.retain(|(k, _)| *k != key);
+            return;
+        }
+        if let Some((_, existing)) = pairs.iter_mut().find(|(k, _)| *k == key) {
+            *existing = value;
+        } else {
+            pairs.push((key, value));
+        }
     }
 
     // ── Control flow ────────────────────────────────────────────────
@@ -2022,6 +2079,41 @@ mod tests {
     fn object_dynamic_key_mutation() {
         let (v, _) = eval("obj = {}\nobj.(4) = true\nobj.(4)");
         assert_eq!(v.as_bool(), Some(true), "dynamic key mutation should work, got {:?}", v);
+    }
+
+    #[test]
+    fn object_none_value_omits_key() {
+        let (v, heap) = eval("c = { a: 3 > 2 b: 3 > 5 }\nc");
+        assert!(v.is_object());
+        let pairs = heap.object_pairs(v);
+        assert_eq!(pairs.len(), 1, "expected only key 'a', got {pairs:?}");
+        let key = heap.resolve_str(pairs[0].0);
+        assert_eq!(key, "a");
+        assert_eq!(pairs[0].1.as_i64(), Some(3));
+    }
+
+    #[test]
+    fn object_null_value_preserves_key() {
+        let (v, heap) = eval("c = { a: 3 > 2 b: null }\nc");
+        assert!(v.is_object());
+        let pairs = heap.object_pairs(v);
+        assert_eq!(pairs.len(), 2, "expected keys 'a' and 'b', got {pairs:?}");
+        let mut saw_a = false;
+        let mut saw_b = false;
+        for (k, val) in pairs {
+            match heap.resolve_str(*k) {
+                "a" => {
+                    saw_a = true;
+                    assert_eq!(val.as_i64(), Some(3));
+                }
+                "b" => {
+                    saw_b = true;
+                    assert!(val.is_null());
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_a && saw_b, "expected both keys present");
     }
 
     // ── Semicolons (compound expressions) ─────────────────────────────
