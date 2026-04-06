@@ -12,10 +12,11 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
     Notification as _, PublishDiagnostics,
 };
-use lsp_types::request::{Completion, Formatting, GotoDefinition, HoverRequest, SemanticTokensFullRequest, Request as _};
+use lsp_types::request::{Completion, Formatting, GotoDefinition, HoverRequest, Rename, SemanticTokensFullRequest, Request as _};
 use lsp_types::{
     CompletionOptions, CompletionParams, GotoDefinitionResponse, HoverParams,
     HoverProviderCapability, InitializeParams, PublishDiagnosticsParams, ServerCapabilities,
+    RenameParams, TextEdit, WorkspaceEdit,
     TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
     SemanticTokenModifier, SemanticTokenType,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
@@ -27,38 +28,87 @@ use self::document::DocumentStore;
 
 /// Format a Rex Type as a human-readable string.
 fn format_type(ty: &typecheck::Type) -> String {
-    use typecheck::Type;
-    match ty {
-        Type::Some => "some".to_string(),
-        Type::None => "none".to_string(),
-        Type::Never => "never".to_string(),
-        Type::Null => "null".to_string(),
-        Type::Bool => "bool".to_string(),
-        Type::Int => "int".to_string(),
-        Type::Num => "num".to_string(),
-        Type::Str => "str".to_string(),
-        Type::LiteralStr(s) => format!("\"{s}\""),
-        Type::Array(elem) => format!("[{}]", format_type(elem)),
-        Type::Object { fields, wildcard } => {
-            let mut parts: Vec<String> = fields
-                .iter()
-                .map(|(k, v)| format!("{k}: {}", format_type(v)))
-                .collect();
-            if let Some(w) = wildcard {
-                parts.push(format!("*: {}", format_type(w)));
-            }
-            format!("{{{}}}", parts.join(", "))
+    format_type_with_aliases(ty, &std::collections::HashMap::new())
+}
+
+/// Format a Rex Type with optional structural alias substitution.
+///
+/// Heuristic:
+/// - Keep the top-level type structural.
+/// - For nested positions, substitute an alias only when there is one exact match.
+/// - If multiple aliases match the same nested type, keep structural output.
+fn format_type_with_aliases(
+    ty: &typecheck::Type,
+    aliases: &std::collections::HashMap<String, typecheck::Type>,
+) -> String {
+    fn matching_alias(
+        ty: &typecheck::Type,
+        aliases: &std::collections::HashMap<String, typecheck::Type>,
+    ) -> Option<String> {
+        let mut matches: Vec<String> = aliases
+            .iter()
+            .filter_map(|(name, candidate)| if candidate == ty { Some(name.clone()) } else { None })
+            .collect();
+        matches.sort();
+        if matches.len() == 1 {
+            Some(matches[0].clone())
+        } else {
+            None
         }
-        Type::Union(types) => {
-            let parts: Vec<String> = types.iter().map(format_type).collect();
-            parts.join(" | ")
-        }
-        Type::Intersection(types) => {
-            let parts: Vec<String> = types.iter().map(format_type).collect();
-            parts.join(" & ")
-        }
-        Type::Ref(name) => name.clone(),
     }
+
+    fn format_inner(
+        ty: &typecheck::Type,
+        aliases: &std::collections::HashMap<String, typecheck::Type>,
+        is_top_level: bool,
+    ) -> String {
+        use typecheck::Type;
+        if !is_top_level {
+            if let Some(alias) = matching_alias(ty, aliases) {
+                return alias;
+            }
+        }
+
+        match ty {
+            Type::Some => "some".to_string(),
+            Type::None => "none".to_string(),
+            Type::Never => "never".to_string(),
+            Type::Null => "null".to_string(),
+            Type::Bool => "bool".to_string(),
+            Type::Int => "int".to_string(),
+            Type::Num => "num".to_string(),
+            Type::Str => "str".to_string(),
+            Type::LiteralStr(s) => format!("\"{s}\""),
+            Type::Array(elem) => format!("[{}]", format_inner(elem, aliases, false)),
+            Type::Object { fields, wildcard } => {
+                let mut parts: Vec<String> = fields
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {}", format_inner(v, aliases, false)))
+                    .collect();
+                if let Some(w) = wildcard {
+                    parts.push(format!("*: {}", format_inner(w, aliases, false)));
+                }
+                format!("{{{}}}", parts.join(", "))
+            }
+            Type::Union(types) => {
+                let parts: Vec<String> = types
+                    .iter()
+                    .map(|t| format_inner(t, aliases, false))
+                    .collect();
+                parts.join(" | ")
+            }
+            Type::Intersection(types) => {
+                let parts: Vec<String> = types
+                    .iter()
+                    .map(|t| format_inner(t, aliases, false))
+                    .collect();
+                parts.join(" & ")
+            }
+            Type::Ref(name) => name.clone(),
+        }
+    }
+
+    format_inner(ty, aliases, true)
 }
 
 fn builtin_method_hover(name: &str) -> Option<&'static str> {
@@ -145,6 +195,8 @@ struct LspState {
     span_types: std::collections::HashMap<Uri, Vec<(std::ops::Range<usize>, typecheck::Type)>>,
     /// Inline function signatures per document URI.
     inline_functions: std::collections::HashMap<Uri, std::collections::HashMap<String, typecheck::FunctionSig>>,
+    /// Inline type aliases per document URI.
+    inline_aliases: std::collections::HashMap<Uri, std::collections::HashMap<String, typecheck::Type>>,
 }
 
 impl LspState {
@@ -161,6 +213,7 @@ impl LspState {
             rexd_uri,
             span_types: std::collections::HashMap::new(),
             inline_functions: std::collections::HashMap::new(),
+            inline_aliases: std::collections::HashMap::new(),
         }
     }
 
@@ -185,13 +238,19 @@ impl LspState {
             return;
         };
         let is_rexd = uri.as_str().ends_with(".rexd");
-        let (diags, types, fns) = if is_rexd {
-            (Vec::new(), Vec::new(), std::collections::HashMap::new())
+        let (diags, types, fns, aliases) = if is_rexd {
+            (
+                Vec::new(),
+                Vec::new(),
+                std::collections::HashMap::new(),
+                std::collections::HashMap::new(),
+            )
         } else {
             diagnostics::compute_diagnostics_with_types(source, &self.schema)
         };
         self.span_types.insert(uri.clone(), types);
         self.inline_functions.insert(uri.clone(), fns);
+        self.inline_aliases.insert(uri.clone(), aliases);
         let params = PublishDiagnosticsParams {
             uri: uri.clone(),
             diagnostics: diags,
@@ -250,6 +309,7 @@ pub fn run(domain: Option<PathBuf>) -> io::Result<()> {
         }),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
+        rename_provider: Some(lsp_types::OneOf::Left(true)),
         document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
@@ -340,6 +400,11 @@ fn handle_request(state: &mut LspState, conn: &Connection, req: Request) {
     } else if req.method == GotoDefinition::METHOD {
         let (id, params) = cast_request::<GotoDefinition>(req);
         let result = handle_definition(state, params);
+        let result = serde_json::to_value(result).unwrap();
+        send_response(conn, id, result);
+    } else if req.method == Rename::METHOD {
+        let (id, params) = cast_request::<Rename>(req);
+        let result = handle_rename(state, params);
         let result = serde_json::to_value(result).unwrap();
         send_response(conn, id, result);
     } else if req.method == Formatting::METHOD {
@@ -494,23 +559,26 @@ fn handle_hover(state: &LspState, params: HoverParams) -> Option<lsp_types::Hove
             .map(|i| i + offset)
             .unwrap_or(source.len());
 
-        // Skip if cursor is on a namespace prefix (word followed by `.`)
-        // — domain schema lookup above will handle showing namespace members
+        // If cursor is on a namespace prefix (word followed by `.`), prefer
+        // domain namespace hover when it exists, but otherwise continue to the
+        // inferred span fallback so local navigation segments still hover.
         if word_end < source.len() && source.as_bytes()[word_end] == b'.' {
             // Try domain namespace hover first
             if let result @ Some(_) = hover::hover(&state.schema, &word, is_type_context) {
                 return result;
             }
-            return None;
         }
 
         // Find span that exactly matches the word's byte range, or smallest enclosing
         let word_range = word_start..word_end;
-        let mut exact: Option<&typecheck::Type> = None;
+        let mut exact: Option<&(std::ops::Range<usize>, typecheck::Type)> = None;
         let mut smallest: Option<&(std::ops::Range<usize>, typecheck::Type)> = None;
         for entry in span_types {
-            if entry.0 == word_range {
-                exact = Some(&entry.1);
+            // Keep the first exact match. Later entries can be broader or widened
+            // re-inferences for the same span; the earliest token-level match is
+            // the most specific for identifier hover.
+            if exact.is_none() && entry.0 == word_range {
+                exact = Some(entry);
             }
             if entry.0.contains(&offset) {
                 if let Some(prev) = smallest {
@@ -523,18 +591,23 @@ fn handle_hover(state: &LspState, params: HoverParams) -> Option<lsp_types::Hove
             }
         }
 
-        let ty = exact.or(smallest.map(|(_, ty)| ty));
-        if let Some(ty) = ty {
-            let type_str = format_type(ty);
+        let selected = exact.or(smallest);
+        if let Some((selected_range, ty)) = selected {
+            let label = &source[selected_range.clone()];
+            let mut aliases = state.schema.type_aliases.clone();
+            if let Some(local_aliases) = state.inline_aliases.get(uri) {
+                aliases.extend(local_aliases.clone());
+            }
+            let type_str = format_type_with_aliases(ty, &aliases);
             // If the word IS a type keyword and its type is itself, show `: type`
-            let display_type = if type_str == word && is_type_name(&word) {
+            let display_type = if type_str == label && is_type_name(label) {
                 "type".to_string()
             } else {
                 type_str
             };
             let content = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
                 kind: lsp_types::MarkupKind::Markdown,
-                value: format!("```rex\n{word}: {display_type}\n```"),
+                value: format!("```rex\n{label}: {display_type}\n```"),
             });
             return Some(lsp_types::Hover { contents: content, range: None });
         }
@@ -556,9 +629,19 @@ fn handle_definition(
         return None;
     }
 
+    if let Some(loc) = definition::local_type_alias_definition(&word, uri, source) {
+        return Some(GotoDefinitionResponse::Scalar(loc));
+    }
+    if let Some(loc) = definition::local_type_property_definition(&word, uri, source, position_to_offset(source, pos)) {
+        return Some(GotoDefinitionResponse::Scalar(loc));
+    }
+
     // Try dotted word first
     let dot_word = extract_dotted_word_at(source, pos);
     if !dot_word.is_empty() {
+        if let Some(loc) = definition::local_nav_definition(&dot_word, uri, source, position_to_offset(source, pos)) {
+            return Some(GotoDefinitionResponse::Scalar(loc));
+        }
         if let Some(loc) = definition::definition(
             &state.schema,
             &dot_word,
@@ -569,6 +652,10 @@ fn handle_definition(
         }
     }
 
+    if let Some(loc) = definition::local_variable_definition(&word, uri, source, position_to_offset(source, pos)) {
+        return Some(GotoDefinitionResponse::Scalar(loc));
+    }
+
     let loc = definition::definition(
         &state.schema,
         &word,
@@ -576,6 +663,117 @@ fn handle_definition(
         state.rexd_source.as_deref(),
     )?;
     Some(GotoDefinitionResponse::Scalar(loc))
+}
+
+fn handle_rename(state: &LspState, params: RenameParams) -> Option<WorkspaceEdit> {
+    let uri = &params.text_document_position.text_document.uri;
+    let pos = params.text_document_position.position;
+    let source = state.documents.get(uri)?;
+    let new_name = params.new_name;
+
+    if new_name.trim().is_empty() {
+        return None;
+    }
+
+    let word = extract_word_at(source, pos);
+    if word.is_empty() {
+        return None;
+    }
+
+    let cursor_offset = position_to_offset(source, pos);
+    let word_start = source[..cursor_offset]
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .map(|i| next_char_boundary(source, i))
+        .unwrap_or(0);
+    let is_property_segment = word_start > 0 && source.as_bytes()[word_start - 1] == b'.';
+
+    let mut edits: Vec<TextEdit> = Vec::new();
+    let tokens = rex_core::lexer::lex(source);
+
+    if is_property_segment {
+        let dot_word = extract_dotted_word_at(source, pos);
+        let target_loc = definition::local_nav_definition(&dot_word, uri, source, cursor_offset)?;
+
+        for tok in &tokens {
+            if tok.kind != rex_core::lexer::TokenKind::Ident {
+                continue;
+            }
+            let tok_text = &source[tok.span.clone()];
+            if tok_text != word {
+                continue;
+            }
+
+            let is_decl = {
+                let start = tok.span.start;
+                let end = tok.span.end;
+                let def_start = position_to_offset(source, target_loc.range.start);
+                let def_end = position_to_offset(source, target_loc.range.end);
+                start == def_start && end == def_end
+            };
+
+            let matches_symbol = if is_decl {
+                true
+            } else {
+                let token_pos = offset_to_position(source, tok.span.start);
+                let token_dot = extract_dotted_word_at(source, token_pos);
+                if token_dot.is_empty() {
+                    false
+                } else {
+                    definition::local_nav_definition(&token_dot, uri, source, tok.span.start)
+                        .map_or(false, |loc| loc.range == target_loc.range && loc.uri == target_loc.uri)
+                }
+            };
+
+            if matches_symbol {
+                edits.push(TextEdit {
+                    range: lsp_types::Range {
+                        start: offset_to_position(source, tok.span.start),
+                        end: offset_to_position(source, tok.span.end),
+                    },
+                    new_text: new_name.clone(),
+                });
+            }
+        }
+    } else {
+        let target_loc = definition::local_variable_definition(&word, uri, source, cursor_offset)
+            .or_else(|| definition::local_type_alias_definition(&word, uri, source))
+            .or_else(|| definition::local_type_property_definition(&word, uri, source, cursor_offset))?;
+
+        for tok in &tokens {
+            if tok.kind != rex_core::lexer::TokenKind::Ident {
+                continue;
+            }
+            let tok_text = &source[tok.span.clone()];
+            if tok_text != word {
+                continue;
+            }
+
+            let resolved = definition::local_variable_definition(&word, uri, source, tok.span.start)
+                .or_else(|| definition::local_type_alias_definition(&word, uri, source))
+                .or_else(|| definition::local_type_property_definition(&word, uri, source, tok.span.start));
+            if resolved.map_or(false, |loc| loc.range == target_loc.range && loc.uri == target_loc.uri) {
+                edits.push(TextEdit {
+                    range: lsp_types::Range {
+                        start: offset_to_position(source, tok.span.start),
+                        end: offset_to_position(source, tok.span.end),
+                    },
+                    new_text: new_name.clone(),
+                });
+            }
+        }
+    }
+
+    if edits.is_empty() {
+        return None;
+    }
+
+    let mut changes = std::collections::HashMap::new();
+    changes.insert(uri.clone(), edits);
+    Some(WorkspaceEdit {
+        changes: Some(changes),
+        document_changes: None,
+        change_annotations: None,
+    })
 }
 
 fn handle_format(
@@ -898,6 +1096,23 @@ fn extract_dotted_word_at(source: &str, pos: lsp_types::Position) -> String {
     source[start..end].to_string()
 }
 
+fn offset_to_position(source: &str, offset: usize) -> lsp_types::Position {
+    let mut line = 0u32;
+    let mut col = 0u32;
+    for (i, ch) in source.char_indices() {
+        if i >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    lsp_types::Position::new(line, col)
+}
+
 fn position_to_offset(source: &str, pos: lsp_types::Position) -> usize {
     let mut line = 0u32;
     let mut col = 0u32;
@@ -916,4 +1131,450 @@ fn position_to_offset(source: &str, pos: lsp_types::Position) -> usize {
         }
     }
     source.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use lsp_types::{
+        GotoDefinitionParams, HoverContents, HoverParams, MarkupKind, Position,
+        RenameParams,
+        TextDocumentIdentifier, TextDocumentPositionParams,
+    };
+    use rex_core::typecheck::Type;
+
+    fn setup_state_with_doc(source: &str) -> (LspState, Uri) {
+        let mut state = LspState::new(None);
+        let uri: Uri = "file:///test.rex".parse().expect("valid test uri");
+        state.documents.open(uri.clone(), source.to_string());
+        let (_diags, span_types, inline_fns, inline_aliases) =
+            diagnostics::compute_diagnostics_with_types(source, &state.schema);
+        state.span_types.insert(uri.clone(), span_types);
+        state.inline_functions.insert(uri.clone(), inline_fns);
+        state.inline_aliases.insert(uri.clone(), inline_aliases);
+        (state, uri)
+    }
+    #[test]
+    fn hover_prefers_nested_aliases_for_top_level_structural_type() {
+        let source = r#"type Person = { name: str color: int }
+db: { bob: Person tim: Person } = {
+  bob:{ name:"Bob" color:0x44ff44 }
+  tim:{ name:"Tim" color:0x0088ff }
+}
+db"#;
+        let (state, uri) = setup_state_with_doc(source);
+        let offset = source.rfind("db").expect("expected trailing db");
+        let text = hover_markdown(&state, &uri, source, offset);
+
+        assert!(
+            text.contains("db: {bob: Person, tim: Person}"),
+            "unexpected hover text: {text}"
+        );
+        assert!(
+            !text.contains("db: {bob: {name: str, color: int}, tim: {name: str, color: int}}"),
+            "unexpected hover text: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_db_segment_in_navigation_chain_has_tooltip() {
+        let source = r#"type Person = { name: str color: int }
+db: { bob: Person tim: Person } = {
+  bob:{ name:"Bob" color:0x44ff44 }
+  tim:{ name:"Tim" color:0x0088ff }
+}
+tim-color = db.tim.color"#;
+        let (state, uri) = setup_state_with_doc(source);
+        let offset = source.find("db.tim.color").expect("expected navigation chain");
+        let text = hover_markdown(&state, &uri, source, offset);
+
+        assert!(
+            text.contains("db: {bob: Person, tim: Person}"),
+            "unexpected hover text: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_tim_segment_in_navigation_chain_has_tooltip() {
+        let source = r#"type Person = { name: str color: int }
+db: { bob: Person tim: Person } = {
+  bob:{ name:"Bob" color:0x44ff44 }
+  tim:{ name:"Tim" color:0x0088ff }
+}
+tim-color = db.tim.color"#;
+        let (state, uri) = setup_state_with_doc(source);
+        let offset = source.find("db.tim.color").expect("expected navigation chain") + 3;
+        let text = hover_markdown(&state, &uri, source, offset);
+
+        assert!(
+            text.contains("db.tim: {name: str, color: int}"),
+            "unexpected hover text: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_color_segment_in_navigation_chain_still_has_final_type() {
+        let source = r#"type Person = { name: str color: int }
+db: { bob: Person tim: Person } = {
+  bob:{ name:"Bob" color:0x44ff44 }
+  tim:{ name:"Tim" color:0x0088ff }
+}
+tim-color = db.tim.color"#;
+        let (state, uri) = setup_state_with_doc(source);
+        let offset = source.find("db.tim.color").expect("expected navigation chain") + 7;
+        let text = hover_markdown(&state, &uri, source, offset);
+
+        assert!(text.contains("db.tim.color: int"), "unexpected hover text: {text}");
+    }
+
+    fn offset_to_position(source: &str, offset: usize) -> Position {
+        let mut line = 0u32;
+        let mut col = 0u32;
+        for (i, ch) in source.char_indices() {
+            if i >= offset {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        Position::new(line, col)
+    }
+
+    fn hover_markdown(state: &LspState, uri: &Uri, source: &str, offset: usize) -> String {
+        let params = HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: offset_to_position(source, offset),
+            },
+            work_done_progress_params: Default::default(),
+        };
+
+        let hover = handle_hover(state, params).expect("hover should exist");
+        match hover.contents {
+            HoverContents::Markup(content) if content.kind == MarkupKind::Markdown => content.value,
+            other => panic!("unexpected hover payload: {other:?}"),
+        }
+    }
+
+    fn definition_location(
+        state: &LspState,
+        uri: &Uri,
+        source: &str,
+        offset: usize,
+    ) -> lsp_types::Location {
+        let params = GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: offset_to_position(source, offset),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let def = handle_definition(state, params).expect("definition should exist");
+        match def {
+            lsp_types::GotoDefinitionResponse::Scalar(loc) => loc,
+            other => panic!("unexpected definition payload: {other:?}"),
+        }
+    }
+
+    fn location_text(source: &str, loc: &lsp_types::Location) -> String {
+        let start = position_to_offset(source, loc.range.start);
+        let end = position_to_offset(source, loc.range.end);
+        source[start..end].to_string()
+    }
+
+    fn rename_ranges(
+        state: &LspState,
+        uri: &Uri,
+        source: &str,
+        offset: usize,
+        new_name: &str,
+    ) -> Vec<lsp_types::Range> {
+        let params = RenameParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: offset_to_position(source, offset),
+            },
+            new_name: new_name.to_string(),
+            work_done_progress_params: Default::default(),
+        };
+
+        let edit = handle_rename(state, params).expect("rename should exist");
+        let mut ranges = edit
+            .changes
+            .expect("changes should be present")
+            .get(uri)
+            .expect("uri edits should exist")
+            .iter()
+            .map(|e| e.range)
+            .collect::<Vec<_>>();
+        ranges.sort_by_key(|r| (r.start.line, r.start.character, r.end.line, r.end.character));
+        ranges
+    }
+
+    #[test]
+    fn hover_while_condition_variable_stays_int() {
+        let source = r#"max = 100
+a = 1
+b = 1
+while a <= max do
+  c = a + b
+  a = b
+  b = c
+end"#;
+        let (state, uri) = setup_state_with_doc(source);
+        let offset = source.find("a <= max").expect("expected condition text");
+        let text = hover_markdown(&state, &uri, source, offset);
+
+        assert!(text.contains("a: int"), "unexpected hover text: {text}");
+        assert!(!text.contains("a: some | none"), "unexpected hover text: {text}");
+    }
+
+    #[test]
+    fn hover_inline_var_infers_int() {
+        let source = "x = 41\ny = x + 1\ny";
+        let (state, uri) = setup_state_with_doc(source);
+        let offset = source.find("x + 1").expect("expected expression text");
+        let text = hover_markdown(&state, &uri, source, offset);
+
+        assert!(text.contains("x: int"), "unexpected hover text: {text}");
+    }
+
+    #[test]
+    fn format_type_with_aliases_keeps_top_level_structural() {
+        let person = Type::Object {
+            fields: vec![
+                ("name".to_string(), Type::Str),
+                ("color".to_string(), Type::Int),
+            ],
+            wildcard: None,
+        };
+        let root = Type::Object {
+            fields: vec![
+                ("bob".to_string(), person.clone()),
+                ("tim".to_string(), person.clone()),
+            ],
+            wildcard: None,
+        };
+        let mut aliases = HashMap::new();
+        aliases.insert("Person".to_string(), person);
+
+        let got = format_type_with_aliases(&root, &aliases);
+        assert_eq!(got, "{bob: Person, tim: Person}");
+    }
+
+    #[test]
+    fn format_type_with_aliases_uses_unique_nested_match_only() {
+        let person = Type::Object {
+            fields: vec![
+                ("name".to_string(), Type::Str),
+                ("color".to_string(), Type::Int),
+            ],
+            wildcard: None,
+        };
+        let mut aliases = HashMap::new();
+        aliases.insert("Person".to_string(), person.clone());
+        aliases.insert("User".to_string(), person.clone());
+
+        let root = Type::Object {
+            fields: vec![("bob".to_string(), person)],
+            wildcard: None,
+        };
+
+        let got = format_type_with_aliases(&root, &aliases);
+        assert_eq!(got, "{bob: {name: str, color: int}}");
+    }
+
+    #[test]
+    fn format_type_with_aliases_substitutes_in_nested_unions() {
+        let person = Type::Object {
+            fields: vec![
+                ("name".to_string(), Type::Str),
+                ("color".to_string(), Type::Int),
+            ],
+            wildcard: None,
+        };
+        let ty = Type::Union(vec![person.clone(), Type::None]);
+        let mut aliases = HashMap::new();
+        aliases.insert("Person".to_string(), person);
+
+        let got = format_type_with_aliases(&ty, &aliases);
+        assert_eq!(got, "Person | none");
+    }
+
+    #[test]
+    fn goto_definition_resolves_inline_type_alias_usage() {
+        let source = r#"type Person = { name: str color: int }
+db: { bob: Person tim: Person } = { bob:{ name:"Bob" color:1 } tim:{ name:"Tim" color:2 } }
+v = db.bob"#;
+        let (state, uri) = setup_state_with_doc(source);
+        let usage_offset = source.find("bob: Person").expect("alias usage should exist") + "bob: ".len();
+        let loc = definition_location(&state, &uri, source, usage_offset);
+
+        assert_eq!(loc.uri, uri);
+        assert_eq!(loc.range.start.line, 0);
+        assert_eq!(loc.range.start.character, 5);
+    }
+
+    #[test]
+    fn goto_definition_resolves_inline_type_alias_usage_in_value_annotation() {
+        let source = r#"type Person = { name: str color: int }
+x: Person = { name:"Ada" color:7 }
+x"#;
+        let (state, uri) = setup_state_with_doc(source);
+        let usage_offset = source.find("x: Person").expect("alias usage should exist") + "x: ".len();
+        let loc = definition_location(&state, &uri, source, usage_offset);
+
+        assert_eq!(loc.uri, uri);
+        assert_eq!(loc.range.start.line, 0);
+        assert_eq!(loc.range.start.character, 5);
+    }
+
+    #[test]
+    fn goto_definition_resolves_local_variable_usage() {
+        let source = "x = 41\ny = x + 1\ny";
+        let (state, uri) = setup_state_with_doc(source);
+        let usage_offset = source.find("x + 1").expect("usage should exist");
+        let loc = definition_location(&state, &uri, source, usage_offset);
+
+        assert_eq!(loc.uri, uri);
+        assert_eq!(location_text(source, &loc), "x");
+        assert_eq!(loc.range.start.line, 0);
+        assert_eq!(loc.range.start.character, 0);
+    }
+
+    #[test]
+    fn goto_definition_resolves_static_navigation_base_variable() {
+        let source = r#"db = {
+  bob:{ name:"Bob" color:1 }
+  tim:{ name:"Tim" color:2 }
+}
+v = db.tim.color"#;
+        let (state, uri) = setup_state_with_doc(source);
+        let usage_offset = source.find("db.tim.color").expect("nav should exist");
+        let loc = definition_location(&state, &uri, source, usage_offset);
+
+        assert_eq!(loc.uri, uri);
+        assert_eq!(location_text(source, &loc), "db");
+        assert_eq!(loc.range.start.line, 0);
+        assert_eq!(loc.range.start.character, 0);
+    }
+
+    #[test]
+    fn goto_definition_resolves_static_navigation_property_segments() {
+        let source = r#"db = {
+  bob:{ name:"Bob" color:1 }
+  tim:{ name:"Tim" color:2 }
+}
+v = db.tim.color"#;
+        let (state, uri) = setup_state_with_doc(source);
+
+        let tim_offset = source.find("db.tim.color").expect("nav should exist") + 3;
+        let tim_loc = definition_location(&state, &uri, source, tim_offset);
+        assert_eq!(tim_loc.uri, uri);
+        assert_eq!(location_text(source, &tim_loc), "tim");
+        assert_eq!(tim_loc.range.start.line, 2);
+        assert_eq!(tim_loc.range.start.character, 2);
+
+        let color_offset = source.find("db.tim.color").expect("nav should exist") + 7;
+        let color_loc = definition_location(&state, &uri, source, color_offset);
+        assert_eq!(color_loc.uri, uri);
+        assert_eq!(location_text(source, &color_loc), "color");
+        assert_eq!(color_loc.range.start.line, 2);
+        assert_eq!(color_loc.range.start.character, 19);
+    }
+
+    #[test]
+    fn rename_local_variable_updates_definition_and_usages() {
+        let source = "x = 41\ny = x + 1\nx";
+        let (state, uri) = setup_state_with_doc(source);
+        let offset = source.find("x + 1").expect("usage should exist");
+        let ranges = rename_ranges(&state, &uri, source, offset, "value");
+
+        assert_eq!(ranges.len(), 3);
+    }
+
+    #[test]
+    fn rename_static_navigation_property_updates_definition_and_accesses() {
+        let source = r#"db = {
+  bob:{ name:"Bob" color:1 }
+  tim:{ name:"Tim" color:2 }
+}
+v = db.tim.color
+w = db.bob.color"#;
+        let (state, uri) = setup_state_with_doc(source);
+        let offset = source.find("db.tim.color").expect("nav should exist") + 7;
+        let ranges = rename_ranges(&state, &uri, source, offset, "hue");
+
+        assert_eq!(ranges.len(), 2);
+    }
+
+    #[test]
+    fn rename_type_object_key_does_not_fail() {
+        let source = r#"type Person = { name: str color: int }
+
+db: { bob: Person tim: Person } = {
+  boba:{ name:"Bob" color:0x44ff44 }
+  tim:{ name:"Tim" color:0x0088ff }
+}
+
+first-name = db.boba.name"#;
+        let (state, uri) = setup_state_with_doc(source);
+        let offset = source.find("bob: Person").expect("type key should exist");
+        let ranges = rename_ranges(&state, &uri, source, offset, "boba");
+
+        assert!(!ranges.is_empty());
+    }
+
+        #[test]
+        fn hover_fibonacci_while_condition_a_is_int() {
+                let source = r#"// Calculate the fibonacci numbers up to max (default 100)
+// rex run examples/fibonacci.rex
+// rex run examples/fibonacci.rex max=200
+extern max: int | none
+max = max or 100
+
+// Declare an external function to print the results
+extern "P" print(val: some) -> some
+
+// Imperative: build with push
+fibs = []
+a = 1
+b = 1
+while a <= max do
+    fibs.push(a)
+    c = a + b
+    a = b
+    b = c
+end
+fibs
+
+print(fibs)
+
+// Functional: while comprehension
+a = 1; b = 1
+fibs2 = [ v = a; c = a + b; a = b; b = c; v while a <= max ]
+
+print(fibs2)
+
+// Verify both methods give the same result
+when fibs == fibs2 do
+    "fibs and fibs2 are the same"
+else
+    "fibs and fibs2 are different"
+end"#;
+                let (state, uri) = setup_state_with_doc(source);
+                let offset = source.find("while a <= max do").expect("expected while condition") + "while ".len();
+                let text = hover_markdown(&state, &uri, source, offset);
+
+                assert!(text.contains("a: int"), "unexpected hover text: {text}");
+                assert!(!text.contains("a: int | none"), "unexpected hover text: {text}");
+                assert!(!text.contains("a: some | none"), "unexpected hover text: {text}");
+        }
 }
