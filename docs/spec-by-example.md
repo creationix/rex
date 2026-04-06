@@ -984,23 +984,23 @@ banaiad = ban and iad
 
 ```csv types
 text   , type       , line, col
-b      , bool       , 1   , 1  
-true   , bool       , 1   , 5  
-n      , null       , 2   , 1  
-null   , null       , 2   , 5  
-ban    , null       , 3   , 1  
-b      , bool       , 3   , 7  
-n      , null       , 3   , 13 
-i      , int        , 4   , 1  
-42     , int        , 4   , 5  
-d      , num        , 5   , 1  
-1.23   , num        , 5   , 5  
-iad    , num        , 6   , 1  
-i      , int        , 6   , 7  
-d      , num        , 6   , 13 
-banaiad, num        , 7   , 1  
-ban    , null       , 7   , 11 
-iad    , num        , 7   , 19 
+b      , bool       , 1   , 1
+true   , bool       , 1   , 5
+n      , null       , 2   , 1
+null   , null       , 2   , 5
+ban    , null       , 3   , 1
+b      , bool       , 3   , 7
+n      , null       , 3   , 13
+i      , int        , 4   , 1
+42     , int        , 4   , 5
+d      , num        , 5   , 1
+1.23   , num        , 5   , 5
+iad    , num        , 6   , 1
+i      , int        , 6   , 7
+d      , num        , 6   , 13
+banaiad, num        , 7   , 1
+ban    , null       , 7   , 11
+iad    , num        , 7   , 19
 ```
 
 ```rext
@@ -1009,6 +1009,45 @@ iad    , num        , 7   , 19
 
 ```json
 1.23
+```
+
+```rex
+a = 100
+b = "hi"
+c: int | none = 200
+d: str | none = "wow"
+x = a or b
+y = c or d
+```
+
+```csv types
+text , type            , line, col
+a    , int             , 1   , 1  
+100  , int             , 1   , 5  
+b    , str             , 2   , 1  
+"""hi""", str             , 2   , 5  
+c    , int | none      , 3   , 1  
+int  , int             , 3   , 4  
+none , none            , 3   , 10 
+200  , int             , 3   , 17 
+d    , str | none      , 4   , 1  
+str  , str             , 4   , 4  
+none , none            , 4   , 10 
+"""wow""", str             , 4   , 17 
+x    , int | str       , 5   , 1  
+a    , int             , 5   , 5  
+b    , str             , 5   , 10 
+y    , int | str | none, 6   , 1  
+c    , int | none      , 6   , 5  
+d    , str | none      , 6   , 10 
+```
+
+```rext
+(%=a$38+=b$2,hi=c$6g+=d$3,wow=x$|(a$b$)=y$|(c$d$))
+```
+
+```json
+200
 ```
 
 ---
