@@ -5,7 +5,12 @@ use rex_core::typecheck::{self, DiagnosticKind, DomainSchema};
 pub fn compute_diagnostics_with_types(
     source: &str,
     schema: &DomainSchema,
-) -> (Vec<Diagnostic>, Vec<(std::ops::Range<usize>, typecheck::Type)>, std::collections::HashMap<String, typecheck::FunctionSig>) {
+) -> (
+    Vec<Diagnostic>,
+    Vec<(std::ops::Range<usize>, typecheck::Type)>,
+    std::collections::HashMap<String, typecheck::FunctionSig>,
+    std::collections::HashMap<String, typecheck::Type>,
+) {
     let mut diagnostics = Vec::new();
 
     let tokens = rex_core::lexer::lex(source);
@@ -20,7 +25,7 @@ pub fn compute_diagnostics_with_types(
         });
     }
 
-    let (type_diags, span_types, inline_fns) = typecheck::check_source_with_types(source, schema);
+    let (type_diags, span_types, inline_fns, inline_aliases) = typecheck::check_source_with_types(source, schema);
     for d in &type_diags {
         let severity = match d.kind {
             DiagnosticKind::Error => DiagnosticSeverity::ERROR,
@@ -35,7 +40,7 @@ pub fn compute_diagnostics_with_types(
         });
     }
 
-    (diagnostics, span_types, inline_fns)
+    (diagnostics, span_types, inline_fns, inline_aliases)
 }
 
 /// Convert byte offsets to an LSP Range (0-indexed line/col).
