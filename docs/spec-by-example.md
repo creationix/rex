@@ -161,6 +161,29 @@ Parentheses make the key an expression:
 | `{ name:1 }` | `{4,name2+}` |
 | `{ (x):1 }`  | `{x$2+}`     |
 
+```rex
+extern db: { *: { *: str } }
+extern key: str
+res = db.(key + ".html").prop
+```
+
+```csv types
+text                   , type             , line, col
+db                     , { *: { *: str } }, 1   , 8
+str                    , str              , 1   , 22
+key                    , str              , 2   , 8
+str                    , str              , 2   , 13
+res                    , str | none       , 3   , 1
+db                     , { *: { *: str } }, 3   , 7
+"db.(key + "".html"").prop", str | none       , 3   , 7
+key                    , str              , 3   , 11
+""".html"""            , str              , 3   , 17
+```
+
+```rext
+=res$(db$(ad%key$5,.html)4,prop)
+```
+
 ## Spread
 
 `...expr` inside arrays and objects splices the contents of `expr` into the
@@ -947,6 +970,45 @@ true, bool        , 1   , 31
 
 ```json
 [2, null]
+```
+
+```rex
+b = true
+n = null
+ban = b and n
+i = 42
+d = 1.23
+iad = i and d
+banaiad = ban and iad
+```
+
+```csv types
+text   , type       , line, col
+b      , bool       , 1   , 1  
+true   , bool       , 1   , 5  
+n      , null       , 2   , 1  
+null   , null       , 2   , 5  
+ban    , null       , 3   , 1  
+b      , bool       , 3   , 7  
+n      , null       , 3   , 13 
+i      , int        , 4   , 1  
+42     , int        , 4   , 5  
+d      , num        , 5   , 1  
+1.23   , num        , 5   , 5  
+iad    , num        , 6   , 1  
+i      , int        , 6   , 7  
+d      , num        , 6   , 13 
+banaiad, num        , 7   , 1  
+ban    , null       , 7   , 11 
+iad    , num        , 7   , 19 
+```
+
+```rext
+(%=b$t'=n$n'=ban$&(b$n$)=i$1k+=d$3*3S+=iad$&(i$d$)=banaiad$&(ban$iad$))
+```
+
+```json
+1.23
 ```
 
 ---
