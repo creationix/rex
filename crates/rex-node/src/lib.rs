@@ -2,6 +2,7 @@ use napi::bindgen_prelude::*;
 use napi::{sys, ValueType};
 use napi_derive::napi;
 use rex_core::bytecode;
+use rex_core::typecheck::{self, DiagnosticKind};
 
 /// Compile Rex source code to REXC bytecode with full optimizations.
 #[napi]
@@ -9,11 +10,43 @@ pub fn compile(source: String) -> String {
     rex_core::compile(&source)
 }
 
+/// Compile Rex source to REXC bytecode using a domain interface (.rexd).
+#[napi(js_name = "compileWithDomain")]
+pub fn compile_with_domain(source: String, domain: String) -> String {
+    rex_core::compile_with_domain(&source, &domain)
+}
+
+/// Type-check Rex source against a domain interface (.rexd).
+#[napi]
+pub fn check(source: String, domain: String) -> Vec<NodeDiagnostic> {
+    let schema = typecheck::parse_rexd(&domain);
+    typecheck::check_source(&source, &schema)
+        .into_iter()
+        .map(|d| NodeDiagnostic {
+            kind: match d.kind {
+                DiagnosticKind::Error => "error".to_string(),
+                DiagnosticKind::Warning => "warning".to_string(),
+            },
+            start: d.span.start as u32,
+            end: d.span.end as u32,
+            message: d.message,
+        })
+        .collect()
+}
+
 /// Encode a JS value (JSON types) to RX bytecode with deduplication.
 #[napi]
 pub fn encode(env: Env, value: Unknown) -> Result<String> {
     let val = js_to_value(&env, value.raw())?;
     Ok(bytecode::encode_dedup(&val))
+}
+
+#[napi(object)]
+pub struct NodeDiagnostic {
+    pub kind: String,
+    pub start: u32,
+    pub end: u32,
+    pub message: String,
 }
 
 /// Walk a JS value and convert to bytecode::Value.
