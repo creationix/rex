@@ -1442,6 +1442,31 @@ impl<'a> TypeEnv<'a> {
         });
     }
 
+    /// Check whether a type might be `none`. If so, emit an error telling the
+    /// user to narrow first, and return the type with `none` stripped (so that
+    /// downstream inference sees the "intended" type and avoids cascading errors).
+    /// Returns `Some(stripped)` when none was found (error emitted), `None` when clean.
+    fn check_none_operand(
+        &mut self,
+        ty: &Type,
+        span: &std::ops::Range<usize>,
+        op_desc: &str,
+    ) -> Option<Type> {
+        if ty.contains_none() {
+            self.error(
+                span.clone(),
+                format!(
+                    "cannot use {} on {} — narrow with 'when' first",
+                    op_desc,
+                    ty.display()
+                ),
+            );
+            Some(ty.remove_none())
+        } else {
+            None
+        }
+    }
+
     fn warning(&mut self, span: std::ops::Range<usize>, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic {
             kind: DiagnosticKind::Warning,
@@ -1652,11 +1677,19 @@ impl<'a> TypeEnv<'a> {
         let op = as_token_kind(&children[1]);
         let rhs_type = self.infer_child(&children[2]);
 
+        let span = Self::span_of(node);
+
         match op {
             // Arithmetic: + - * %
             Some(SyntaxKind::Plus) => {
-                let lt = self.resolve_type(&lhs_type);
-                let rt = self.resolve_type(&rhs_type);
+                let lt = self
+                    .check_none_operand(&lhs_type, &span, "'+'")
+                    .unwrap_or(lhs_type.clone());
+                let rt = self
+                    .check_none_operand(&rhs_type, &span, "'+'")
+                    .unwrap_or(rhs_type.clone());
+                let lt = self.resolve_type(&lt);
+                let rt = self.resolve_type(&rt);
 
                 let lt_has_str = self.type_contains_string(&lt);
                 let rt_has_str = self.type_contains_string(&rt);
@@ -1669,14 +1702,14 @@ impl<'a> TypeEnv<'a> {
                     Type::Num
                 } else if self.type_contains_some(&lt) || self.type_contains_some(&rt) {
                     self.error(
-                        Self::span_of(node),
+                        span,
                         format!("cannot use 'some' in arithmetic — narrow first"),
                     );
                     Type::Some
                 } else if lt_has_str != rt_has_str {
                     // One side has string, other doesn't — type error
                     self.error(
-                        Self::span_of(node),
+                        span,
                         format!(
                             "cannot add {} and {} (use template literal for coercion)",
                             lt.display(),
@@ -1689,29 +1722,61 @@ impl<'a> TypeEnv<'a> {
                 }
             }
             Some(SyntaxKind::Minus | SyntaxKind::Star | SyntaxKind::Percent) => {
-                let lt = self.resolve_type(&lhs_type);
-                let rt = self.resolve_type(&rhs_type);
+                let op_str = match op {
+                    Some(SyntaxKind::Minus) => "'-'",
+                    Some(SyntaxKind::Star) => "'*'",
+                    _ => "'%'",
+                };
+                let lt = self
+                    .check_none_operand(&lhs_type, &span, op_str)
+                    .unwrap_or(lhs_type);
+                let rt = self
+                    .check_none_operand(&rhs_type, &span, op_str)
+                    .unwrap_or(rhs_type);
+                let lt = self.resolve_type(&lt);
+                let rt = self.resolve_type(&rt);
                 if lt == Type::Int && rt == Type::Int {
                     Type::Int
                 } else {
                     Type::Num
                 }
             }
-            Some(SyntaxKind::Slash) => Type::Num, // division always produces number
+            Some(SyntaxKind::Slash) => {
+                self.check_none_operand(&lhs_type, &span, "'/'");
+                self.check_none_operand(&rhs_type, &span, "'/'");
+                Type::Num // division always produces number
+            }
 
-            // Comparison: == != > >= < <=
-            Some(
-                SyntaxKind::EqEq
-                | SyntaxKind::BangEq
-                | SyntaxKind::Gt
-                | SyntaxKind::GtEq
-                | SyntaxKind::Lt
-                | SyntaxKind::LtEq,
-            ) => lhs_type.add_none(),
+            // Equality: == != (allow none operands for explicit null checks)
+            Some(SyntaxKind::EqEq | SyntaxKind::BangEq) => lhs_type.add_none(),
+
+            // Ordering: > >= < <= (require narrowed operands)
+            Some(SyntaxKind::Gt | SyntaxKind::GtEq | SyntaxKind::Lt | SyntaxKind::LtEq) => {
+                let op_str = match op {
+                    Some(SyntaxKind::Gt) => "'>'",
+                    Some(SyntaxKind::GtEq) => "'>='",
+                    Some(SyntaxKind::Lt) => "'<'",
+                    _ => "'<='",
+                };
+                let lt = self
+                    .check_none_operand(&lhs_type, &span, op_str)
+                    .unwrap_or(lhs_type);
+                self.check_none_operand(&rhs_type, &span, op_str);
+                lt.add_none()
+            }
 
             // Bitwise / boolean value: & | ^
             Some(SyntaxKind::Amp | SyntaxKind::Pipe | SyntaxKind::Caret) => {
-                let lt = self.resolve_type(&lhs_type);
+                let op_str = match op {
+                    Some(SyntaxKind::Amp) => "'&'",
+                    Some(SyntaxKind::Pipe) => "'|'",
+                    _ => "'^'",
+                };
+                let lt = self
+                    .check_none_operand(&lhs_type, &span, op_str)
+                    .unwrap_or(lhs_type);
+                self.check_none_operand(&rhs_type, &span, op_str);
+                let lt = self.resolve_type(&lt);
                 if lt == Type::Bool {
                     Type::Bool
                 } else {
@@ -1724,14 +1789,32 @@ impl<'a> TypeEnv<'a> {
                 if lhs_type.contains_none() {
                     rhs_type.add_none()
                 } else {
+                    self.warning(
+                        Self::span_of(node),
+                        format!(
+                            "'and' has no effect — left side is always defined ({})",
+                            lhs_type.display()
+                        ),
+                    );
                     rhs_type
                 }
             }
             Some(SyntaxKind::KwOr) => {
-                // First defined value — lhs if not none, else rhs.
-                // Remove none from lhs since `or` skips it.
-                let lhs_no_none = lhs_type.remove_none();
-                Type::Union(vec![lhs_no_none, rhs_type]).simplify()
+                if lhs_type.contains_none() {
+                    // First defined value — lhs if not none, else rhs.
+                    // Remove none from lhs since `or` skips it.
+                    let lhs_no_none = lhs_type.remove_none();
+                    Type::Union(vec![lhs_no_none, rhs_type]).simplify()
+                } else {
+                    self.warning(
+                        Self::span_of(node),
+                        format!(
+                            "'or' right side is unreachable — left side is always defined ({})",
+                            lhs_type.display()
+                        ),
+                    );
+                    lhs_type
+                }
             }
 
             _ => Type::unknown(),
@@ -1747,9 +1830,14 @@ impl<'a> TypeEnv<'a> {
         let op = as_token_kind(&children[0]);
         let operand_type = self.infer_child(&children[1]);
 
+        let span = Self::span_of(node);
+
         match op {
             Some(SyntaxKind::Minus) => {
-                let t = self.resolve_type(&operand_type);
+                let t = self
+                    .check_none_operand(&operand_type, &span, "unary '-'")
+                    .unwrap_or(operand_type);
+                let t = self.resolve_type(&t);
                 if t == Type::Int {
                     Type::Int
                 } else {
@@ -1757,7 +1845,10 @@ impl<'a> TypeEnv<'a> {
                 }
             }
             Some(SyntaxKind::Tilde) => {
-                let t = self.resolve_type(&operand_type);
+                let t = self
+                    .check_none_operand(&operand_type, &span, "'~'")
+                    .unwrap_or(operand_type);
+                let t = self.resolve_type(&t);
                 if t == Type::Bool {
                     Type::Bool
                 } else {
@@ -4482,14 +4573,135 @@ extern method: HttpMethod"#,
 
     #[test]
     fn narrow_and_chain() {
-        // when input and input.slug do → both exist
+        // when input and input.slug do → input is narrowed (none removed),
+        // but input.slug is re-evaluated and the property lookup re-adds | none.
+        // The `and` chain narrows the condition variable, but doesn't propagate
+        // narrowing through navigation. This means `input.slug + "-suffix"`
+        // correctly errors because input.slug is still `str | none`.
         let diags = check_with(
             "when input and input.slug do\n  input.slug + \"-suffix\"\nend",
             "extern input: {slug: str | none} | none",
         );
-        // After narrowing: input is {slug: string | none} (none removed)
-        // input.slug after `and` narrowing: string (none removed)
-        assert!(diags.is_empty(), "unexpected errors: {:?}", diags);
+        assert!(
+            has_error(&diags, "narrow with 'when' first"),
+            "expected none-in-operator error: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn warn_and_lhs_never_none() {
+        let diags = check("x = 1\ny = x and 2");
+        assert!(has_warning(&diags, "'and' has no effect"));
+    }
+
+    #[test]
+    fn warn_or_lhs_never_none() {
+        let diags = check("x = 1\ny = x or 2");
+        assert!(has_warning(&diags, "'or' right side is unreachable"));
+    }
+
+    #[test]
+    fn no_warn_and_lhs_may_be_none() {
+        let diags = check("x: int | none = 1\ny = x and 2");
+        assert!(!has_warning(&diags, "'and' has no effect"));
+    }
+
+    #[test]
+    fn no_warn_or_lhs_may_be_none() {
+        let diags = check("x: int | none = 1\ny = x or 2");
+        assert!(!has_warning(&diags, "'or' right side is unreachable"));
+    }
+
+    // ── None-in-operator rejection tests ─────────────────────────────
+
+    #[test]
+    fn error_none_in_add() {
+        let diags = check("x: int | none = 1\nx + 2");
+        assert!(has_error(&diags, "cannot use '+' on int | none"));
+    }
+
+    #[test]
+    fn error_none_in_subtract() {
+        let diags = check("x: int | none = 1\nx - 2");
+        assert!(has_error(&diags, "cannot use '-' on int | none"));
+    }
+
+    #[test]
+    fn error_none_in_multiply() {
+        let diags = check("x: int | none = 1\nx * 2");
+        assert!(has_error(&diags, "cannot use '*' on int | none"));
+    }
+
+    #[test]
+    fn error_none_in_divide() {
+        let diags = check("x: int | none = 1\nx / 2");
+        assert!(has_error(&diags, "cannot use '/' on int | none"));
+    }
+
+    #[test]
+    fn error_none_in_modulo() {
+        let diags = check("x: int | none = 1\nx % 2");
+        assert!(has_error(&diags, "cannot use '%' on int | none"));
+    }
+
+    #[test]
+    fn error_none_in_ordering() {
+        let diags = check("x: int | none = 1\nx > 2");
+        assert!(has_error(&diags, "cannot use '>' on int | none"));
+    }
+
+    #[test]
+    fn no_error_none_in_equality() {
+        // == and != allow none operands for explicit null checks
+        let diags = check("x: int | none = 1\nx == 2");
+        assert!(
+            !has_error(&diags, "narrow with 'when' first"),
+            "unexpected: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn error_none_in_bitwise() {
+        let diags = check("x: int | none = 1\nx & 2");
+        assert!(has_error(&diags, "cannot use '&' on int | none"));
+    }
+
+    #[test]
+    fn error_none_in_string_concat() {
+        let diags = check("x: str | none = \"hi\"\nx + \"!\"");
+        assert!(has_error(&diags, "cannot use '+' on str | none"));
+    }
+
+    #[test]
+    fn error_none_in_unary_minus() {
+        let diags = check("x: int | none = 1\ny = -x");
+        assert!(has_error(&diags, "cannot use unary '-' on int | none"));
+    }
+
+    #[test]
+    fn error_none_in_unary_tilde() {
+        let diags = check("x: int | none = 1\n~x");
+        assert!(has_error(&diags, "cannot use '~' on int | none"));
+    }
+
+    #[test]
+    fn no_error_narrowed_before_operator() {
+        // After narrowing with `when`, the none is stripped — no error
+        let diags = check("x: int | none = 1\nwhen x do x + 2 end");
+        assert!(
+            !has_error(&diags, "narrow with 'when' first"),
+            "unexpected: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn error_none_rhs_only() {
+        // RHS has none, LHS is fine — should still error
+        let diags = check("y: int | none = 1\n2 + y");
+        assert!(has_error(&diags, "cannot use '+' on int | none"));
     }
 
     #[test]
@@ -4872,12 +5084,17 @@ a = { a:1 ...a z:6 }"#;
 
     #[test]
     fn intersection_in_map() {
-        // {*: string & [string]} — map values implement both interfaces
+        // {*: string & [string]} — map lookup returns value | none.
+        // Using the result directly in '+' requires narrowing first.
         let diags = check_with(
             r#"headers.host + "/path""#,
             "extern headers: {*: str & [str]}",
         );
-        assert!(diags.is_empty(), "unexpected errors: {:?}", diags);
+        assert!(
+            has_error(&diags, "narrow with 'when' first"),
+            "expected none-in-operator error: {:?}",
+            diags
+        );
     }
 
     #[test]
