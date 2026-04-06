@@ -8,6 +8,43 @@ import {
 let client: LanguageClient | undefined;
 
 export async function activate(context: vscode.ExtensionContext) {
+	context.subscriptions.push(
+		vscode.commands.registerCommand("rex.runFile", async () => {
+			const editor = vscode.window.activeTextEditor;
+			if (!editor) {
+				vscode.window.showWarningMessage("No active editor to run.");
+				return;
+			}
+
+			const doc = editor.document;
+			if (doc.languageId !== "rex" || doc.uri.scheme !== "file") {
+				vscode.window.showWarningMessage("Rex: open a local .rex file to run.");
+				return;
+			}
+
+			if (doc.isDirty) {
+				const saved = await doc.save();
+				if (!saved) {
+					vscode.window.showWarningMessage("Rex: save failed; run cancelled.");
+					return;
+				}
+			}
+
+			const rexPath = findRexBinary();
+			if (!rexPath) {
+				vscode.window.showWarningMessage(
+					"Rex CLI not found. Install rex and ensure it is on PATH, or set rex.path in settings.",
+				);
+				return;
+			}
+
+			const terminal = vscode.window.createTerminal({ name: "Rex Run" });
+			terminal.show(true);
+			const filePath = doc.uri.fsPath;
+			terminal.sendText(`${shellQuote(rexPath)} run ${shellQuote(filePath)}`);
+		}),
+	);
+
 	// Register rext semantic tokens first — doesn't depend on rex CLI
 	const legend = new vscode.SemanticTokensLegend(
 		["keyword", "operator", "string", "number", "variable", "property", "type", "regexp"],
@@ -289,6 +326,11 @@ function parseB64(s: string): number {
 		n = n * 64 + v;
 	}
 	return n;
+}
+
+function shellQuote(s: string): string {
+	if (s.length === 0) return "''";
+	return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 class MarkdownRextProvider implements vscode.DocumentSemanticTokensProvider {

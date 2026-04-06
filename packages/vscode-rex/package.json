@@ -19,9 +19,31 @@
 	],
 	"activationEvents": [
 		"onLanguage:rext",
-		"onLanguage:markdown"
+		"onLanguage:markdown",
+		"onCommand:rex.runFile"
 	],
 	"contributes": {
+		"commands": [
+			{
+				"command": "rex.runFile",
+				"title": "Rex: Run Current File",
+				"category": "Rex"
+			}
+		],
+		"menus": {
+			"commandPalette": [
+				{
+					"command": "rex.runFile"
+				}
+			],
+			"editor/title": [
+				{
+					"command": "rex.runFile",
+					"when": "resourceExtname == .rex",
+					"group": "navigation"
+				}
+			]
+		},
 		"languages": [
 			{
 				"id": "rex",
