@@ -576,5 +576,7 @@ if (!nativeBinding) {
 }
 
 module.exports = nativeBinding
+module.exports.check = nativeBinding.check
 module.exports.compile = nativeBinding.compile
+module.exports.compileWithDomain = nativeBinding.compileWithDomain
 module.exports.encode = nativeBinding.encode

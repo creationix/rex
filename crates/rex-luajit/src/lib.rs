@@ -10,8 +10,10 @@
 use std::os::raw::{c_char, c_int, c_double};
 mod ffi;
 pub mod eval;
+pub mod decode_ffi;
 
 use rex_core::bytecode::{self, Value};
+use rex_core::typecheck::{self, DiagnosticKind};
 
 // ── Lua C API types and constants ───────────────────────────────────────
 
@@ -36,8 +38,10 @@ unsafe extern "C" {
     fn lua_settop(L: LuaState, idx: c_int) -> ();
     fn lua_pushlstring(L: LuaState, s: *const c_char, len: usize) -> ();
     fn lua_pushstring(L: LuaState, s: *const c_char) -> ();
+    fn lua_pushinteger(L: LuaState, n: isize) -> ();
     fn luaL_error(L: LuaState, fmt: *const c_char, ...) -> c_int;
     fn lua_rawgeti(L: LuaState, idx: c_int, n: c_int) -> ();
+    fn lua_rawseti(L: LuaState, idx: c_int, n: c_int) -> ();
 }
 
 // ── Lua value → bytecode::Value ─────────────────────────────────────────
@@ -155,6 +159,110 @@ pub unsafe extern "C" fn rex_compile(l: LuaState) -> c_int {
     1
 }
 
+/// Lua C function: compile_with_domain(source, domain) -> string
+///
+/// Compiles Rex source with domain-aware shortcode rewriting.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rex_compile_with_domain(l: LuaState) -> c_int {
+    let t1 = unsafe { lua_type(l, 1) };
+    let t2 = unsafe { lua_type(l, 2) };
+    if t1 != LUA_TSTRING || t2 != LUA_TSTRING {
+        unsafe {
+            lua_pushstring(l, b"compile_with_domain: expected (source: string, domain: string)\0".as_ptr() as *const c_char);
+            luaL_error(l, b"%s\0".as_ptr() as *const c_char);
+        }
+        return 0;
+    }
+
+    let mut source_len: usize = 0;
+    let source_ptr = unsafe { lua_tolstring(l, 1, &mut source_len) };
+    let source = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+            source_ptr as *const u8,
+            source_len,
+        ))
+    };
+
+    let mut domain_len: usize = 0;
+    let domain_ptr = unsafe { lua_tolstring(l, 2, &mut domain_len) };
+    let domain = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+            domain_ptr as *const u8,
+            domain_len,
+        ))
+    };
+
+    let encoded = rex_core::compile_with_domain(source, domain);
+    unsafe { lua_pushlstring(l, encoded.as_ptr() as *const c_char, encoded.len()) };
+    1
+}
+
+/// Lua C function: check(source, domain) -> diagnostics[]
+///
+/// Returns an array of diagnostic tables:
+///   { kind = "error"|"warning", start = <int>, end = <int>, message = <string> }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rex_check(l: LuaState) -> c_int {
+    let t1 = unsafe { lua_type(l, 1) };
+    let t2 = unsafe { lua_type(l, 2) };
+    if t1 != LUA_TSTRING || t2 != LUA_TSTRING {
+        unsafe {
+            lua_pushstring(l, b"check: expected (source: string, domain: string)\0".as_ptr() as *const c_char);
+            luaL_error(l, b"%s\0".as_ptr() as *const c_char);
+        }
+        return 0;
+    }
+
+    let mut source_len: usize = 0;
+    let source_ptr = unsafe { lua_tolstring(l, 1, &mut source_len) };
+    let source = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+            source_ptr as *const u8,
+            source_len,
+        ))
+    };
+
+    let mut domain_len: usize = 0;
+    let domain_ptr = unsafe { lua_tolstring(l, 2, &mut domain_len) };
+    let domain = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+            domain_ptr as *const u8,
+            domain_len,
+        ))
+    };
+
+    let schema = typecheck::parse_rexd(domain);
+    let diagnostics = typecheck::check_source(source, &schema);
+
+    unsafe { lua_createtable(l, diagnostics.len() as c_int, 0) };
+
+    for (i, d) in diagnostics.iter().enumerate() {
+        unsafe { lua_createtable(l, 0, 4) };
+
+        let kind = match d.kind {
+            DiagnosticKind::Error => "error",
+            DiagnosticKind::Warning => "warning",
+        };
+        unsafe {
+            lua_pushlstring(l, kind.as_ptr() as *const c_char, kind.len());
+            lua_setfield(l, -2, b"kind\0".as_ptr() as *const c_char);
+
+            lua_pushinteger(l, d.span.start as isize);
+            lua_setfield(l, -2, b"start\0".as_ptr() as *const c_char);
+
+            lua_pushinteger(l, d.span.end as isize);
+            lua_setfield(l, -2, b"end\0".as_ptr() as *const c_char);
+
+            lua_pushlstring(l, d.message.as_ptr() as *const c_char, d.message.len());
+            lua_setfield(l, -2, b"message\0".as_ptr() as *const c_char);
+
+            lua_rawseti(l, -2, (i + 1) as c_int);
+        }
+    }
+
+    1
+}
+
 /// Module entry point: luaopen_rex_native
 ///
 /// Called by `require("rex_native")`. Pushes a table with `encode` and
@@ -162,8 +270,8 @@ pub unsafe extern "C" fn rex_compile(l: LuaState) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn luaopen_rex_native(l: LuaState) -> c_int {
     unsafe {
-        // Create a table with 2 entries
-        lua_createtable(l, 0, 2);
+        // Create a table with 4 entries
+        lua_createtable(l, 0, 4);
 
         // Push encode function
         lua_pushcclosure(l, rex_encode, 0);
@@ -172,6 +280,14 @@ pub unsafe extern "C" fn luaopen_rex_native(l: LuaState) -> c_int {
         // Push compile function
         lua_pushcclosure(l, rex_compile, 0);
         lua_setfield(l, -2, b"compile\0".as_ptr() as *const c_char);
+
+        // Push compile_with_domain function
+        lua_pushcclosure(l, rex_compile_with_domain, 0);
+        lua_setfield(l, -2, b"compile_with_domain\0".as_ptr() as *const c_char);
+
+        // Push check function
+        lua_pushcclosure(l, rex_check, 0);
+        lua_setfield(l, -2, b"check\0".as_ptr() as *const c_char);
     }
     1 // return the table
 }
