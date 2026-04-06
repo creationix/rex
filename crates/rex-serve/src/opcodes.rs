@@ -609,7 +609,7 @@ fn highlight_rex_source(source: &str) -> String {
             | TokenKind::Slash | TokenKind::Percent
             | TokenKind::Amp | TokenKind::Pipe | TokenKind::Caret
             | TokenKind::Tilde | TokenKind::Eq | TokenKind::Gt
-            | TokenKind::Lt | TokenKind::DotDot
+            | TokenKind::Lt | TokenKind::DotDot | TokenKind::DotDotDot
             | TokenKind::ColonEq | TokenKind::EqEq | TokenKind::BangEq
             | TokenKind::GtEq | TokenKind::LtEq
             | TokenKind::PlusEq | TokenKind::MinusEq
@@ -618,10 +618,10 @@ fn highlight_rex_source(source: &str) -> String {
             | TokenKind::Arrow => Some("op"),
 
             TokenKind::Dot | TokenKind::DotParen | TokenKind::Comma
-            | TokenKind::Colon | TokenKind::At
+            | TokenKind::Colon | TokenKind::At | TokenKind::Hash
             | TokenKind::LParen | TokenKind::RParen
             | TokenKind::LBracket | TokenKind::RBracket
-            | TokenKind::LBrace | TokenKind::RBrace => Some("pn"),
+            | TokenKind::LBrace | TokenKind::RBrace | TokenKind::Semicolon => Some("pn"),
 
             TokenKind::Ident => {
                 if next_nonws(i) == Some(TokenKind::Colon) {

@@ -323,35 +323,53 @@ class MarkdownRextProvider implements vscode.DocumentSemanticTokensProvider {
 }
 
 function findRexBinary(): string | undefined {
-	const { existsSync } = require("fs");
+	const { existsSync, accessSync, constants } = require("fs");
 	const { join, dirname } = require("path");
+	const { homedir } = require("os");
+
+	const isExecutable = (p: string): boolean => {
+		try {
+			if (!existsSync(p)) return false;
+			accessSync(p, constants.X_OK);
+			return true;
+		} catch {
+			return false;
+		}
+	};
 
 	// 1. Check rex.path setting
 	const config = vscode.workspace.getConfiguration("rex");
 	const configPath = config.get<string>("path");
-	if (configPath) return configPath;
+	if (configPath && isExecutable(configPath)) return configPath;
 
-	// 2. Check PATH (VS Code may not inherit shell PATH)
-	const { execSync } = require("child_process");
-	try {
-		const shell = process.env.SHELL || "/bin/sh";
-		execSync(`${shell} -lc "rex --version"`, { stdio: "ignore" });
-		return "rex";
-	} catch {}
-
-	// 3. Dev mode: search upward from each workspace folder for target/release/rex or target/debug/rex
+	// 2. Dev mode: prefer local repo builds when developing Rex.
+	// Search upward from each workspace folder for target/{debug,release}/rex.
 	for (const folder of vscode.workspace.workspaceFolders ?? []) {
 		let dir = folder.uri.fsPath;
 		while (true) {
 			const releasePath = join(dir, "target/release/rex");
-			if (existsSync(releasePath)) return releasePath;
+			if (isExecutable(releasePath)) return releasePath;
 			const debugPath = join(dir, "target/debug/rex");
-			if (existsSync(debugPath)) return debugPath;
+			if (isExecutable(debugPath)) return debugPath;
 				const parent = dirname(dir);
 			if (parent === dir) break;
 			dir = parent;
 		}
 	}
+
+	// 3. Cargo default install location
+	const cargoBinPath = join(homedir(), ".cargo", "bin", "rex");
+	if (isExecutable(cargoBinPath)) return cargoBinPath;
+
+	// 4. Check PATH (VS Code may not inherit shell PATH)
+	const { execSync } = require("child_process");
+	try {
+		const shell = process.env.SHELL || "/bin/sh";
+		const resolved = execSync(`${shell} -lc "command -v rex"`, { encoding: "utf8" })
+			.toString()
+			.trim();
+		if (resolved && isExecutable(resolved)) return resolved;
+	} catch {}
 
 	return undefined;
 }
