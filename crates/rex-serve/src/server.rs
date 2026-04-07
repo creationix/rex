@@ -249,14 +249,20 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
     let mut ns_json = OpcodeNamespace { methods: vec![("parse", "jp"), ("stringify", "js")], tag_opcode: None };
     let mut ns_log = OpcodeNamespace { methods: vec![("info", "li"), ("warning", "lw"), ("error", "le")], tag_opcode: None };
     let mut ns_kv = OpcodeNamespace { methods: vec![("get", "kg"), ("set", "ks"), ("delete", "kd"), ("keys", "kk"), ("incr", "ki"), ("publish", "kp")], tag_opcode: None };
-    let mut ns_db = OpcodeNamespace { methods: vec![("get", "dg"), ("set", "ds"), ("delete", "dd"), ("list", "dl")], tag_opcode: None };
+    let mut ns_db = OpcodeNamespace { methods: vec![("get", "dg"), ("set", "ds"), ("delete", "dd"), ("list", "dl"), ("cas", "dc")], tag_opcode: None };
     let mut ns_time = OpcodeNamespace { methods: vec![("now", "tn"), ("uuid", "tu")], tag_opcode: None };
+    let mut ns_cas = OpcodeNamespace { methods: vec![("put", "cp"), ("get", "cg"), ("has", "cx")], tag_opcode: None };
+    let mut ns_git = OpcodeNamespace { methods: vec![("decode", "gd"), ("children", "gc"), ("verify", "gv"), ("is-ancestor", "ga"), ("encode", "ge"), ("encode-blob", "gB")], tag_opcode: None };
+    let mut ns_crypto = OpcodeNamespace { methods: vec![("hash", "ch"), ("hmac", "cm"), ("random", "cr")], tag_opcode: None };
 
     vars.insert("json".into(), Value::host(0));
     vars.insert("log".into(), Value::host(1));
     vars.insert("kv".into(), Value::host(2));
     vars.insert("db".into(), Value::host(3));
     vars.insert("time".into(), Value::host(4));
+    vars.insert("cas".into(), Value::host(5));
+    vars.insert("git".into(), Value::host(6));
+    vars.insert("crypto".into(), Value::host(7));
 
     let opcodes = crate::opcodes::build_opcodes(
         state.db.clone(),
@@ -273,6 +279,9 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
             &mut ns_kv,     // 2
             &mut ns_db,     // 3
             &mut ns_time,   // 4
+            &mut ns_cas,    // 5
+            &mut ns_git,    // 6
+            &mut ns_crypto, // 7
         ],
         opcodes,
         gas_limit: state.config.server.gas_limit,

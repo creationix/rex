@@ -21,6 +21,7 @@ pub enum Type {
     Int,
     Num,
     Str,
+    Blob,
     LiteralStr(String),
     Array(Box<Type>),
     Object {
@@ -255,6 +256,12 @@ impl Type {
                     }
                 }
             }
+            Type::Blob => {
+                match key {
+                    "size" => PropertyResult::Known(Type::Int),
+                    _ => PropertyResult::Unknown,
+                }
+            }
             Type::Some => PropertyResult::Known(Type::Union(vec![Type::Some, Type::None])),
             Type::None => PropertyResult::Known(Type::None),
             Type::Never => PropertyResult::Known(Type::Never),
@@ -328,6 +335,7 @@ impl Type {
             Type::Int => "int".into(),
             Type::Num => "num".into(),
             Type::Str => "str".into(),
+            Type::Blob => "blob".into(),
             Type::LiteralStr(s) => format!("\"{s}\""),
             Type::Array(t) => format!("[{}]", t.display()),
             Type::Object { fields, wildcard } => {
@@ -796,6 +804,7 @@ fn interpret_type_token(token: &SyntaxToken) -> Type {
                 "int" => Type::Int,
                 "num" => Type::Num,
                 "bool" => Type::Bool,
+                "blob" => Type::Blob,
                 "some" => Type::Some,
                 "unknown" => Type::unknown(),
                 "never" => Type::Never,
@@ -1067,6 +1076,10 @@ fn builtin_method_type(target: &Type, method: &str, _args: &[Type]) -> Option<Ty
             "ends-with" => Some(Type::Union(vec![Type::Str, Type::None])),
             _ => None,
         },
+        Type::Blob => match method {
+            "slice" => Some(Type::Blob),
+            _ => None,
+        },
         // For unknown target types, still resolve if the method is known on any type
         Type::Some | Type::Union(_) => match method {
             "push" | "slice" => Some(Type::Some),
@@ -1139,7 +1152,7 @@ fn extract_dotted_name(children: &[rowan::NodeOrToken<SyntaxNode, SyntaxToken>])
     // Single token
     if children.len() == 1 {
         match &children[0] {
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Ident => {
+            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Ident || t.kind().is_keyword() => {
                 return Some(t.text().to_string());
             }
             rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::NavExpr => {
@@ -1273,6 +1286,9 @@ enum Narrowing {
     TypePredicate(String, Type),
     /// Variable equals a literal — from `when x == "GET" do`
     Equals(String, Type),
+    /// Variable's field equals a literal — from `when obj.type == "commit" do`
+    /// Used for discriminated union narrowing.
+    FieldEquals(String, String, Type),
     /// Variable is assigned in the condition — from `when x = expr do`
     Assigned(String, Type),
 }
@@ -1876,7 +1892,9 @@ impl<'a> TypeEnv<'a> {
                 let lt_has_str = self.type_contains_string(&lt);
                 let rt_has_str = self.type_contains_string(&rt);
 
-                if lt_has_str && rt_has_str {
+                if lt == Type::Blob && rt == Type::Blob {
+                    Type::Blob // blob concatenation
+                } else if lt_has_str && rt_has_str {
                     Type::Str // string concatenation
                 } else if lt == Type::Int && rt == Type::Int {
                     Type::Int
@@ -3287,7 +3305,15 @@ impl<'a> TypeEnv<'a> {
                                     if let Some(name) = self.child_as_var_name(&children[0]) {
                                         let rhs_type = self.child_as_literal_type(&children[2]);
                                         if let Some(ty) = rhs_type {
-                                            narrowings.push(Narrowing::Equals(name, ty));
+                                            // Check if LHS is a nav expr (obj.field == literal)
+                                            if let Some((var, field)) =
+                                                self.child_as_nav_parts(&children[0])
+                                            {
+                                                narrowings
+                                                    .push(Narrowing::FieldEquals(var, field, ty));
+                                            } else {
+                                                narrowings.push(Narrowing::Equals(name, ty));
+                                            }
                                         }
                                     }
                                 }
@@ -3385,6 +3411,36 @@ impl<'a> TypeEnv<'a> {
         }
     }
 
+    /// Extract (variable_name, field_name) from a single-level NavExpr like `obj.field`.
+    fn child_as_nav_parts(
+        &self,
+        child: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>,
+    ) -> Option<(String, String)> {
+        match child {
+            rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::NavExpr => {
+                let children: Vec<_> = non_trivia_children(n).collect();
+                // Expect: Ident Dot Ident (3 children)
+                if children.len() == 3 {
+                    if let (Some(var), Some(SyntaxKind::Dot), Some(field)) = (
+                        children[0]
+                            .as_token()
+                            .filter(|t| t.kind() == SyntaxKind::Ident)
+                            .map(|t| t.text().to_string()),
+                        as_token_kind(&children[1]),
+                        children[2]
+                            .as_token()
+                            .filter(|t| t.kind() == SyntaxKind::Ident)
+                            .map(|t| t.text().to_string()),
+                    ) {
+                        return Some((var, field));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
     fn child_as_literal_type(
         &self,
         child: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>,
@@ -3419,6 +3475,14 @@ impl<'a> TypeEnv<'a> {
                 Narrowing::Equals(name, literal_type) => {
                     self.set_var(name, literal_type.clone());
                 }
+                Narrowing::FieldEquals(var, field, literal_type) => {
+                    // Narrow a union type by filtering to variants where
+                    // the field matches the literal value.
+                    if let Some(ty) = self.lookup_var(var) {
+                        let narrowed = self.narrow_union_by_field(&ty, field, literal_type);
+                        self.set_var(var, narrowed);
+                    }
+                }
                 Narrowing::Assigned(name, ty) => {
                     // Variable was assigned in condition — it exists with that type
                     self.set_var(name, ty.remove_none());
@@ -3444,11 +3508,82 @@ impl<'a> TypeEnv<'a> {
                     // In else branch, the variable is not equal to the literal
                     // Keep original type (can't narrow further without more info)
                 }
+                Narrowing::FieldEquals(var, field, literal_type) => {
+                    // In else branch, exclude the matching variant from the union
+                    if let Some(ty) = self.lookup_var(var) {
+                        let narrowed =
+                            self.narrow_union_by_field_inverse(&ty, field, literal_type);
+                        self.set_var(var, narrowed);
+                    }
+                }
                 Narrowing::Assigned(name, _) => {
                     // Assignment didn't produce a defined value — variable is none
                     self.set_var(name, Type::None);
                 }
             }
+        }
+    }
+
+    /// Narrow a union type by keeping only variants where `field` matches `literal`.
+    /// For discriminated unions like `GitCommit | GitTree | GitBlob | GitTag`,
+    /// `narrow_union_by_field(union, "type", LiteralStr("commit"))` → `GitCommit`.
+    fn narrow_union_by_field(&self, ty: &Type, field: &str, literal: &Type) -> Type {
+        let resolved = self.resolve_type(ty);
+        match &resolved {
+            Type::Union(variants) => {
+                let matching: Vec<Type> = variants
+                    .iter()
+                    .filter(|v| {
+                        let v = self.resolve_type(v);
+                        self.type_field_matches(&v, field, literal)
+                    })
+                    .cloned()
+                    .collect();
+                match matching.len() {
+                    0 => resolved, // no match, keep original
+                    1 => self.resolve_type(&matching[0]),
+                    _ => Type::Union(matching).simplify(),
+                }
+            }
+            _ => resolved,
+        }
+    }
+
+    /// Inverse: exclude variants where `field` matches `literal`.
+    fn narrow_union_by_field_inverse(&self, ty: &Type, field: &str, literal: &Type) -> Type {
+        let resolved = self.resolve_type(ty);
+        match &resolved {
+            Type::Union(variants) => {
+                let remaining: Vec<Type> = variants
+                    .iter()
+                    .filter(|v| {
+                        let v = self.resolve_type(v);
+                        !self.type_field_matches(&v, field, literal)
+                    })
+                    .cloned()
+                    .collect();
+                match remaining.len() {
+                    0 => Type::Never,
+                    1 => remaining.into_iter().next().unwrap(),
+                    _ => Type::Union(remaining).simplify(),
+                }
+            }
+            _ => resolved,
+        }
+    }
+
+    /// Check if an object type has a field whose type matches the given literal.
+    fn type_field_matches(&self, ty: &Type, field: &str, literal: &Type) -> bool {
+        let resolved = self.resolve_type(ty);
+        match &resolved {
+            Type::Object { fields, .. } => {
+                if let Some((_, field_type)) = fields.iter().find(|(k, _)| k == field) {
+                    field_type.is_assignable_to(literal) || literal.is_assignable_to(field_type)
+                } else {
+                    false
+                }
+            }
+            _ => false,
         }
     }
 

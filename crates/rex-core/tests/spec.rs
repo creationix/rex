@@ -495,6 +495,7 @@ fn value_to_json(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> serde
                 return serde_json::from_str(&s).unwrap_or_else(|_| serde_json::json!(0));
             }
             rex_core::heap::FloatValue::Float(f) => return serde_json::json!(f),
+            rex_core::heap::FloatValue::Blob(id) => return serde_json::json!(format!("<blob {} bytes>", heap.blobs[*id].len())),
         }
     }
     if let Some(s) = v.as_str(heap) { return serde_json::Value::String(s.to_string()); }

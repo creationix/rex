@@ -981,6 +981,20 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::NONE);
         }
 
+        // Blob access
+        if self.heap.is_blob(target) {
+            if let Some(k) = key.as_str(&self.heap) {
+                if k == "size" {
+                    let data = self.heap.blob_data(target).unwrap();
+                    return Ok(Value::int(data.len() as i64));
+                }
+                if k == "slice" {
+                    return Ok(self.heap.intern_value("%bS"));
+                }
+            }
+            return Ok(Value::NONE);
+        }
+
         if let Some(idx) = target.host_id() {
             if key.is_string() {
                 let k = key.as_str(&self.heap).unwrap().to_string();
@@ -1408,12 +1422,21 @@ impl<'a> Interpreter<'a> {
             "uc" => self.op_upper(args),
             "lc" => self.op_lower(args),
             "rp" => self.op_replace(args),
+            "bS" => self.op_blob_slice(args),
             _ => Ok(Value::NONE),
         }
     }
 
     fn op_add(&mut self, args: &[Value]) -> Result<Value, RexError> {
         if args.len() < 2 { return Ok(Value::NONE); }
+        // Blob concatenation
+        if self.heap.is_blob(args[0]) && self.heap.is_blob(args[1]) {
+            let a = self.heap.blob_data(args[0]).unwrap().to_vec();
+            let b = self.heap.blob_data(args[1]).unwrap().to_vec();
+            let mut result = a;
+            result.extend_from_slice(&b);
+            return Ok(self.heap.alloc_blob(result));
+        }
         // String concatenation
         if args[0].is_string() && args[1].is_string() {
             let a = args[0].as_str(&self.heap).unwrap().to_string();
@@ -1633,6 +1656,19 @@ impl<'a> Interpreter<'a> {
         let from = match args[1].as_str(&self.heap) { Some(s) => s.to_string(), None => return Ok(Value::NONE) };
         let to = match args[2].as_str(&self.heap) { Some(s) => s.to_string(), None => return Ok(Value::NONE) };
         Ok(self.heap.intern_value(&s.replacen(&from, &to, 1)))
+    }
+
+    fn op_blob_slice(&mut self, args: &[Value]) -> Result<Value, RexError> {
+        if args.len() < 3 { return Ok(Value::NONE); }
+        let data = match self.heap.blob_data(args[0]) {
+            Some(d) => d.to_vec(),
+            None => return Ok(Value::NONE),
+        };
+        let start = args[1].as_i64().unwrap_or(0) as usize;
+        let end = args[2].as_i64().unwrap_or(data.len() as i64) as usize;
+        let start = start.min(data.len());
+        let end = end.min(data.len()).max(start);
+        Ok(self.heap.alloc_blob(data[start..end].to_vec()))
     }
 
     fn op_bitwise(&self, args: &[Value], f: fn(i64, i64) -> i64) -> Result<Value, RexError> {

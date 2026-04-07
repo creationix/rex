@@ -586,8 +586,13 @@ impl<'s, 'c> Parser<'s, 'c> {
         self.start_node(SyntaxKind::TypeObject);
         self.bump(); // {
         while self.current() != SyntaxKind::RBrace && !self.at_end() {
+            let before = self.pos;
             self.parse_type_pair();
             self.eat(SyntaxKind::Comma);
+            if self.pos == before {
+                // No progress — skip token to avoid infinite loop
+                self.bump();
+            }
         }
         self.expect(SyntaxKind::RBrace);
         self.finish_node();
@@ -597,14 +602,16 @@ impl<'s, 'c> Parser<'s, 'c> {
     fn parse_type_pair(&mut self) {
         self.start_node(SyntaxKind::TypePair);
         // Optional `mut`
-        if self.current() == SyntaxKind::Ident && self.current_text() == "mut" {
+        if self.current() == SyntaxKind::Ident && self.current_text() == "mut"
+            && (matches!(self.nth(1), SyntaxKind::Ident | SyntaxKind::Star) || self.nth(1).is_keyword())
+        {
             self.bump();
         }
-        // Key: identifier or *
+        // Key: identifier, keyword, or *
         if self.current() == SyntaxKind::Star {
             self.bump(); // wildcard
-        } else if self.current() == SyntaxKind::Ident {
-            self.bump(); // field name
+        } else if self.current() == SyntaxKind::Ident || self.current().is_keyword() {
+            self.bump(); // field name (keywords like `type`, `end` are valid field names)
         }
         self.expect(SyntaxKind::Colon);
         self.parse_type_union(); // value type
@@ -825,14 +832,14 @@ impl<'s, 'c> Parser<'s, 'c> {
 
     fn parse_obj_key(&mut self) {
         match self.current() {
-            SyntaxKind::Ident => {
+            kind if kind == SyntaxKind::Ident || kind.is_keyword() => {
                 // Check for `mut` modifier: `mut fieldname: Type` or `mut *: Type`
                 if self.current_text() == "mut"
-                    && matches!(self.nth(1), SyntaxKind::Ident | SyntaxKind::Star) {
+                    && (matches!(self.nth(1), SyntaxKind::Ident | SyntaxKind::Star) || self.nth(1).is_keyword()) {
                     self.bump(); // mut (contextual modifier)
                     self.bump(); // field name or *
                 } else {
-                    self.bump(); // plain field name
+                    self.bump(); // plain field name (keywords like `type` are valid keys)
                 }
             }
             SyntaxKind::Star => {
