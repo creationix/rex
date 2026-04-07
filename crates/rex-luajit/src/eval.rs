@@ -41,6 +41,7 @@ fn heap_value_to_bvalue(v: Value, heap: &Heap) -> BValue {
                 return BValue::Decimal { sig, exp };
             }
             FloatValue::Decimal { sig, exp } => return BValue::Decimal { sig: *sig, exp: *exp },
+            FloatValue::Blob(_) => return BValue::Ref("none".into()),
         }
     }
     if let Some(s) = v.as_str(heap) { return BValue::String(s.to_string()); }

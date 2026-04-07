@@ -630,6 +630,7 @@ fn write_value(w: &mut dyn std::io::Write, value: rex_core::heap::Value, heap: &
         match &heap.floats[id as usize] {
             FloatValue::Float(n) => { let _ = write!(w, "{}", yellow(&format!("{n}"))); }
             FloatValue::Decimal { sig, exp } => { let _ = write!(w, "{}", yellow(&format!("{sig}e{exp}"))); }
+            FloatValue::Blob(blob_id) => { let _ = write!(w, "{}", dim(&format!("<blob {} bytes>", heap.blobs[*blob_id].len()))); }
         }
         return;
     }

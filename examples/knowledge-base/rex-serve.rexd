@@ -100,10 +100,10 @@ extern json.stringify(value: some) -> str
 
 // Get a value by key. Returns none if not found.
 extern db.get(key: str) -> str | none
-// Set a key-value pair. Returns true.
-extern db.set(key: str, value: str) -> bool
-// Delete a key. Returns true.
-extern db.delete(key: str) -> bool
+// Set a key-value pair. Returns the value.
+extern db.set(key: str, value: str) -> str
+// Delete a key. Returns the old value if found, none if not.
+extern db.delete(key: str) -> str | none
 // List entries matching a key prefix.
 extern db.list(prefix: str) -> [DbEntry]
 

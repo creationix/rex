@@ -240,6 +240,7 @@ impl std::fmt::Debug for Value {
 pub enum FloatValue {
     Float(f64),
     Decimal { sig: i64, exp: i64 },
+    Blob(usize), // index into Heap::blobs
 }
 
 impl FloatValue {
@@ -247,7 +248,12 @@ impl FloatValue {
         match self {
             FloatValue::Float(f) => *f,
             FloatValue::Decimal { sig, exp } => *sig as f64 * 10f64.powi(*exp as i32),
+            FloatValue::Blob(_) => f64::NAN,
         }
+    }
+
+    pub fn is_blob(&self) -> bool {
+        matches!(self, FloatValue::Blob(_))
     }
 }
 
@@ -265,6 +271,9 @@ pub struct Heap {
     // Float/decimal storage
     pub floats: Vec<FloatValue>,
 
+    // Blob storage (opaque byte arrays)
+    pub blobs: Vec<Vec<u8>>,
+
     // COW: bytecode offset → promoted heap Value
     pub cow: HashMap<u32, Value>,
 }
@@ -277,6 +286,7 @@ impl Heap {
             arrays: Vec::new(),
             objects: Vec::new(),
             floats: Vec::new(),
+            blobs: Vec::new(),
             cow: HashMap::new(),
         }
     }
@@ -341,6 +351,29 @@ impl Heap {
         let id = self.floats.len() as u32;
         self.floats.push(FloatValue::Decimal { sig, exp });
         Value::float(id)
+    }
+
+    // ── Blob allocation ───────────────────────────────────────────
+
+    pub fn alloc_blob(&mut self, data: Vec<u8>) -> Value {
+        let blob_id = self.blobs.len();
+        self.blobs.push(data);
+        let id = self.floats.len() as u32;
+        self.floats.push(FloatValue::Blob(blob_id));
+        Value::float(id)
+    }
+
+    pub fn blob_data(&self, v: Value) -> Option<&[u8]> {
+        let id = v.float_id()?;
+        match &self.floats[id as usize] {
+            FloatValue::Blob(blob_id) => Some(&self.blobs[*blob_id]),
+            _ => None,
+        }
+    }
+
+    pub fn is_blob(&self, v: Value) -> bool {
+        v.float_id()
+            .is_some_and(|id| self.floats[id as usize].is_blob())
     }
 
     // ── Mutation ───────────────────────────────────────────────────

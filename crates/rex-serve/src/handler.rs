@@ -243,7 +243,9 @@ fn run_rex_program(
 
     let mut ns_time = OpcodeNamespace { methods: vec![("now", "tn"), ("uuid", "tu")], tag_opcode: None };
     let mut ns_json = OpcodeNamespace { methods: vec![("parse", "jp"), ("stringify", "js")], tag_opcode: None };
-    let mut ns_db = OpcodeNamespace { methods: vec![("get", "dg"), ("set", "ds"), ("delete", "dd"), ("list", "dl")], tag_opcode: None };
+    let mut ns_db = OpcodeNamespace { methods: vec![("get", "dg"), ("set", "ds"), ("delete", "dd"), ("list", "dl"), ("cas", "dc")], tag_opcode: None };
+    let mut ns_cas = OpcodeNamespace { methods: vec![("put", "cp"), ("get", "cg"), ("has", "cx")], tag_opcode: None };
+    let mut ns_git = OpcodeNamespace { methods: vec![("decode", "gd"), ("children", "gc"), ("verify", "gv"), ("is-ancestor", "ga"), ("encode", "ge"), ("encode-blob", "gB")], tag_opcode: None };
     let mut ns_fs = OpcodeNamespace { methods: vec![("read", "fr"), ("glob", "fg"), ("meta", "fm")], tag_opcode: None };
     let mut ns_markdown = OpcodeNamespace { methods: vec![("render", "mr")], tag_opcode: None };
     let mut ns_template = OpcodeNamespace { methods: vec![("render", "tr")], tag_opcode: None };
@@ -289,6 +291,8 @@ fn run_rex_program(
     vars.insert("log".into(), Value::host(12));
     vars.insert("html".into(), Value::host(13));
     vars.insert("kv".into(), Value::host(14));
+    vars.insert("cas".into(), Value::host(15));
+    vars.insert("git".into(), Value::host(16));
 
     let opcodes = crate::opcodes::build_opcodes(
         state.db.clone(),
@@ -315,6 +319,8 @@ fn run_rex_program(
             &mut ns_log,            // 12
             &mut ns_html,           // 13
             &mut ns_kv,             // 14
+            &mut ns_cas,            // 15
+            &mut ns_git,            // 16
         ],
         opcodes,
         gas_limit: state.config.server.gas_limit,
