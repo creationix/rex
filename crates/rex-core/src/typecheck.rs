@@ -105,6 +105,16 @@ impl Type {
                 if has_some {
                     seen.retain(|t| matches!(t, Type::Some | Type::None | Type::Never));
                 }
+                // If `str` is present, absorb all literal strings
+                let has_str = seen.iter().any(|t| matches!(t, Type::Str));
+                if has_str {
+                    seen.retain(|t| !matches!(t, Type::LiteralStr(_)));
+                }
+                // If `num` is present, absorb `int`
+                let has_num = seen.iter().any(|t| matches!(t, Type::Num));
+                if has_num {
+                    seen.retain(|t| !matches!(t, Type::Int));
+                }
                 match seen.len() {
                     0 => Type::Never,
                     1 => seen.into_iter().next().unwrap(),
@@ -218,7 +228,17 @@ impl Type {
     pub fn resolve_property(&self, key: &str) -> PropertyResult {
         match self {
             Type::Object { fields, wildcard } => {
-                if let Some((_, ft)) = fields.iter().find(|(k, _)| k == key) {
+                if key == "*" {
+                    // Dynamic access: union of all field types + wildcard
+                    if let Some(wt) = wildcard {
+                        PropertyResult::Wildcard(wt.add_none())
+                    } else if fields.is_empty() {
+                        PropertyResult::Unknown
+                    } else {
+                        let types: Vec<Type> = fields.iter().map(|(_, t)| t.clone()).collect();
+                        PropertyResult::Wildcard(Type::Union(types).simplify().add_none())
+                    }
+                } else if let Some((_, ft)) = fields.iter().find(|(k, _)| k == key) {
                     PropertyResult::Known(ft.clone())
                 } else if let Some(wt) = wildcard {
                     PropertyResult::Wildcard(wt.add_none())
@@ -1297,19 +1317,156 @@ impl<'a> TypeEnv<'a> {
         self.scopes.push(HashMap::new());
     }
 
+    /// Pop a scope and merge variable assignments back to the parent.
+    /// - `definite`: block definitely executed → replace outer type
+    /// - `dead`: block never executes → discard, don't merge
+    /// - neither: block may or may not execute → union with outer type
+    fn pop_scope_merge(&mut self, definite: bool, dead: bool) {
+        if let Some(inner) = self.scopes.pop() {
+            if dead {
+                return;
+            }
+            let mut merges = Vec::new();
+            for (name, inner_ty) in inner {
+                let outer_ty = self
+                    .scopes
+                    .iter()
+                    .rev()
+                    .find_map(|s| s.get(&name))
+                    .cloned();
+                if let Some(outer_ty) = outer_ty {
+                    let merged = if definite {
+                        inner_ty
+                    } else {
+                        Type::Union(vec![outer_ty, inner_ty]).simplify()
+                    };
+                    merges.push((name, merged));
+                }
+            }
+            if let Some(parent) = self.scopes.last_mut() {
+                for (name, ty) in merges {
+                    parent.insert(name, ty);
+                }
+            }
+        }
+    }
+
     fn pop_scope(&mut self) {
-        self.scopes.pop();
+        self.pop_scope_merge(false, false);
+    }
+
+    /// Merge variable assignments from both branches of a conditional.
+    /// If a variable is assigned in both branches, union the two branch types
+    /// (no need to include the outer type since it's always overwritten).
+    /// If assigned in only one branch, merge with the outer type as usual.
+    fn merge_conditional_scopes(
+        &mut self,
+        then_vars: Option<HashMap<String, Type>>,
+        else_vars: Option<HashMap<String, Type>>,
+        then_definite: bool,
+        then_dead: bool,
+        else_definite: bool,
+        else_dead: bool,
+    ) {
+        let then_scope = if then_dead { None } else { then_vars };
+        let else_scope = if else_dead { None } else { else_vars };
+
+        let mut merges: Vec<(String, Type)> = Vec::new();
+
+        // Collect all variable names from both scopes
+        let mut all_names = std::collections::HashSet::new();
+        if let Some(ref s) = then_scope {
+            all_names.extend(s.keys().cloned());
+        }
+        if let Some(ref s) = else_scope {
+            all_names.extend(s.keys().cloned());
+        }
+
+        for name in all_names {
+            // Only merge variables that exist in an outer scope
+            let outer_ty = self
+                .scopes
+                .iter()
+                .rev()
+                .find_map(|s| s.get(&name))
+                .cloned();
+            let outer_ty = match outer_ty {
+                Some(ty) => ty,
+                None => continue,
+            };
+
+            let then_ty = then_scope.as_ref().and_then(|s| s.get(&name));
+            let else_ty = else_scope.as_ref().and_then(|s| s.get(&name));
+
+            let merged = match (then_ty, else_ty) {
+                // Both branches assign: union of branch types only
+                (Some(t), Some(e)) => Type::Union(vec![t.clone(), e.clone()]).simplify(),
+                // Only then assigns
+                (Some(t), None) => {
+                    if then_definite {
+                        t.clone()
+                    } else {
+                        Type::Union(vec![outer_ty, t.clone()]).simplify()
+                    }
+                }
+                // Only else assigns
+                (None, Some(e)) => {
+                    if else_definite {
+                        e.clone()
+                    } else {
+                        Type::Union(vec![outer_ty, e.clone()]).simplify()
+                    }
+                }
+                (None, None) => continue,
+            };
+            merges.push((name, merged));
+        }
+
+        if let Some(parent) = self.scopes.last_mut() {
+            for (name, ty) in merges {
+                parent.insert(name, ty);
+            }
+        }
+    }
+
+    /// Merge a single branch scope back into the parent.
+    fn merge_single_branch(
+        &mut self,
+        scope: HashMap<String, Type>,
+        definite: bool,
+        dead: bool,
+    ) {
+        if dead {
+            return;
+        }
+        let mut merges = Vec::new();
+        for (name, inner_ty) in scope {
+            let outer_ty = self
+                .scopes
+                .iter()
+                .rev()
+                .find_map(|s| s.get(&name))
+                .cloned();
+            if let Some(outer_ty) = outer_ty {
+                let merged = if definite {
+                    inner_ty
+                } else {
+                    Type::Union(vec![outer_ty, inner_ty]).simplify()
+                };
+                merges.push((name, merged));
+            }
+        }
+        if let Some(parent) = self.scopes.last_mut() {
+            for (name, ty) in merges {
+                parent.insert(name, ty);
+            }
+        }
     }
 
     fn set_var(&mut self, name: &str, ty: Type) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_string(), ty);
         }
-    }
-
-    /// Returns true if a domain schema (.rexd) was provided.
-    fn has_domain(&self) -> bool {
-        !self.schema.globals.is_empty() || !self.schema.functions.is_empty()
     }
 
     fn lookup_var(&self, name: &str) -> Option<Type> {
@@ -1512,9 +1669,24 @@ impl<'a> TypeEnv<'a> {
     }
 
     fn mark_unreachable_child(&mut self, child: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>) {
+        // Find span starting at first non-trivia token
         let span = match child {
-            rowan::NodeOrToken::Node(n) => Self::span_of(n),
+            rowan::NodeOrToken::Node(n) => {
+                let start = n
+                    .descendants_with_tokens()
+                    .filter_map(|c| c.into_token())
+                    .find(|t| !t.kind().is_trivia())
+                    .map(|t| usize::from(t.text_range().start()));
+                let end: usize = n.text_range().end().into();
+                match start {
+                    Some(s) => s..end,
+                    None => return, // all trivia, skip
+                }
+            }
             rowan::NodeOrToken::Token(t) => {
+                if t.kind().is_trivia() {
+                    return;
+                }
                 let r = t.text_range();
                 r.start().into()..r.end().into()
             }
@@ -1536,8 +1708,6 @@ impl<'a> TypeEnv<'a> {
                         | SyntaxKind::DecimalNumber
                         | SyntaxKind::HexNumber
                         | SyntaxKind::BinaryNumber
-                        | SyntaxKind::DoubleString
-                        | SyntaxKind::SingleString
                         | SyntaxKind::KwTrue
                         | SyntaxKind::KwFalse
                         | SyntaxKind::KwNull
@@ -1614,7 +1784,11 @@ impl<'a> TypeEnv<'a> {
                 }
             }
             SyntaxKind::HexNumber | SyntaxKind::BinaryNumber => Type::Int,
-            SyntaxKind::DoubleString | SyntaxKind::SingleString => Type::Str,
+            SyntaxKind::DoubleString | SyntaxKind::SingleString => {
+                let text = token.text();
+                let inner = &text[1..text.len() - 1];
+                Type::LiteralStr(inner.to_string())
+            }
             SyntaxKind::KwTrue | SyntaxKind::KwFalse => Type::Bool,
             SyntaxKind::KwNull => Type::Null,
             SyntaxKind::KwNone => Type::None,
@@ -1626,19 +1800,17 @@ impl<'a> TypeEnv<'a> {
                 match self.lookup_var(name) {
                     Some(ty) => ty,
                     None => {
-                        // If a domain schema is loaded, undefined variables are errors
-                        if self.has_domain() {
-                            let range = token.text_range();
-                            self.diagnostics.push(Diagnostic {
-                                kind: DiagnosticKind::Error,
-                                span: range.start().into()..range.end().into(),
-                                message: format!("undefined variable '{name}'"),
-                            });
-                        }
-                        Type::None
+                        let range = token.text_range();
+                        self.diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::Error,
+                            span: range.start().into()..range.end().into(),
+                            message: format!("undefined variable '{name}'"),
+                        });
+                        Type::Never
                     }
                 }
             }
+            SyntaxKind::KwBreak | SyntaxKind::KwContinue => Type::Never,
             _ => Type::unknown(),
         };
         // Keep hover/type spans focused on directly hoverable symbols and literals.
@@ -1648,8 +1820,6 @@ impl<'a> TypeEnv<'a> {
                 | SyntaxKind::DecimalNumber
                 | SyntaxKind::HexNumber
                 | SyntaxKind::BinaryNumber
-                | SyntaxKind::DoubleString
-                | SyntaxKind::SingleString
                 | SyntaxKind::KwTrue
                 | SyntaxKind::KwFalse
                 | SyntaxKind::KwNull
@@ -1675,7 +1845,19 @@ impl<'a> TypeEnv<'a> {
 
         let lhs_type = self.infer_child(&children[0]);
         let op = as_token_kind(&children[1]);
+
+        // For and/or, wrap RHS in a scope since it may not execute
+        let is_and_or = matches!(op, Some(SyntaxKind::KwAnd | SyntaxKind::KwOr));
+        if is_and_or {
+            self.push_scope();
+        }
         let rhs_type = self.infer_child(&children[2]);
+        // Merge and/or scope after computing the result type
+        let and_or_scope = if is_and_or {
+            self.scopes.pop()
+        } else {
+            None
+        };
 
         let span = Self::span_of(node);
 
@@ -1786,9 +1968,19 @@ impl<'a> TypeEnv<'a> {
 
             // Existence: and or
             Some(SyntaxKind::KwAnd) => {
-                if lhs_type.contains_none() {
-                    rhs_type.add_none()
-                } else {
+                // and: RHS executes if LHS is not none
+                let rhs_definite = !lhs_type.contains_none();
+                let rhs_dead = lhs_type.is_none();
+                if let Some(scope) = and_or_scope {
+                    self.merge_single_branch(scope, rhs_definite, rhs_dead);
+                }
+                if lhs_type.is_none() {
+                    self.warning(
+                        Self::span_of(node),
+                        "'and' right side is unreachable — left side is always none".to_string(),
+                    );
+                    Type::None
+                } else if !lhs_type.contains_none() {
                     self.warning(
                         Self::span_of(node),
                         format!(
@@ -1797,15 +1989,24 @@ impl<'a> TypeEnv<'a> {
                         ),
                     );
                     rhs_type
+                } else {
+                    rhs_type.add_none()
                 }
             }
             Some(SyntaxKind::KwOr) => {
-                if lhs_type.contains_none() {
-                    // First defined value — lhs if not none, else rhs.
-                    // Remove none from lhs since `or` skips it.
-                    let lhs_no_none = lhs_type.remove_none();
-                    Type::Union(vec![lhs_no_none, rhs_type]).simplify()
-                } else {
+                // or: RHS executes if LHS is none
+                let rhs_definite = lhs_type.is_none();
+                let rhs_dead = !lhs_type.contains_none();
+                if let Some(scope) = and_or_scope {
+                    self.merge_single_branch(scope, rhs_definite, rhs_dead);
+                }
+                if lhs_type.is_none() {
+                    self.warning(
+                        Self::span_of(node),
+                        "'or' has no effect — left side is always none".to_string(),
+                    );
+                    rhs_type
+                } else if !lhs_type.contains_none() {
                     self.warning(
                         Self::span_of(node),
                         format!(
@@ -1814,6 +2015,9 @@ impl<'a> TypeEnv<'a> {
                         ),
                     );
                     lhs_type
+                } else {
+                    let lhs_no_none = lhs_type.remove_none();
+                    Type::Union(vec![lhs_no_none, rhs_type]).simplify()
                 }
             }
 
@@ -2708,20 +2912,47 @@ impl<'a> TypeEnv<'a> {
             .map_or(false, |t| t.kind() == SyntaxKind::DotParen);
 
         if is_dynamic {
-            // Dynamic navigation .(expr) — infer the key expression to track
-            // variable reads, even though we can't resolve the property statically
+            // Dynamic navigation .(expr) — infer the key expression type
+            let mut key_type = Type::None;
             for c in &children[2..] {
                 match c {
                     rowan::NodeOrToken::Node(n) => {
-                        self.infer_node(n);
+                        key_type = self.infer_node(n);
                     }
                     rowan::NodeOrToken::Token(t) if !matches!(t.kind(), SyntaxKind::RParen) => {
-                        self.infer_token(t);
+                        key_type = self.infer_token(t);
                     }
                     _ => {}
                 }
             }
-            return base_type.resolve_property("*").into_type();
+            // If the key is a literal string, resolve the exact property
+            return match &key_type {
+                Type::LiteralStr(key) => {
+                    base_type.resolve_property(key).into_type()
+                }
+                Type::Union(types) => {
+                    // Union of literal strings: resolve each and union results
+                    let mut results = Vec::new();
+                    let mut all_literals = true;
+                    for t in types {
+                        match t {
+                            Type::LiteralStr(key) => {
+                                results.push(base_type.resolve_property(key).into_type());
+                            }
+                            _ => {
+                                all_literals = false;
+                                break;
+                            }
+                        }
+                    }
+                    if all_literals {
+                        Type::Union(results).simplify()
+                    } else {
+                        base_type.resolve_property("*").into_type()
+                    }
+                }
+                _ => base_type.resolve_property("*").into_type(),
+            };
         }
 
         // Static navigation .key
@@ -2841,14 +3072,28 @@ impl<'a> TypeEnv<'a> {
 
         // Infer condition and extract narrowing info
         let cond_children = &children[1..do_idx];
+        let mut cond_type = Type::None;
         for child in cond_children {
-            self.infer_child(child);
+            cond_type = self.infer_child(child);
         }
         let narrowings = self.extract_narrowings(cond_children);
+
+        // Determine if branches definitely execute:
+        // - when: body executes if condition is never none
+        // - unless: body executes if condition is always none
+        let cond_always_none = cond_type.is_none();
+        let cond_never_none = !cond_type.contains_none();
+        // Three-state merge for each branch: Certain (replace), Uncertain (union), Dead (skip)
+        let then_definite = if is_unless { cond_always_none } else { cond_never_none };
+        let then_dead = if is_unless { cond_never_none } else { cond_always_none };
+        let else_definite = if is_unless { cond_never_none } else { cond_always_none };
+        let else_dead = if is_unless { cond_always_none } else { cond_never_none };
 
         // Infer then block with narrowing applied
         let mut then_type = Type::None;
         let mut else_type: Option<Type> = None;
+        let mut then_vars: Option<HashMap<String, Type>> = None;
+        let mut else_vars: Option<HashMap<String, Type>> = None;
 
         for child in &children[do_idx + 1..] {
             if as_token_kind(child) == Some(SyntaxKind::KwEnd) {
@@ -2857,31 +3102,46 @@ impl<'a> TypeEnv<'a> {
             if let Some(n) = as_node(child) {
                 if n.kind() == SyntaxKind::Block {
                     self.push_scope();
-                    // Apply narrowing: when → apply, unless → apply inverse
                     if is_unless {
                         self.apply_narrowings_inverse(&narrowings);
                     } else {
                         self.apply_narrowings(&narrowings);
                     }
                     then_type = self.infer_block(n);
-                    self.pop_scope();
+                    // Pop but don't merge yet — collect the scope
+                    then_vars = self.scopes.pop();
                 } else if n.kind() == SyntaxKind::ElseBranch {
                     self.push_scope();
-                    // Else branch gets inverse narrowing
                     if is_unless {
                         self.apply_narrowings(&narrowings);
                     } else {
                         self.apply_narrowings_inverse(&narrowings);
                     }
                     else_type = Some(self.infer_else_branch(n));
-                    self.pop_scope();
+                    else_vars = self.scopes.pop();
                 }
             }
         }
 
+        // Merge variable assignments from both branches
+        self.merge_conditional_scopes(
+            then_vars, else_vars,
+            then_definite, then_dead,
+            else_definite, else_dead,
+        );
+
         match else_type {
+            // Both branches exist: if both are Never, whole conditional is Never
             Some(et) => Type::Union(vec![then_type, et]).simplify(),
-            None => then_type.add_none(),
+            None => {
+                // No else: if the then branch definitely executes and returns Never,
+                // the whole conditional is Never (code after is unreachable)
+                if then_definite && then_type == Type::Never {
+                    Type::Never
+                } else {
+                    then_type.add_none()
+                }
+            }
         }
     }
 
@@ -3346,18 +3606,34 @@ impl<'a> TypeEnv<'a> {
 
     fn infer_while(&mut self, node: &SyntaxNode) -> Type {
         let mut body_type = Type::None;
-        for child in node.children() {
-            if child.kind() == SyntaxKind::Block {
-                self.push_scope();
-                body_type = self.infer_block(&child);
-                self.pop_scope();
-            } else {
-                // Infer the condition expression for diagnostics, reads, and hover spans.
-                // This avoids falling back to enclosing spans when hovering condition variables.
-                let _ = self.infer_node(&child);
+        let mut cond_type = Type::None;
+        let mut body_always_returns = false;
+        for child in node.children_with_tokens() {
+            match &child {
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::KwWhile || t.kind() == SyntaxKind::KwDo || t.kind() == SyntaxKind::KwEnd || t.kind().is_trivia() => continue,
+                rowan::NodeOrToken::Token(t) => {
+                    cond_type = self.infer_token(t);
+                }
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::Block => {
+                    let body_definite = !cond_type.contains_none();
+                    self.push_scope();
+                    body_type = self.infer_block(n);
+                    body_always_returns = self.block_always_exits(n);
+                    self.pop_scope_merge(body_definite, false);
+                }
+                rowan::NodeOrToken::Node(n) => {
+                    cond_type = self.infer_node(n);
+                }
             }
         }
-        body_type.add_none()
+        let body_definite = !cond_type.contains_none();
+        // Only treat while as Never if the body always returns (not breaks).
+        // break exits the loop but code after the loop is still reachable.
+        if body_definite && body_type == Type::Never && body_always_returns {
+            Type::Never
+        } else {
+            body_type.add_none()
+        }
     }
 
     fn infer_array(&mut self, node: &SyntaxNode) -> Type {
@@ -3736,7 +4012,8 @@ impl<'a> TypeEnv<'a> {
             match &child {
                 rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::TemplateLiteral => {
                     // Extract variable names from ${...} interpolations
-                    self.mark_template_vars(t.text());
+                    let token_start: usize = t.text_range().start().into();
+                    self.mark_template_vars(t.text(), token_start);
                 }
                 rowan::NodeOrToken::Node(n) => {
                     self.infer_node(n);
@@ -3748,7 +4025,7 @@ impl<'a> TypeEnv<'a> {
     }
 
     /// Mark variables referenced inside `${...}` interpolations as read.
-    fn mark_template_vars(&mut self, text: &str) {
+    fn mark_template_vars(&mut self, text: &str, token_start: usize) {
         let bytes = text.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
@@ -3768,7 +4045,8 @@ impl<'a> TypeEnv<'a> {
                 }
                 // Extract the expression between ${ and }
                 let expr = &text[start..i];
-                // Mark all identifier-like tokens as read
+                // Mark all identifier-like tokens as read and record their spans
+                let offset = start;
                 for part in expr.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
                     if !part.is_empty()
                         && part
@@ -3777,6 +4055,15 @@ impl<'a> TypeEnv<'a> {
                             .map_or(false, |c| c.is_alphabetic() || c == '_')
                     {
                         self.var_reads.insert(part.to_string());
+                        // Record span type for hover
+                        let part_start = expr[offset - start..].find(part).map(|p| p + offset);
+                        if let Some(ps) = part_start {
+                            let abs_start = token_start + ps;
+                            let abs_end = abs_start + part.len();
+                            if let Some(ty) = self.lookup_var(part) {
+                                self.span_types.push((abs_start..abs_end, ty));
+                            }
+                        }
                     }
                 }
                 i += 1; // skip }
@@ -5171,5 +5458,341 @@ a = { a:1 ...a z:6 }"#;
             "unexpected errors: {:?}",
             errors(&diags)
         );
+    }
+
+    // ── String literal types ──────────────────────────────────────────
+
+    #[test]
+    fn string_literal_infers_literal_type() {
+        let diags = check("x = \"hello\"\ny: int = x");
+        assert!(has_error(&diags, "\"hello\""));
+    }
+
+    #[test]
+    fn literal_string_assignable_to_str() {
+        let diags = check("x = \"hello\"\ny: str = x");
+        assert!(errors(&diags).is_empty(), "unexpected errors: {:?}", errors(&diags));
+    }
+
+    // ── Dynamic navigation ───────────────────────────────────────────
+
+    #[test]
+    fn dynamic_nav_literal_key_resolves_exact_type() {
+        // db.("tim") with a known key should resolve to the field type, not none
+        let diags = check(
+            "type P = {name: str}\ndb: {tim: P, bob: P} = {tim: {name: \"T\"}, bob: {name: \"B\"}}\nresult: P = db.(\"tim\")",
+        );
+        assert!(errors(&diags).is_empty(), "unexpected errors: {:?}", errors(&diags));
+    }
+
+    #[test]
+    fn dynamic_nav_unknown_key_returns_union_of_fields() {
+        // Dynamic nav with a non-literal key returns union of all field types | none
+        let diags = check(
+            "db: {a: int, b: int} = {a: 1, b: 2}\nextern key: str\nresult: str = db.(key)",
+        );
+        assert!(has_error(&diags, "int | none"));
+    }
+
+    // ── Undefined variables ──────────────────────────────────────────
+
+    #[test]
+    fn undefined_variable_is_error() {
+        let diags = check("x + 1");
+        assert!(has_error(&diags, "undefined variable 'x'"));
+    }
+
+    #[test]
+    fn undefined_variable_type_is_never() {
+        // Undefined variable should not cause cascading errors
+        let diags = check("y: int = x");
+        assert!(has_error(&diags, "undefined variable 'x'"));
+        // Should not also error about never not assignable to int
+        assert!(!has_error(&diags, "not assignable"));
+    }
+
+    // ── Conditional scope merging ────────────────────────────────────
+
+    #[test]
+    fn when_uncertain_merges_as_union() {
+        let diags = check(
+            "extern x: some | none\nkey = \"tim\"\nwhen x do\n  key = \"bob\"\nend\nresult: int = key",
+        );
+        assert!(has_error(&diags, "\"tim\" | \"bob\""));
+    }
+
+    #[test]
+    fn when_certain_replaces_outer_type() {
+        let diags = check(
+            "extern x: int\nkey = \"tim\"\nwhen x do\n  key = \"bob\"\nend\nresult: int = key",
+        );
+        assert!(has_error(&diags, "\"bob\""));
+        assert!(!has_error(&diags, "\"tim\""));
+    }
+
+    #[test]
+    fn when_dead_discards_inner_type() {
+        let diags = check(
+            "extern x: none\nkey = \"tim\"\nwhen x do\n  key = \"bob\"\nend\nresult: int = key",
+        );
+        assert!(has_error(&diags, "\"tim\""));
+        assert!(!has_error(&diags, "\"bob\""));
+    }
+
+    #[test]
+    fn when_both_branches_assign_drops_outer() {
+        let diags = check(
+            "extern x: some | none\nkey = \"tim\"\nwhen x do\n  key = \"bob\"\nelse\n  key = \"cat\"\nend\nresult: int = key",
+        );
+        assert!(has_error(&diags, "\"bob\" | \"cat\""));
+        assert!(!has_error(&diags, "\"tim\""));
+    }
+
+    #[test]
+    fn when_sequential_reassignment_keeps_last() {
+        let diags = check(
+            "extern x: some | none\nkey = \"tim\"\nwhen x do\n  key = \"bob\"\n  key = \"bar\"\nelse\n  key = \"cat\"\nend\nresult: int = key",
+        );
+        assert!(has_error(&diags, "\"bar\" | \"cat\""));
+    }
+
+    // ── Break / return unreachable ───────────────────────────────────
+
+    #[test]
+    fn break_marks_subsequent_code_unreachable_in_block() {
+        let diags = check("extern d: some\nwhile d do\n  break\n  1 + 2\nend");
+        assert!(has_error(&diags, "unreachable"));
+    }
+
+    #[test]
+    fn break_does_not_mark_code_after_loop_unreachable() {
+        let diags = check("extern d: some\nwhile d do\n  break\nend\n1 + 2");
+        assert!(
+            !has_error(&diags, "unreachable"),
+            "code after while+break should be reachable: {:?}", errors(&diags)
+        );
+    }
+
+    #[test]
+    fn return_in_certain_while_marks_code_after_loop_unreachable() {
+        let diags = check("extern d: some\nwhile d do\n  return 0\nend\n1 + 2");
+        assert!(has_error(&diags, "unreachable"));
+    }
+
+    #[test]
+    fn return_in_certain_when_marks_code_after_unreachable() {
+        let diags = check("extern x: int\nwhen x do\n  return 0\nend\n1 + 2");
+        assert!(has_error(&diags, "unreachable"));
+    }
+
+    // ── And/or scope merging ──────────────────────────────────────────
+
+    #[test]
+    fn and_uncertain_rhs_merges_as_union() {
+        let diags = check("extern x: some | none\nkey = \"a\"\nx and (key = \"b\")\nresult: int = key");
+        assert!(has_error(&diags, "\"a\" | \"b\""));
+    }
+
+    #[test]
+    fn and_definite_rhs_replaces() {
+        let diags = check("extern x: int\nkey = \"a\"\nx and (key = \"b\")\nresult: int = key");
+        assert!(has_error(&diags, "\"b\""));
+        assert!(!has_error(&diags, "\"a\""));
+    }
+
+    #[test]
+    fn and_dead_rhs_discards() {
+        let diags = check("extern x: none\nkey = \"a\"\nx and (key = \"b\")\nresult: int = key");
+        assert!(has_error(&diags, "\"a\""));
+        assert!(!has_error(&diags, "\"b\""));
+    }
+
+    #[test]
+    fn or_uncertain_rhs_merges_as_union() {
+        let diags = check("extern x: some | none\nkey = \"a\"\nx or (key = \"b\")\nresult: int = key");
+        assert!(has_error(&diags, "\"a\" | \"b\""));
+    }
+
+    #[test]
+    fn or_dead_rhs_discards() {
+        let diags = check("extern x: int\nkey = \"a\"\nx or (key = \"b\")\nresult: int = key");
+        assert!(has_error(&diags, "\"a\""));
+        assert!(!has_error(&diags, "\"b\""));
+    }
+
+    #[test]
+    fn return_in_uncertain_when_does_not_mark_code_after_unreachable() {
+        let diags = check("extern x: int | none\nwhen x do\n  return 0\nend\n1 + 2");
+        assert!(
+            !has_error(&diags, "unreachable"),
+            "code after uncertain when+return should be reachable: {:?}", errors(&diags)
+        );
+    }
+
+    // ── Else-when chains ─────────────────────────────────────────────
+
+    #[test]
+    fn else_when_chain_merges_all_branches() {
+        let diags = check(
+            "extern x: int | none\nextern y: int | none\n\
+             key = \"a\"\n\
+             when x do\n  key = \"b\"\n\
+             else when y do\n  key = \"c\"\n\
+             else\n  key = \"d\"\nend\n\
+             result: int = key",
+        );
+        // All three branches assign, original should be dropped
+        assert!(!has_error(&diags, "\"a\""));
+    }
+
+    // TODO: else when chains don't yet have proper scope merging.
+    // The else when body is not treated as a full conditional with
+    // its own certainty analysis. This requires reworking the parser
+    // to emit else-when as a nested ConditionalExpr, or replicating
+    // the full conditional logic in infer_else_branch.
+
+    #[test]
+    fn else_when_return_in_all_branches_is_never() {
+        let diags = check(
+            "extern x: int | none\n\
+             when x do\n  return 1\n\
+             else\n  return 2\nend\n\
+             \"unreachable\"",
+        );
+        assert!(has_error(&diags, "unreachable"));
+    }
+
+    // ── Nested conditionals ──────────────────────────────────────────
+
+    #[test]
+    fn nested_when_merges_correctly() {
+        let diags = check(
+            "extern x: int | none\nextern y: int | none\n\
+             key = \"a\"\n\
+             when x do\n  when y do\n    key = \"b\"\n  end\nend\n\
+             result: int = key",
+        );
+        // Inner when is uncertain, outer when is uncertain
+        // key could be "a" (outer not taken) or "a" (inner not taken) or "b"
+        assert!(has_error(&diags, "\"a\""));
+        assert!(has_error(&diags, "\"b\""));
+    }
+
+    #[test]
+    fn nested_certain_when_replaces() {
+        let diags = check(
+            "extern x: int\nextern y: int\n\
+             key = \"a\"\n\
+             when x do\n  when y do\n    key = \"b\"\n  end\nend\n\
+             result: int = key",
+        );
+        // Both whens are certain — key is definitely "b"
+        assert!(has_error(&diags, "\"b\""));
+        assert!(!has_error(&diags, "\"a\""));
+    }
+
+    // ── For loop scope merging ───────────────────────────────────────
+
+    #[test]
+    fn for_loop_merges_as_uncertain() {
+        let diags = check(
+            "key = \"a\"\nfor i in [1, 2, 3] do\n  key = \"b\"\nend\n\
+             result: int = key",
+        );
+        // For loop is always uncertain — body may not execute
+        assert!(has_error(&diags, "\"a\""));
+        assert!(has_error(&diags, "\"b\""));
+    }
+
+    #[test]
+    fn for_loop_break_reachable_after() {
+        let diags = check(
+            "for i in [1, 2, 3] do\n  break\nend\n1 + 2",
+        );
+        assert!(
+            !has_error(&diags, "unreachable"),
+            "code after for+break should be reachable: {:?}", errors(&diags)
+        );
+    }
+
+    // ── While edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn while_uncertain_merges_as_union() {
+        let diags = check(
+            "extern x: int | none\nkey = \"a\"\n\
+             while x do\n  key = \"b\"\n  break\nend\n\
+             result: int = key",
+        );
+        // x might be none so body might not execute
+        assert!(has_error(&diags, "\"a\""));
+        assert!(has_error(&diags, "\"b\""));
+    }
+
+    #[test]
+    fn while_certain_replaces() {
+        let diags = check(
+            "extern x: int\nkey = \"a\"\n\
+             while x do\n  key = \"b\"\n  break\nend\n\
+             result: int = key",
+        );
+        // x is never none — body always executes at least once
+        assert!(has_error(&diags, "\"b\""));
+        assert!(!has_error(&diags, "\"a\""));
+    }
+
+    // ── Combined and/or with conditionals ────────────────────────────
+
+    #[test]
+    fn and_inside_when_body() {
+        let diags = check(
+            "extern x: int | none\nextern y: int | none\n\
+             key = \"a\"\n\
+             when x do\n  y and (key = \"b\")\nend\n\
+             result: int = key",
+        );
+        // when is uncertain, and RHS is uncertain — all three possible
+        assert!(has_error(&diags, "\"a\""));
+        assert!(has_error(&diags, "\"b\""));
+    }
+
+    #[test]
+    fn or_assignment_pattern() {
+        // Common pattern: default value
+        let diags = check("extern x: str | none\nname = x or \"default\"\nresult: int = name");
+        assert!(has_error(&diags, "str"));
+    }
+
+    // ── Dynamic nav with scope-merged keys ───────────────────────────
+
+    #[test]
+    fn dynamic_nav_with_conditional_key() {
+        let diags = check(
+            "type P = {name: str}\n\
+             db: {tim: P, bob: P} = {tim: {name: \"T\"}, bob: {name: \"B\"}}\n\
+             extern x: int | none\n\
+             key = \"tim\"\n\
+             when x do\n  key = \"bob\"\nend\n\
+             result: P = db.(key)",
+        );
+        // key is "tim" | "bob", both resolve to P — should be fine
+        assert!(
+            errors(&diags).is_empty(),
+            "unexpected errors: {:?}", errors(&diags)
+        );
+    }
+
+    // ── Literal string type simplification ───────────────────────────
+
+    #[test]
+    fn literal_str_absorbed_by_str() {
+        let ty = Type::Union(vec![Type::LiteralStr("hello".into()), Type::Str]).simplify();
+        assert_eq!(ty, Type::Str);
+    }
+
+    #[test]
+    fn int_absorbed_by_num() {
+        let ty = Type::Union(vec![Type::Int, Type::Num]).simplify();
+        assert_eq!(ty, Type::Num);
     }
 }
