@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["CLAUDE.md", "CONTRIBUTING.md"],
+  "mcp": {
+    "rex": {
+      "type": "local",
+      "command": ["./target/release/rex", "mcp"]
+    }
+  },
+  "lsp": {
+    "rex": {
+      "command": ["./target/release/rex", "lsp"],
+      "extensions": [".rex", ".rexd"]
+    }
+  }
+}

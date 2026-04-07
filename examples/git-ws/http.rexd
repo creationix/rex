@@ -1,0 +1,53 @@
+// Utility module for working with HTTP data as values
+extern http: {
+  // Utility functions for working with HTTP headers as entries.
+  headers:  {
+    type Entry = { key: str, value: str }
+    type Entries = [Entry]
+    // Read the first value of the header with the given key, or none if not present
+    get(entries: Entries, key: str) -> str | none
+    // Read all values of the header with the given key, or none if not present
+    all(entries: Entries, key: str) -> [str] | none
+    // Set the header to the given value, replacing any existing values. 
+    // Returns the old values that were replaced, or none if new.
+    set(entries: Entries, key: str, val: str) -> [str] | none
+    // Add a value to the header with the given key, without replacing existing values.
+    // Returns the old values same as set, but without the new value added.
+    add(entries: Entries, key: str, val: str) -> [str] | none
+    // Delete the header with the given\\ key, returning the old values if present, or none if not.
+    del(entries: Entries, key: str) -> [str] | none
+  }
+
+  
+  paths: {
+    // Split a path into unencoded segments
+    // For example "/foo/bar%20baz" -> ["foo", "bar baz"]
+    split(path: str) -> [str]
+    // Join unencoded segments into a path
+    // For example ["foo", "bar baz"] -> "/foo/bar%20baz"
+    join(parts: [str]) -> str
+    // Normalize a path, resolving "." and ".." segments
+    // Empty segments on the inside are removed, but leading and trailing empty segments are preserved to keep track of leading and trailing slashes.
+    normalize(parts: [str]) -> [str]
+  }
+}
+
+extern req: {
+  headers: {
+    get(key: str) -> str | none
+    all(key: str) -> [str] | none
+    set(key: str, val: str) -> [str] | none
+    add(key: str, val: str) -> [str] | none
+    del(key: str) -> [str] | none
+  }
+}
+
+extern res: {
+  headers: {
+    get(key: str) -> str | none
+    all(key: str) -> [str] | none
+    set(key: str, val: str) -> [str] | none
+    add(key: str, val: str) -> [str] | none
+    del(key: str) -> [str] | none
+  }
+}
