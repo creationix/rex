@@ -3146,27 +3146,94 @@ impl<'a> TypeEnv<'a> {
     }
 
     fn infer_else_branch(&mut self, node: &SyntaxNode) -> Type {
-        for child in node.children() {
-            match child.kind() {
-                SyntaxKind::Block => return self.infer_block(&child),
-                // else when ... — nested conditional inside the else branch
-                _ => {
-                    // The else branch contains the when/unless keywords and the condition
-                    // inline (not wrapped in a ConditionalExpr). Find the Block.
-                    if child.kind() == SyntaxKind::ElseBranch {
-                        return self.infer_else_branch(&child);
+        let children: Vec<_> = non_trivia_children(node).collect();
+
+        // Check if this is `else when`/`else unless` vs plain `else`
+        let is_when = children.iter().any(|c| as_token_kind(c) == Some(SyntaxKind::KwWhen));
+        let is_unless = children.iter().any(|c| as_token_kind(c) == Some(SyntaxKind::KwUnless));
+
+        if !is_when && !is_unless {
+            // Plain else — find and infer the block
+            for child in &children {
+                if let Some(n) = as_node(child) {
+                    if n.kind() == SyntaxKind::Block {
+                        return self.infer_block(n);
                     }
                 }
             }
+            return Type::None;
         }
-        // else when ... with inline block
-        let mut last = Type::None;
-        for child in node.children() {
-            if child.kind() == SyntaxKind::Block {
-                last = self.infer_block(&child);
+
+        // else when / else unless — full conditional logic
+        let do_idx = match children.iter().position(|c| as_token_kind(c) == Some(SyntaxKind::KwDo)) {
+            Some(i) => i,
+            None => return Type::None,
+        };
+        let kw_idx = children.iter().position(|c| {
+            let k = as_token_kind(c);
+            k == Some(SyntaxKind::KwWhen) || k == Some(SyntaxKind::KwUnless)
+        }).unwrap_or(0);
+
+        // Infer condition
+        let cond_children = &children[kw_idx + 1..do_idx];
+        let mut cond_type = Type::None;
+        for child in cond_children {
+            cond_type = self.infer_child(child);
+        }
+        let narrowings = self.extract_narrowings(cond_children);
+
+        let cond_always_none = cond_type.is_none();
+        let cond_never_none = !cond_type.contains_none();
+        let then_definite = if is_unless { cond_always_none } else { cond_never_none };
+        let then_dead = if is_unless { cond_never_none } else { cond_always_none };
+        let else_definite = if is_unless { cond_never_none } else { cond_always_none };
+        let else_dead = if is_unless { cond_always_none } else { cond_never_none };
+
+        let mut then_type = Type::None;
+        let mut else_type: Option<Type> = None;
+        let mut then_vars: Option<HashMap<String, Type>> = None;
+        let mut else_vars: Option<HashMap<String, Type>> = None;
+
+        for child in &children[do_idx + 1..] {
+            if let Some(n) = as_node(child) {
+                if n.kind() == SyntaxKind::Block && then_vars.is_none() {
+                    self.push_scope();
+                    if is_unless {
+                        self.apply_narrowings_inverse(&narrowings);
+                    } else {
+                        self.apply_narrowings(&narrowings);
+                    }
+                    then_type = self.infer_block(n);
+                    then_vars = self.scopes.pop();
+                } else if n.kind() == SyntaxKind::ElseBranch {
+                    self.push_scope();
+                    if is_unless {
+                        self.apply_narrowings(&narrowings);
+                    } else {
+                        self.apply_narrowings_inverse(&narrowings);
+                    }
+                    else_type = Some(self.infer_else_branch(n));
+                    else_vars = self.scopes.pop();
+                }
             }
         }
-        last
+
+        self.merge_conditional_scopes(
+            then_vars, else_vars,
+            then_definite, then_dead,
+            else_definite, else_dead,
+        );
+
+        match else_type {
+            Some(et) => Type::Union(vec![then_type, et]).simplify(),
+            None => {
+                if then_definite && then_type == Type::Never {
+                    Type::Never
+                } else {
+                    then_type.add_none()
+                }
+            }
+        }
     }
 
     // ── Narrowing ──────────────────────────────────────────────────────
@@ -5645,11 +5712,19 @@ a = { a:1 ...a z:6 }"#;
         assert!(!has_error(&diags, "\"a\""));
     }
 
-    // TODO: else when chains don't yet have proper scope merging.
-    // The else when body is not treated as a full conditional with
-    // its own certainty analysis. This requires reworking the parser
-    // to emit else-when as a nested ConditionalExpr, or replicating
-    // the full conditional logic in infer_else_branch.
+    #[test]
+    fn else_when_chain_without_else_keeps_original() {
+        let diags = check(
+            "extern x: int | none\nextern y: int | none\n\
+             key = \"a\"\n\
+             when x do\n  key = \"b\"\n\
+             else when y do\n  key = \"c\"\n\
+             end\n\
+             result: int = key",
+        );
+        // No final else — original type must be kept
+        assert!(has_error(&diags, "\"a\""));
+    }
 
     #[test]
     fn else_when_return_in_all_branches_is_never() {
