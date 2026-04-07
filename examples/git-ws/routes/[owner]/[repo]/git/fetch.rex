@@ -12,23 +12,23 @@ when msg.ref do
   prefix = `ref:${owner}/${repo-name}/${msg.ref}`
   entries = db.list(prefix)
 
-  refs = {}
+  refs: { *: str } = {}
   for entry in entries do
-    // Strip the "ref:{owner}/{repo}/" prefix to get the ref name
+     // Strip the "ref:{owner}/{repo}/" prefix to get the ref name
     ref-prefix = `ref:${owner}/${repo-name}/`
-    ref-name = entry.key.slice(ref-prefix.size, entry.key.size)
+    ref-name = entry.key.slice(ref-prefix.length, entry.key.length)
     refs.(ref-name) = entry.value
   end
 
   return json.stringify({
-    id: msg.id, status: "refs", refs: refs
+    id:msg.idstatus: "refs"refs:refs
   })
 end
 
 // Client signals done
 when msg.status == "done" do
   log.info(`fetch complete: ${owner}/${repo-name}`)
-  return json.stringify({id: msg.id, status: "done"})
+  return json.stringify({ id:msg.id status:"done" })
 end
 
 event.data

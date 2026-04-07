@@ -2181,6 +2181,16 @@ impl<'a> TypeEnv<'a> {
 
         let rhs_type = self.infer_child(&children[op_idx + 1]);
 
+        // Typecheck dynamic navigation expressions in the LHS (e.g. `obj.(key) = val`).
+        // This ensures variables inside .(expr) are marked as read and type-checked.
+        if op_idx == 1 {
+            if let Some(n) = as_node(&children[0]) {
+                if n.kind() == SyntaxKind::NavExpr {
+                    self.infer_nav(n);
+                }
+            }
+        }
+
         // Extract variable name from LHS
         if let Some(name) = self.extract_assign_target(&children[..op_idx]) {
             let op = as_token_kind(&children[op_idx]);
