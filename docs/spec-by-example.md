@@ -177,7 +177,6 @@ res                    , str | none       , 3   , 1
 db                     , { *: { *: str } }, 3   , 7
 "db.(key + "".html"").prop", str | none       , 3   , 7
 key                    , str              , 3   , 11
-""".html"""            , str              , 3   , 17
 ```
 
 ```rext
@@ -493,25 +492,23 @@ tim-color = db.tim.color
 ```
 
 ```csv types
-text        , type                                                           , line, col
-db          , { bob: { name: str color: int } tim: { name: str color: int } }, 1   , 1
-bob         , { name: str color: int }                                       , 2   , 3
-name        , str                                                            , 2   , 9
-"""Bob"""   , str                                                            , 2   , 14
-color       , int                                                            , 2   , 20
-0x44ff44    , int                                                            , 2   , 26
-tim         , { name: str color: int }                                       , 3   , 3
-name        , str                                                            , 3   , 9
-"""Tim"""   , str                                                            , 3   , 14
-color       , int                                                            , 3   , 20
-0x0088ff    , int                                                            , 3   , 26
-first-name  , { name: str color: int }                                       , 6   , 1
-db          , { bob: { name: str color: int } tim: { name: str color: int } }, 6   , 14
-db.bob      , { name: str color: int }                                       , 6   , 14
-tim-color   , int                                                            , 7   , 1
-db          , { bob: { name: str color: int } tim: { name: str color: int } }, 7   , 13
-db.tim      , { name: str color: int }                                       , 7   , 13
-db.tim.color, int                                                            , 7   , 13
+text        , type                                                               , line, col
+db          , "{ bob: { name: ""Bob"" color: int } tim: { name: ""Tim"" color: int } }", 1   , 1
+bob         , "{ name: ""Bob"" color: int }"                                     , 2   , 3
+name        , """Bob"""                                                          , 2   , 9
+color       , int                                                                , 2   , 20
+0x44ff44    , int                                                                , 2   , 26
+tim         , "{ name: ""Tim"" color: int }"                                     , 3   , 3
+name        , """Tim"""                                                          , 3   , 9
+color       , int                                                                , 3   , 20
+0x0088ff    , int                                                                , 3   , 26
+first-name  , "{ name: ""Bob"" color: int }"                                     , 6   , 1
+db          , "{ bob: { name: ""Bob"" color: int } tim: { name: ""Tim"" color: int } }", 6   , 14
+db.bob      , "{ name: ""Bob"" color: int }"                                     , 6   , 14
+tim-color   , int                                                                , 7   , 1
+db          , "{ bob: { name: ""Bob"" color: int } tim: { name: ""Tim"" color: int } }", 7   , 13
+db.tim      , "{ name: ""Tim"" color: int }"                                     , 7   , 13
+db.tim.color, int                                                                , 7   , 13
 ```
 
 ```rext
@@ -541,14 +538,12 @@ name        , str                            , 1   , 12
 str         , str                            , 1   , 18
 color       , int                            , 1   , 22
 int         , int                            , 1   , 29
-bob         , { name: str color: int }       , 2   , 3
-name        , str                            , 2   , 9
-"""Bob"""   , str                            , 2   , 14
+bob         , "{ name: ""Bob"" color: int }" , 2   , 3
+name        , """Bob"""                      , 2   , 9
 color       , int                            , 2   , 20
 0x44ff44    , int                            , 2   , 26
-tim         , { name: str color: int }       , 3   , 3
-name        , str                            , 3   , 9
-"""Tim"""   , str                            , 3   , 14
+tim         , "{ name: ""Tim"" color: int }" , 3   , 3
+name        , """Tim"""                      , 3   , 9
 color       , int                            , 3   , 20
 0x0088ff    , int                            , 3   , 26
 first-name  , { name: str color: int } | none, 6   , 1
@@ -597,14 +592,12 @@ bob         , { name: str color: int }                                       , 3
 Person      , { name: str color: int }                                       , 3   , 12
 tim         , { name: str color: int }                                       , 3   , 19
 Person      , { name: str color: int }                                       , 3   , 24
-bob         , { name: str color: int }                                       , 4   , 3
-name        , str                                                            , 4   , 9
-"""Bob"""   , str                                                            , 4   , 14
+bob         , "{ name: ""Bob"" color: int }"                                 , 4   , 3
+name        , """Bob"""                                                      , 4   , 9
 color       , int                                                            , 4   , 20
 0x44ff44    , int                                                            , 4   , 26
-tim         , { name: str color: int }                                       , 5   , 3
-name        , str                                                            , 5   , 9
-"""Tim"""   , str                                                            , 5   , 14
+tim         , "{ name: ""Tim"" color: int }"                                 , 5   , 3
+name        , """Tim"""                                                      , 5   , 9
 color       , int                                                            , 5   , 20
 0x0088ff    , int                                                            , 5   , 26
 first-name  , { name: str color: int }                                       , 8   , 1
@@ -835,10 +828,7 @@ String concatenation uses `+`:
 ```
 
 ```json types
-[
-  {"text":"\"hello\"", "type":"str","line":1,"col":1},
-  {"text":"\" world\"","type":"str","line":1,"col":11}
-]
+[]
 ```
 
 ```rext
@@ -1021,25 +1011,23 @@ y = c or d
 ```
 
 ```csv types
-text , type            , line, col
-a    , int             , 1   , 1
-100  , int             , 1   , 5
-b    , str             , 2   , 1
-"""hi""", str             , 2   , 5
-c    , int | none      , 3   , 1
-int  , int             , 3   , 4
-none , none            , 3   , 10
-200  , int             , 3   , 17
-d    , str | none      , 4   , 1
-str  , str             , 4   , 4
-none , none            , 4   , 10
-"""wow""", str             , 4   , 17
-x    , int             , 5   , 1
-a    , int             , 5   , 5
-b    , str             , 5   , 10
-y    , int | str | none, 6   , 1
-c    , int | none      , 6   , 5
-d    , str | none      , 6   , 10
+text, type            , line, col
+a   , int             , 1   , 1
+100 , int             , 1   , 5
+b   , """hi"""        , 2   , 1
+c   , int | none      , 3   , 1
+int , int             , 3   , 4
+none, none            , 3   , 10
+200 , int             , 3   , 17
+d   , str | none      , 4   , 1
+str , str             , 4   , 4
+none, none            , 4   , 10
+x   , int             , 5   , 1
+a   , int             , 5   , 5
+b   , """hi"""        , 5   , 10
+y   , int | str | none, 6   , 1
+c   , int | none      , 6   , 5
+d   , str | none      , 6   , 10
 ```
 
 ```rext
@@ -1072,17 +1060,15 @@ end
 ```
 
 ```csv types
-text   , type      , line, col
-x      , int       , 1   , 8
-int    , int       , 1   , 11
-a      , str       , 2   , 1
-c      , int | none, 2   , 10
-x      , int       , 2   , 14
-5      , int       , 2   , 18
-b      , str       , 3   , 3
-"""big""", str       , 3   , 7
-c      , str       , 5   , 3
-"""small""", str       , 5   , 7
+text, type           , line, col
+x   , int            , 1   , 8
+int , int            , 1   , 11
+a   , """big"" | ""small""", 2   , 1
+c   , int | none     , 2   , 10
+x   , int            , 2   , 14
+5   , int            , 2   , 18
+b   , """big"""      , 3   , 3
+c   , """small"""    , 5   , 3
 ```
 
 ```rext
@@ -1168,15 +1154,13 @@ end
 ```
 
 ```csv types
-text        , type      , line, col
-res         , never     , 1   , 1
-c           , int | none, 1   , 12
-1           , int       , 1   , 16
-2           , int       , 1   , 20
-"""impossible""", str       , 2   , 10
-42          , never     , 3   , 3
-"""likely""", str       , 5   , 10
-56          , never     , 6   , 3
+text, type      , line, col
+res , never     , 1   , 1
+c   , int | none, 1   , 12
+1   , int       , 1   , 16
+2   , int       , 1   , 20
+42  , never     , 3   , 3
+56  , never     , 6   , 3
 ```
 
 ```rext
@@ -1272,12 +1256,10 @@ name   , str                       , 1   , 11
 str    , str                       , 1   , 17
 score  , int                       , 1   , 21
 int    , int                       , 1   , 28
-name   , str                       , 2   , 5
-"""Ada""", str                       , 2   , 10
+name   , """Ada"""                 , 2   , 5
 score  , int                       , 2   , 16
 95     , int                       , 2   , 22
-name   , str                       , 3   , 5
-"""Ben""", str                       , 3   , 10
+name   , """Ben"""                 , 3   , 5
 score  , int                       , 3   , 16
 72     , int                       , 3   , 22
 scores , { *: int }                , 5   , 1

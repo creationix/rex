@@ -1000,6 +1000,24 @@ fn cmd_check(input: PathBuf, domain: Option<PathBuf>) -> io::Result<()> {
 
     for file in &files {
         let source = std::fs::read_to_string(file)?;
+
+        // Parse errors (same as LSP)
+        let tokens = rex_core::lexer::lex(&source);
+        let (_, parse_errors) = rex_core::parser::parse(&source, &tokens);
+        for e in &parse_errors {
+            let (line, col) = offset_to_line_col(&source, e.span.start);
+            eprintln!(
+                "{}:{}:{}: {} {}",
+                file.display(),
+                line,
+                col,
+                red("error:"),
+                e.message
+            );
+        }
+        total_errors += parse_errors.len();
+
+        // Type-check errors and warnings
         let diags = typecheck::check_source(&source, &schema);
 
         for d in &diags {
