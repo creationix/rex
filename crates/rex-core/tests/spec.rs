@@ -350,7 +350,17 @@ fn check_format(source: &str, line: usize) -> Option<String> {
     let formatted = formatted.trim();
     let source = source.trim();
     if formatted != source {
-        Some(format!("line {line}: format mismatch\n  source:    {source}\n  formatted: {formatted}"))
+        let indent = |s: &str| -> String {
+            s.lines()
+                .map(|l| format!("  {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Some(format!(
+            "line {line}: format mismatch\n\x1b[31m  source:\x1b[0m\n{}\n\x1b[32m  formatted:\x1b[0m\n{}",
+            indent(source),
+            indent(formatted),
+        ))
     } else {
         None
     }
