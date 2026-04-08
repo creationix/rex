@@ -494,7 +494,8 @@ fn run_test(test: &SpecTest) -> Vec<String> {
 // ── JSON conversion ───────────────────────────────────────────────────
 
 fn value_to_json(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> serde_json::Value {
-    if v.is_none() || v.is_null() { return serde_json::Value::Null; }
+    if v.is_none() { return serde_json::Value::Null; } // should not normally be called for none
+    if v.is_null() { return serde_json::Value::Null; }
     if let Some(b) = v.as_bool() { return serde_json::Value::Bool(b); }
     if let Some(n) = v.as_i64() { return serde_json::json!(n); }
     // Preserve sig*10^exp representation for decimals
@@ -532,6 +533,7 @@ fn vars_to_json(vars: &HashMap<String, rex_core::heap::Value>, heap: &rex_core::
     let mut map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
     for key in keys {
         if let Some(&value) = vars.get(key) {
+            if value.is_none() { continue; } // none = absence, not a value
             map.insert(key.clone(), value_to_json(value, heap));
         }
     }

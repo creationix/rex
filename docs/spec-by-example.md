@@ -1024,7 +1024,7 @@ str , str             , 4   , 4
 none, none            , 4   , 10
 x   , int             , 5   , 1
 a   , int             , 5   , 5
-b   , """hi"""        , 5   , 10
+b   , never           , 5   , 10
 y   , int | str | none, 6   , 1
 c   , int | none      , 6   , 5
 d   , str | none      , 6   , 10
@@ -1402,6 +1402,117 @@ Return the value if it matches the type, `none` otherwise:
 ```
 
 ---
+
+# Lazy Evaluation and None Propagation
+
+This section tests that expressions are only evaluated when they should be and
+that the type system provides accurate types for short-circuiting operators.
+
+## And/Or Short-Circuiting
+
+```rex
+a: int | none = 100
+b: str | none = "hello"
+c = (e1 = a) and (e2 = b)
+```
+
+```csv types
+text, type      , line, col
+a   , int | none, 1   , 1
+int , int       , 1   , 4
+none, none      , 1   , 10
+100 , int       , 1   , 17
+b   , str | none, 2   , 1
+str , str       , 2   , 4
+none, none      , 2   , 10
+c   , str | none, 3   , 1
+e1  , int | none, 3   , 6
+a   , int | none, 3   , 11
+e2  , str | none, 3   , 19
+b   , str | none, 3   , 24
+```
+
+```rext
+(%=a$38+=b$5,hello=c$&(=e1$a$=e2$b$))
+```
+
+```json vars
+{"a":100,"b":"hello","c":"hello","e1":100,"e2":"hello"}
+```
+
+### none and
+
+Now try again with `a` set to `none`:
+
+```rex
+a = none
+b = "hello"
+c = (e1 = a) and (e2 = b)
+```
+
+```csv types
+text, type   , line, col
+a   , none   , 1   , 1
+none, none   , 1   , 5
+b   , """hello""", 2   , 1
+c   , none   , 3   , 1
+e1  , none   , 3   , 6
+a   , none   , 3   , 11
+e2  , never  , 3   , 19
+b   , never  , 3   , 24
+```
+
+```json vars
+{"b":"hello"}
+```
+
+### some and
+
+```rex
+a = 100
+b = "hello"
+c = (e1 = a) and (e2 = b)
+```
+
+```csv types
+text, type   , line, col
+a   , int    , 1   , 1
+100 , int    , 1   , 5
+b   , """hello""", 2   , 1
+c   , """hello""", 3   , 1
+e1  , int    , 3   , 6
+a   , int    , 3   , 11
+e2  , """hello""", 3   , 19
+b   , """hello""", 3   , 24
+```
+
+```rext
+(%=a$38+=b$5,hello=c$&(=e1$a$=e2$b$))
+```
+
+```json vars
+{"a":100,"b":"hello","c":"hello","e1":100,"e2":"hello"}
+```
+
+### none or
+
+```rex
+a = none
+b = "hello"
+c = (e1 = a) or (e2 = b)
+```
+
+```csv types
+text, type   , line, col
+a   , none   , 1   , 1
+none, none   , 1   , 5
+b   , """hello""", 2   , 1
+c   , """hello""", 3   , 1
+e1  , none   , 3   , 6
+a   , none   , 3   , 11
+e2  , """hello""", 3   , 18
+b   , """hello""", 3   , 23
+```
 
 # Host Environment
 
