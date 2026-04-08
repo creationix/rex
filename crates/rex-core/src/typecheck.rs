@@ -1862,12 +1862,24 @@ impl<'a> TypeEnv<'a> {
         let lhs_type = self.infer_child(&children[0]);
         let op = as_token_kind(&children[1]);
 
-        // For and/or, wrap RHS in a scope since it may not execute
+        // For and/or, wrap RHS in a scope since it may not execute.
+        // If the RHS is statically dead (and with none LHS, or with non-nullable LHS),
+        // mark it unreachable instead of inferring it.
         let is_and_or = matches!(op, Some(SyntaxKind::KwAnd | SyntaxKind::KwOr));
+        let rhs_dead = match op {
+            Some(SyntaxKind::KwAnd) => lhs_type.is_none(),
+            Some(SyntaxKind::KwOr) => !lhs_type.contains_none(),
+            _ => false,
+        };
         if is_and_or {
             self.push_scope();
         }
-        let rhs_type = self.infer_child(&children[2]);
+        let rhs_type = if rhs_dead {
+            self.mark_unreachable_spans(&children[2]);
+            Type::Never
+        } else {
+            self.infer_child(&children[2])
+        };
         // Merge and/or scope after computing the result type
         let and_or_scope = if is_and_or {
             self.scopes.pop()
