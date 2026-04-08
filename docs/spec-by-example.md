@@ -1285,6 +1285,30 @@ while x < 3 do x += 1 end
 3
 ```
 
+### for..in variables properly narrow
+
+<!-- TODO: type-checker doesn't yet track span types inside for..in loop bodies.
+     The csv types check is omitted until the checker emits spans for loop body
+     expressions. The aspirational output would show `v` narrowed to `int`
+     inside `when v do`. See KNOWN-ISSUES.md. -->
+
+```rex
+for v in [ 1, none, 3 ] do
+  when v do
+    v + 1
+  end
+end
+```
+
+```rext
+>([2+no'6+]v$?(v$7(ad%v$2+)))
+```
+
+```json
+4
+```
+
+
 ## `break` / `continue`
 
 | rex        | rext |
