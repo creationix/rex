@@ -503,11 +503,26 @@ impl<'a> Interpreter<'a> {
 
         // Schema pointer
         if self.peek_is_pointer() {
-            let first = self.eval()?;
-            if first.is_object() {
-                // Pointer resolved to an object → schema-shared object
-                let keys: Vec<u32> = self.heap.object_pairs(first)
-                    .iter().map(|&(k, _)| k).collect();
+            // Read the pointer manually to get the target position
+            let raw = self.read_raw();
+            let tag = self.read_byte(); // consume '^'
+            debug_assert_eq!(tag, b'^');
+            let delta = parse_uint(raw) as usize;
+            let target = self.pos + delta;
+
+            // Find the object opener at the target position, skipping any
+            // size prefix (b64 digits before the `{`).
+            let obj_start = {
+                let mut i = target;
+                while i < self.code.len() && is_b64(self.code[i]) { i += 1; }
+                i
+            };
+
+            if obj_start < self.code.len() && self.code[obj_start] == b'{' {
+                // Target is an object — scan its bytecode to extract keys
+                // without evaluating values (which may contain expressions
+                // that resolve to none and would be dropped).
+                let keys = self.scan_object_keys(obj_start + 1)?;
                 let mut pairs = Vec::new();
                 for &key in &keys {
                     let v = self.eval()?;
@@ -515,7 +530,15 @@ impl<'a> Interpreter<'a> {
                 }
                 self.read_byte(); // consume '}'
                 return Ok(self.heap.alloc_object(pairs));
-            } else if first.is_string() {
+            }
+
+            // Not an object target — evaluate normally
+            let save = self.pos;
+            self.pos = target;
+            let first = self.eval()?;
+            self.pos = save;
+
+            if first.is_string() {
                 // Pointer resolved to a string → deduped first key
                 let kid = first.string_id().unwrap();
                 let mut pairs = Vec::new();
@@ -1274,6 +1297,27 @@ impl<'a> Interpreter<'a> {
                 self.refs.get(&kid).copied().unwrap_or(Value::NONE)
             }
         }
+    }
+
+    // ── Schema scanning ───────────────────────────────────────────
+
+    /// Scan an object's bytecode starting at `start` (just after the `{`)
+    /// to extract key names. Evaluates keys, skips values. Restores pos
+    /// when done.
+    fn scan_object_keys(&mut self, start: usize) -> Result<Vec<u32>, RexError> {
+        let save = self.pos;
+        self.pos = start;
+        let mut keys = Vec::new();
+        while self.peek() != b'}' && !self.at_end() {
+            // Evaluate the key
+            let k = self.eval()?;
+            let kid = self.heap.value_to_key(k);
+            keys.push(kid);
+            // Skip the value without evaluating
+            self.skip_value()?;
+        }
+        self.pos = save;
+        Ok(keys)
     }
 
     // ── Skip ────────────────────────────────────────────────────────
