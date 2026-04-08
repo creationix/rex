@@ -225,14 +225,7 @@ These should be resolved before documenting:
 
 Once the spec is complete, the existing implementation should pass it cleanly.
 
-- ~~**Fix `dedup_comprehension_with_shared_keys` panic.**~~ Fixed — interpreter
-  now uses `scan_object_keys()` to extract keys from schema target bytecode
-  without evaluating values.
-- ~~**Fix spec test mismatch**~~ (the `or` type inference divergence). Fixed —
-  spec updated to match current type-checker output.
 - **Fix typechecker: `for..in` element narrowing.**
-- ~~**Green test suite.**~~ All of `cargo test` passes, including the spec tests
-  (658 tests total). `rex check` also now reports parse errors matching the LSP.
 
 ### Phase 3: Distribution (required for v0.1 tag)
 
