@@ -92,14 +92,58 @@ pub async fn handle_request(
 
     let bytecode = handler_bytecode.unwrap();
 
-    let mut accumulated_vars: HashMap<String, Value> = HashMap::new();
-    let mut accumulated_heap;
-    let mut res_status: u16;
-    let mut accumulated_headers: Vec<(String, String)> = Vec::new();
+    // Run all Rex programs (middleware + handler) on the blocking thread pool
+    // so the async event loop stays free for other requests. This also lets
+    // opcodes like http.fetch use Handle::block_on() directly.
+    let response = tokio::task::spawn_blocking(move || {
+        let mut accumulated_vars: HashMap<String, Value> = HashMap::new();
+        let mut accumulated_heap;
+        let mut res_status: u16;
+        let mut accumulated_headers: Vec<(String, String)> = Vec::new();
 
-    for mw_bytecode in &middleware_bytecodes {
+        for mw_bytecode in &middleware_bytecodes {
+            let (result, status, headers) = run_rex_program(
+                mw_bytecode,
+                &method, &path, &query_string, &req_headers,
+                &host, &cookie_header, &client_ip, &body_str,
+                &params,
+                &accumulated_vars,
+                &state,
+            );
+
+            res_status = status;
+            for (k, v) in headers {
+                if let Some(entry) = accumulated_headers.iter_mut().find(|(ek, _)| *ek == k) {
+                    entry.1 = v;
+                } else {
+                    accumulated_headers.push((k, v));
+                }
+            }
+
+            match result {
+                Ok(run_result) => {
+                    for (k, v) in run_result.vars {
+                        accumulated_vars.insert(k, v);
+                    }
+                    accumulated_heap = run_result.heap;
+
+                    if res_status >= 400 {
+                        return build_response(res_status, &accumulated_headers, run_result.value, &accumulated_heap);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("middleware error: {e}");
+                    return Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .header("content-type", "application/json")
+                        .body(Body::from(format!(r#"{{"ok":false,"error":"middleware_error","detail":"{e}"}}"#)))
+                        .unwrap();
+                }
+            }
+        }
+
         let (result, status, headers) = run_rex_program(
-            mw_bytecode,
+            &bytecode,
             &method, &path, &query_string, &req_headers,
             &host, &cookie_header, &client_ip, &body_str,
             &params,
@@ -107,7 +151,7 @@ pub async fn handle_request(
             &state,
         );
 
-        res_status = status;
+        let final_status = status;
         for (k, v) in headers {
             if let Some(entry) = accumulated_headers.iter_mut().find(|(ek, _)| *ek == k) {
                 entry.1 = v;
@@ -115,61 +159,24 @@ pub async fn handle_request(
                 accumulated_headers.push((k, v));
             }
         }
+        let final_headers = accumulated_headers;
 
         match result {
             Ok(run_result) => {
-                for (k, v) in run_result.vars {
-                    accumulated_vars.insert(k, v);
-                }
-                accumulated_heap = run_result.heap;
-
-                if res_status >= 400 {
-                    return build_response(res_status, &accumulated_headers, run_result.value, &accumulated_heap);
-                }
+                build_response(final_status, &final_headers, run_result.value, &run_result.heap)
             }
             Err(e) => {
-                tracing::error!("middleware error: {e}");
-                return Response::builder()
+                tracing::error!("handler error: {e}");
+                Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .header("content-type", "application/json")
-                    .body(Body::from(format!(r#"{{"ok":false,"error":"middleware_error","detail":"{e}"}}"#)))
-                    .unwrap();
+                    .body(Body::from(format!(r#"{{"ok":false,"error":"handler_error","detail":"{e}"}}"#)))
+                    .unwrap()
             }
         }
-    }
+    }).await.unwrap();
 
-    let (result, status, headers) = run_rex_program(
-        &bytecode,
-        &method, &path, &query_string, &req_headers,
-        &host, &cookie_header, &client_ip, &body_str,
-        &params,
-        &accumulated_vars,
-        &state,
-    );
-
-    let final_status = status;
-    for (k, v) in headers {
-        if let Some(entry) = accumulated_headers.iter_mut().find(|(ek, _)| *ek == k) {
-            entry.1 = v;
-        } else {
-            accumulated_headers.push((k, v));
-        }
-    }
-    let final_headers = accumulated_headers;
-
-    match result {
-        Ok(run_result) => {
-            build_response(final_status, &final_headers, run_result.value, &run_result.heap)
-        }
-        Err(e) => {
-            tracing::error!("handler error: {e}");
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"ok":false,"error":"handler_error","detail":"{e}"}}"#)))
-                .unwrap()
-        }
-    }
+    response
 }
 
 fn run_middleware_chain(

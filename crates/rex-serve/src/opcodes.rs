@@ -574,9 +574,9 @@ fn op_http_fetch(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
         }
     }
 
-    // Use async reqwest — bridge to sync via block_in_place + block_on
+    // Use async reqwest — safe to block_on here because Rex runs on spawn_blocking
     let handle = tokio::runtime::Handle::current();
-    let (status, resp_header_pairs, body_text) = tokio::task::block_in_place(|| handle.block_on(async {
+    let (status, resp_header_pairs, body_text) = handle.block_on(async {
         let client = reqwest::Client::new();
         let mut req = match method.as_str() {
             "POST" => client.post(&url),
@@ -601,7 +601,7 @@ fn op_http_fetch(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
         let body = resp.text().await
             .map_err(|e| RexError::HostError(format!("http.fetch: {e}")))?;
         Ok::<_, RexError>((status, headers, body))
-    }))?;
+    })?;
 
     // Build response headers object
     let mut resp_headers: Vec<(u32, Value)> = Vec::new();
