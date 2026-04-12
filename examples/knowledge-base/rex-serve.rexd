@@ -46,7 +46,7 @@ extern "Q" query: {*: str}
 // Parsed cookies
 extern "K" cookies: {*: str}
 // Request body
-extern body: str
+extern "B" body: str
 // Route parameters
 extern "PA" params: {*: str}
 
@@ -160,4 +160,4 @@ extern "cr" crypto.random(bytes: int) -> str
 // Make an HTTP request. Returns response with status, headers, and body.
 // @param url - the URL to fetch
 // @param options.method - HTTP method (default: "GET")
-extern http.fetch(url: str, options: FetchOptions) -> FetchResult
+extern "hf" http.fetch(url: str, options: FetchOptions) -> FetchResult

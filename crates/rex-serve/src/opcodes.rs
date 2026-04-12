@@ -84,6 +84,9 @@ pub fn build_opcodes(
     opcodes.insert("ge".into(), op_git_encode);
     opcodes.insert("gB".into(), op_git_encode_blob);
 
+    // HTTP
+    opcodes.insert("hf".into(), op_http_fetch);
+
     opcodes
 }
 
@@ -425,12 +428,11 @@ fn op_template_render(args: &[Value], heap: &mut Heap) -> Result<Value, RexError
 
 fn render_template(template: &str, data: Value, heap: &Heap) -> String {
     let mut result = String::with_capacity(template.len());
-    let bytes = template.as_bytes();
     let mut i = 0;
 
-    while i < bytes.len() {
-        if i + 2 < bytes.len() && bytes[i] == b'{' && bytes[i+1] == b'{' {
-            let unescaped = i + 2 < bytes.len() && bytes[i+2] == b'{';
+    while i < template.len() {
+        if template[i..].starts_with("{{") {
+            let unescaped = template[i..].starts_with("{{{");
             let start = if unescaped { i + 3 } else { i + 2 };
 
             let closing = if unescaped { "}}}" } else { "}}" };
@@ -446,8 +448,11 @@ fn render_template(template: &str, data: Value, heap: &Heap) -> String {
                 continue;
             }
         }
-        result.push(bytes[i] as char);
-        i += 1;
+        // Advance by one UTF-8 character
+        let ch = &template[i..];
+        let c = ch.chars().next().unwrap();
+        result.push(c);
+        i += c.len_utf8();
     }
 
     result
@@ -536,6 +541,88 @@ fn op_crypto_random(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> 
     let mut buf = vec![0u8; n];
     rand::rng().fill_bytes(&mut buf);
     Ok(heap.intern_value(&hex::encode(&buf)))
+}
+
+// ── HTTP ──────────────────────────────────────────────────────────────
+
+fn op_http_fetch(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
+    let url = arg_str(args, 0, heap)?.to_string();
+    let options = args.get(1).copied().unwrap_or(Value::NONE);
+
+    // Extract method, headers, body from options object
+    let mut method = "GET".to_string();
+    let mut body_str: Option<String> = None;
+    let mut custom_headers: Vec<(String, String)> = Vec::new();
+
+    if options.is_object() {
+        for &(k, v) in heap.object_pairs(options) {
+            match heap.resolve_str(k) {
+                "method" => { if let Some(s) = v.as_str(heap) { method = s.to_string(); } }
+                "body" => { if let Some(s) = v.as_str(heap) { body_str = Some(s.to_string()); } }
+                "headers" => {
+                    if v.is_object() {
+                        for &(hk, hv) in heap.object_pairs(v) {
+                            let key = heap.resolve_str(hk).to_string();
+                            if let Some(val) = hv.as_str(heap) {
+                                custom_headers.push((key, val.to_string()));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Use async reqwest — bridge to sync via block_in_place + block_on
+    let handle = tokio::runtime::Handle::current();
+    let (status, resp_header_pairs, body_text) = tokio::task::block_in_place(|| handle.block_on(async {
+        let client = reqwest::Client::new();
+        let mut req = match method.as_str() {
+            "POST" => client.post(&url),
+            "PUT" => client.put(&url),
+            "DELETE" => client.delete(&url),
+            "PATCH" => client.patch(&url),
+            "HEAD" => client.head(&url),
+            _ => client.get(&url),
+        };
+        for (k, v) in &custom_headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        if let Some(b) = &body_str {
+            req = req.body(b.clone());
+        }
+        let resp = req.send().await
+            .map_err(|e| RexError::HostError(format!("http.fetch: {e}")))?;
+        let status = resp.status().as_u16();
+        let headers: Vec<(String, String)> = resp.headers().iter()
+            .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+        let body = resp.text().await
+            .map_err(|e| RexError::HostError(format!("http.fetch: {e}")))?;
+        Ok::<_, RexError>((status, headers, body))
+    }))?;
+
+    // Build response headers object
+    let mut resp_headers: Vec<(u32, Value)> = Vec::new();
+    for (name, val) in &resp_header_pairs {
+        let key = heap.intern(name);
+        let v = heap.intern_value(val);
+        resp_headers.push((key, v));
+    }
+    let headers_obj = heap.alloc_object(resp_headers);
+
+    // Build {status: int, headers: {...}, body: str}
+    let k_status = heap.intern("status");
+    let k_headers = heap.intern("headers");
+    let k_body = heap.intern("body");
+    let body_val = heap.intern_value(&body_text);
+    let result = heap.alloc_object(vec![
+        (k_status, Value::int(status as i64)),
+        (k_headers, headers_obj),
+        (k_body, body_val),
+    ]);
+    Ok(result)
 }
 
 // ── Text ──────────────────────────────────────────────────────────────

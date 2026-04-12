@@ -86,6 +86,7 @@ Every original pain point was resolved during the project:
 | **Separate when/unless bytecode**     | Unified into variadic `?` cond                                            |
 | **Binary and/or**                     | Now variadic — `a and b and c` is a single `&(a b c)`                     |
 | **Intersection types too complex**    | Removed `str & [str]` from `.rexd` — just `str` everywhere               |
+| **Refs were read-only**               | Interpreter `eval_set` now handles `'` tag — refs are writable            |
 
 ## Current Rough Edges
 
@@ -93,10 +94,6 @@ Every original pain point was resolved during the project:
 
 `db.delete(key)` doesn't compile — `delete` is a keyword. The parser accepts keywords after `.` in navigation reads, but the lowerer's Call structure doesn't match the shortcode rewrite pattern. Renamed to `db.del()`. Any host API method named after a keyword needs a workaround.
 
-### Shortcode refs shadow mutable variables
-
-`extern "B" body: str` rewrites every `body` reference to a read-only ref. But handler scripts routinely reassign `body` to build HTML. The ref makes the assignment silently no-op — the page renders empty with no error. Bindings that user code might shadow should not use shortcode refs.
-
 ## Status
 
-The platform is fully functional. The type checker catches real bugs and the explicit shortcode system works. The remaining friction is lexical — keywords blocking method names, shortcode ref shadowing — rather than architectural.
+The platform is fully functional. The type checker catches real bugs and the explicit shortcode system works. The only remaining friction is that keywords can't be used as method names.

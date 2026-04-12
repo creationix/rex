@@ -1,5 +1,5 @@
 /* Tour Stop: Live Cursors — real-time collaboration demo */
-res.headers.content-type = "text/html"
+res.headers.content-type = "text/html; charset=utf-8"
 layout = fs.read("routes/_layouts/page.html")
 unless layout do
   status = 500

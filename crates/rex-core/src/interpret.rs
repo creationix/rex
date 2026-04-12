@@ -1069,6 +1069,14 @@ impl<'a> Interpreter<'a> {
             }
 
             Ok(val)
+        } else if tag == b'\'' {
+            // Ref assignment: 'name = value
+            self.read_byte();
+            let name = Self::raw_to_str(raw);
+            let kid = self.heap.intern(name);
+            let val = self.eval()?;
+            self.refs.insert(kid, val);
+            Ok(val)
         } else if tag == b'^' {
             // Pointer to a place expression
             self.read_byte();

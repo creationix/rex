@@ -1,7 +1,7 @@
 /* Tour Stop 1: Static Files
    This page demonstrates tagged template literals — the html tag
    auto-escapes interpolated values, preventing XSS. */
-res.headers.content-type = "text/html"
+res.headers.content-type = "text/html; charset=utf-8"
 layout = fs.read("routes/_layouts/page.html")
 unless layout do
   status = 500
