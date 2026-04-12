@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use rex_core::typecheck::DomainSchema;
 
 /// A compiled route entry.
 #[derive(Debug, Clone)]
@@ -66,17 +67,15 @@ pub struct RouteMatch<'a> {
 }
 
 impl RouteTable {
-    /// Scan a directory tree and build the route table.
-    /// If `domain` is provided, uses domain-aware compilation with minification.
-    pub fn build(routes_dir: &Path) -> Self {
-        Self::build_with_domain(routes_dir, None)
-    }
-
-    pub fn build_with_domain(routes_dir: &Path, domain: Option<&str>) -> Self {
+    /// Scan a directory tree, type-check, and compile all routes.
+    /// Returns `(table, error_count)` — caller decides whether to abort on errors.
+    pub fn build_with_domain(routes_dir: &Path, domain: Option<&str>, schema: Option<&DomainSchema>) -> (Self, u32) {
         let mut routes = Vec::new();
         let mut middlewares = Vec::new();
         let mut static_files = Vec::new();
         let mut ws_transforms = std::collections::HashMap::new();
+
+        let mut errors = 0u32;
 
         // Scan _ws/ directory for WebSocket transform scripts
         let ws_dir = routes_dir.join("_ws");
@@ -88,10 +87,13 @@ impl RouteTable {
                     if name.ends_with(".rex") && path.is_file() {
                         let channel = name.trim_end_matches(".rex").to_string();
                         let source = std::fs::read_to_string(&path).unwrap_or_default();
+                        if let Some(s) = schema {
+                            errors += typecheck_file(&source, &path, s);
+                        }
                         let bytecode = match domain {
-                Some(d) => rex_core::compile_with_domain(&source, d),
-                None => rex_core::compile(&source),
-            };
+                            Some(d) => rex_core::compile_with_domain(&source, d),
+                            None => rex_core::compile(&source),
+                        };
                         tracing::info!("  ws transform: {channel} ← {}", path.display());
                         ws_transforms.insert(channel, bytecode);
                     }
@@ -99,7 +101,7 @@ impl RouteTable {
             }
         }
 
-        scan_directory(routes_dir, routes_dir, &mut routes, &mut middlewares, &mut static_files, domain);
+        scan_directory(routes_dir, routes_dir, &mut routes, &mut middlewares, &mut static_files, domain, schema, &mut errors);
 
         // Sort routes by specificity (most specific first)
         routes.sort_by(|a, b| b.specificity.cmp(&a.specificity));
@@ -107,7 +109,7 @@ impl RouteTable {
         // Sort middlewares by depth (root first)
         middlewares.sort_by_key(|m| m.depth);
 
-        RouteTable { routes, middlewares, static_files, ws_transforms }
+        (RouteTable { routes, middlewares, static_files, ws_transforms }, errors)
     }
 
     /// Match a request path against the route table.
@@ -165,6 +167,8 @@ fn scan_directory(
     middlewares: &mut Vec<CompiledMiddleware>,
     static_files: &mut Vec<StaticFile>,
     domain: Option<&str>,
+    schema: Option<&DomainSchema>,
+    errors: &mut u32,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
 
@@ -180,7 +184,7 @@ fn scan_directory(
                 // Private directory — skip routing but don't scan
                 continue;
             }
-            scan_directory(base, &path, routes, middlewares, static_files, domain);
+            scan_directory(base, &path, routes, middlewares, static_files, domain, schema, errors);
             continue;
         }
 
@@ -190,6 +194,9 @@ fn scan_directory(
         if name == "_middleware.rex" {
             // Middleware
             let source = std::fs::read_to_string(&path).unwrap_or_default();
+            if let Some(s) = schema {
+                *errors += typecheck_file(&source, &path, s);
+            }
             let bytecode = match domain {
                 Some(d) => rex_core::compile_with_domain(&source, d),
                 None => rex_core::compile(&source),
@@ -218,6 +225,9 @@ fn scan_directory(
         if name.ends_with(".rex") {
             // Route handler
             let source = std::fs::read_to_string(&path).unwrap_or_default();
+            if let Some(s) = schema {
+                *errors += typecheck_file(&source, &path, s);
+            }
             let bytecode = match domain {
                 Some(d) => rex_core::compile_with_domain(&source, d),
                 None => rex_core::compile(&source),
@@ -244,6 +254,37 @@ fn scan_directory(
             });
         }
     }
+}
+
+/// Type-check a source file. Returns the number of errors found.
+/// Errors and warnings are logged via tracing.
+fn typecheck_file(source: &str, path: &Path, schema: &DomainSchema) -> u32 {
+    use rex_core::typecheck::DiagnosticKind;
+    let diags = rex_core::typecheck::check_source(source, schema);
+    let mut errors = 0u32;
+    for d in &diags {
+        let (line, col) = line_col(source, d.span.start);
+        match d.kind {
+            DiagnosticKind::Error => {
+                tracing::error!("{}:{}:{}: {}", path.display(), line, col, d.message);
+                errors += 1;
+            }
+            DiagnosticKind::Warning => {
+                tracing::warn!("{}:{}:{}: {}", path.display(), line, col, d.message);
+            }
+        }
+    }
+    errors
+}
+
+fn line_col(source: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+    for (i, c) in source.char_indices() {
+        if i >= offset { break; }
+        if c == '\n' { line += 1; col = 1; } else { col += 1; }
+    }
+    (line, col)
 }
 
 /// Convert a filesystem path to URL segments.

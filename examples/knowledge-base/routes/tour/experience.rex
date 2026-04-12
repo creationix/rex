@@ -1,5 +1,5 @@
 /* Tour Stop 6: Developer Experience Report */
-res.headers.content-type = "text/html"
+res.headers.content-type = "text/html; charset=utf-8"
 layout = fs.read("routes/_layouts/page.html")
 unless layout do
   status = 500
@@ -57,7 +57,7 @@ fields all behave correctly without special-casing:</p>
 <code>delete</code>, <code>iter_*</code>) maps perfectly to HTTP concepts. Request headers
 became a HostObject with case-insensitive <code>get()</code>. Response headers became a
 mutable HostObject with <code>set()</code>. The interpreter handles property chains like
-<code>res.headers.content-type = "text/html"</code> by navigating through nested
+<code>res.headers.content-type = "text/html; charset=utf-8"</code> by navigating through nested
 host objects — no special HTTP-aware code needed in the interpreter.</p>
 
 <h3>Compact, self-contained programs</h3>
@@ -127,14 +127,6 @@ read-only ref <code>^M</code> instead of a variable lookup. The trade-off is tha
 the shortcode strings are manually maintained and must match the runtime's opcode
 registry — there's no auto-derivation, so a mismatch fails silently.</p>
 
-<h3>Hyphens and digits don't mix in identifiers</h3>
-<p>Rex supports hyphens in identifiers: <code>my-var = 42</code> works because the
-lexer greedily matches <code>my-var</code> as a single token. But identifiers like
-<code>snippet-1</code> are ambiguous — the lexer sees <code>snippet</code> then
-<code>-1</code> (a negative number literal). In practice, using numbered variable
-names with hyphens doesn't work: <code>snippet-1</code> becomes <code>snippet</code>
-minus <code>1</code>. The fix was renaming to <code>snippet1</code>.</p>
-
 <h3>Keywords can't be method names</h3>
 <p>Rex reserves <code>delete</code> as a keyword (unary operator). This means
 <code>db.delete(key)</code> doesn't compile — the parser sees <code>delete</code> as
@@ -143,14 +135,6 @@ the start of a delete expression, not a method name. The fix was renaming to
 navigation, so <code>obj.delete</code> reads fine — but calling it as a function
 breaks because the call's compiled form doesn't match the shortcode rewrite pattern.
 Any host API that wants a method named after a keyword needs a workaround.</p>
-
-<h3>Shortcode refs can shadow mutable variables</h3>
-<p>The <code>.rexd</code> shortcode <code>extern "B" body: str</code> rewrites every
-occurrence of <code>body</code> to a read-only ref. But handler scripts routinely
-reassign <code>body</code> as a local variable to accumulate HTML. The ref rewrite
-silently makes the assignment a no-op — the page renders with empty content and
-no error. The fix was removing the shortcode for <code>body</code>, but any
-binding name that user code might shadow has the same risk.</p>
 
 <h3>String concatenation for HTML (now solved)</h3>
 <p>Before template literals, building HTML meant lots of string concatenation with escaped quotes:</p>

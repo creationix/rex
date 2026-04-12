@@ -38,15 +38,32 @@ pub async fn run(config: Config, project_root: PathBuf) {
     let conn = crate::opcodes::init_db(&db_path);
     let db = Arc::new(std::sync::Mutex::new(conn));
 
-    // Load domain schema (.rexd) for domain-aware compilation
+    // Load domain schema (.rexd) for domain-aware compilation and type checking
     let domain_source = find_rexd(&project_root);
-    if domain_source.is_some() {
+    let schema = domain_source.as_ref().map(|src| {
+        // Type-check the .rexd file itself
+        let diags = rex_core::typecheck::check_source(src, &rex_core::typecheck::DomainSchema::default());
+        let rexd_errors: Vec<_> = diags.iter()
+            .filter(|d| d.kind == rex_core::typecheck::DiagnosticKind::Error)
+            .collect();
+        if !rexd_errors.is_empty() {
+            for d in &rexd_errors {
+                tracing::error!(".rexd: {}", d.message);
+            }
+            eprintln!("error: .rexd has {} type error(s), aborting", rexd_errors.len());
+            std::process::exit(1);
+        }
         tracing::info!("domain-aware compilation enabled (found .rexd)");
-    }
+        rex_core::typecheck::parse_rexd(src)
+    });
 
-    // Build route table with domain-aware compilation
+    // Build route table with type checking and domain-aware compilation
     tracing::info!("scanning routes in {}", routes_dir.display());
-    let table = RouteTable::build_with_domain(&routes_dir, domain_source.as_deref());
+    let (table, type_errors) = RouteTable::build_with_domain(&routes_dir, domain_source.as_deref(), schema.as_ref());
+    if type_errors > 0 {
+        eprintln!("error: {} type error(s) in routes, aborting", type_errors);
+        std::process::exit(1);
+    }
     tracing::info!(
         "loaded {} routes, {} middlewares, {} static files",
         table.routes.len(),
@@ -319,8 +336,9 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
 async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
     use notify::{Watcher, RecursiveMode, Event, EventKind};
 
-    // Load the domain schema for type checking (look for *.rexd in project root)
-    let schema = load_domain_schema(&state.project_root);
+    // Parse domain schema for type checking on hot reload
+    let schema = state.domain_source.as_ref()
+        .map(|src| rex_core::typecheck::parse_rexd(src));
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<PathBuf>>(8);
 
@@ -340,11 +358,6 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
 
     tracing::info!("watching {} for changes", routes_dir.display());
 
-    // Run type check on startup
-    if let Some(ref s) = schema {
-        run_type_check(&routes_dir, s);
-    }
-
     while rx.recv().await.is_some() {
         // Debounce: wait briefly then drain queued events
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -354,7 +367,13 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
         }
 
         tracing::info!("change detected, reloading routes...");
-        let new_table = RouteTable::build_with_domain(&routes_dir, state.domain_source.as_deref());
+        let (new_table, type_errors) = RouteTable::build_with_domain(
+            &routes_dir, state.domain_source.as_deref(), schema.as_ref(),
+        );
+        if type_errors > 0 {
+            tracing::error!("reload rejected: {} type error(s), keeping previous version", type_errors);
+            continue;
+        }
         tracing::info!(
             "reloaded: {} routes, {} middlewares, {} static files",
             new_table.routes.len(),
@@ -362,16 +381,6 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
             new_table.static_files.len(),
         );
         *state.route_table.write().await = new_table;
-
-        // Type-check changed .rex files
-        if let Some(ref s) = schema {
-            let rex_files: Vec<&PathBuf> = changed_paths.iter()
-                .filter(|p| p.extension().is_some_and(|e| e == "rex"))
-                .collect();
-            if !rex_files.is_empty() {
-                type_check_files(&rex_files, &routes_dir, s);
-            }
-        }
 
         // Notify WebSocket clients of changed files
         for path in &changed_paths {
@@ -385,92 +394,6 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
 }
 
 /// Load the domain schema from *.rexd files in the project root.
-fn load_domain_schema(project_root: &std::path::Path) -> Option<rex_core::typecheck::DomainSchema> {
-    // Find .rexd files in project root
-    let mut rexd_content = String::new();
-    if let Ok(entries) = std::fs::read_dir(project_root) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "rexd") {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    tracing::info!("type checking with {}", path.display());
-                    rexd_content.push_str(&content);
-                    rexd_content.push('\n');
-                }
-            }
-        }
-    }
-    if rexd_content.is_empty() {
-        None
-    } else {
-        Some(rex_core::typecheck::parse_rexd(&rexd_content))
-    }
-}
-
-/// Type-check all .rex files in the routes directory.
-fn run_type_check(routes_dir: &std::path::Path, schema: &rex_core::typecheck::DomainSchema) {
-    let mut files = Vec::new();
-    collect_rex_files(routes_dir, &mut files);
-    if files.is_empty() { return; }
-    type_check_files(&files.iter().collect::<Vec<_>>(), routes_dir, schema);
-}
-
-/// Recursively collect all .rex files.
-fn collect_rex_files(dir: &std::path::Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_rex_files(&path, files);
-        } else if path.extension().is_some_and(|e| e == "rex") {
-            files.push(path);
-        }
-    }
-}
-
-/// Type-check specific files and log diagnostics.
-fn type_check_files(
-    files: &[&PathBuf],
-    routes_dir: &std::path::Path,
-    schema: &rex_core::typecheck::DomainSchema,
-) {
-    use rex_core::typecheck::DiagnosticKind;
-
-    let mut total_errors = 0u32;
-    let mut total_warnings = 0u32;
-
-    for path in files {
-        let Ok(source) = std::fs::read_to_string(path) else { continue };
-        let diagnostics = rex_core::typecheck::check_source(&source, schema);
-
-        for d in &diagnostics {
-            let rel = path.strip_prefix(routes_dir).unwrap_or(path);
-            let line = span_to_line(&source, d.span.start);
-            match d.kind {
-                DiagnosticKind::Warning => {
-                    tracing::warn!("{}:{}: {}", rel.display(), line, d.message);
-                    total_warnings += 1;
-                }
-                DiagnosticKind::Error => {
-                    tracing::error!("{}:{}: {}", rel.display(), line, d.message);
-                    total_errors += 1;
-                }
-            }
-        }
-    }
-
-    if total_errors > 0 || total_warnings > 0 {
-        tracing::info!("type check: {} error(s), {} warning(s)", total_errors, total_warnings);
-    } else if !files.is_empty() {
-        tracing::info!("type check: all clear");
-    }
-}
-
-/// Convert a byte offset to a 1-based line number.
-fn span_to_line(source: &str, offset: usize) -> usize {
-    source[..offset.min(source.len())].matches('\n').count() + 1
-}
-
 /// Find and read the first .rexd file in the project root.
 fn find_rexd(project_root: &std::path::Path) -> Option<String> {
     if let Ok(entries) = std::fs::read_dir(project_root) {

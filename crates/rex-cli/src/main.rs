@@ -457,12 +457,29 @@ fn cmd_run(
 
     let t = Instant::now();
 
-    // Compile with or without domain
-    let bytecode = match &domain {
-        Some(d) => {
-            let domain_src = std::fs::read_to_string(d)?;
-            rex_core::compile_with_domain(&source, &domain_src)
+    // Type-check before running — undefined variables, type mismatches, etc.
+    let domain_src = match &domain {
+        Some(d) => Some(std::fs::read_to_string(d)?),
+        None => input.as_ref().and_then(|p| find_rexd(p)).and_then(|p| std::fs::read_to_string(p).ok()),
+    };
+    let schema = match &domain_src {
+        Some(src) => rex_core::typecheck::parse_rexd(src),
+        None => rex_core::typecheck::DomainSchema::default(),
+    };
+    let diags = rex_core::typecheck::check_source(&source, &schema);
+    let errors: Vec<_> = diags.iter().filter(|d| d.kind == rex_core::typecheck::DiagnosticKind::Error).collect();
+    if !errors.is_empty() {
+        for d in &errors {
+            let (line, col) = offset_to_line_col(&source, d.span.start);
+            let label = input.as_ref().map_or("<expr>".to_string(), |p| p.display().to_string());
+            eprintln!("{}:{}:{}: {} {}", label, line, col, red("error:"), d.message);
         }
+        std::process::exit(1);
+    }
+
+    // Compile with or without domain
+    let bytecode = match &domain_src {
+        Some(src) => rex_core::compile_with_domain(&source, src),
         None => rex_core::compile(&source),
     };
 

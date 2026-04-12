@@ -93,7 +93,7 @@ pub async fn handle_request(
     let bytecode = handler_bytecode.unwrap();
 
     let mut accumulated_vars: HashMap<String, Value> = HashMap::new();
-    let mut accumulated_heap = Heap::new();
+    let mut accumulated_heap;
     let mut res_status: u16;
     let mut accumulated_headers: Vec<(String, String)> = Vec::new();
 
@@ -253,6 +253,7 @@ fn run_rex_program(
     let mut ns_log = OpcodeNamespace { methods: vec![("info", "li"), ("warning", "lw"), ("error", "le")], tag_opcode: None };
     let mut ns_kv = OpcodeNamespace { methods: vec![("get", "kg"), ("set", "ks"), ("del", "kd"), ("keys", "kk"), ("incr", "ki"), ("publish", "kp")], tag_opcode: None };
     let mut ns_html = OpcodeNamespace { methods: vec![("escape", "he"), ("highlight", "hl"), ("highlight-html", "hh"), ("raw", "hr")], tag_opcode: Some("ht") };
+    let mut ns_http = OpcodeNamespace { methods: vec![("fetch", "hf")], tag_opcode: None };
 
     let mut refs = HashMap::new();
     refs.insert("M".into(), heap.intern_value(method));
@@ -293,6 +294,7 @@ fn run_rex_program(
     vars.insert("kv".into(), Value::host(14));
     vars.insert("cas".into(), Value::host(15));
     vars.insert("git".into(), Value::host(16));
+    vars.insert("http".into(), Value::host(17));
 
     let opcodes = crate::opcodes::build_opcodes(
         state.db.clone(),
@@ -321,6 +323,7 @@ fn run_rex_program(
             &mut ns_kv,             // 14
             &mut ns_cas,            // 15
             &mut ns_git,            // 16
+            &mut ns_http,           // 17
         ],
         opcodes,
         gas_limit: state.config.server.gas_limit,
