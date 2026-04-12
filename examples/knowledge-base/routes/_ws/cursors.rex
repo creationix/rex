@@ -11,11 +11,12 @@ when msg.gone do
 end
 
 /* Mirror the y-axis — cursors appear inverted vertically */
-when msg.x and msg.y do
+y = msg.y
+when msg.x and y do
   return json.stringify({
     id: msg.id
     x: msg.x
-    y: 1 - msg.y
+    y: 1 - y
     color: msg.color
     name: msg.name
   })

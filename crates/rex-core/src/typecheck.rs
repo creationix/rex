@@ -1030,6 +1030,15 @@ fn interpret_type_object(node: &SyntaxNode) -> Type {
                 let key_parts = &pair_children[..ci];
                 let val_parts = &pair_children[ci + 1..];
 
+                // Skip leading `mut` keyword — it's a mutability marker, not part of the name
+                let key_parts = if !key_parts.is_empty()
+                    && as_token_text(&key_parts[0]) == Some("mut")
+                {
+                    &key_parts[1..]
+                } else {
+                    key_parts
+                };
+
                 // Check if key is `*` (wildcard)
                 let is_wildcard =
                     key_parts.len() == 1 && as_token_kind(&key_parts[0]) == Some(SyntaxKind::Star);
