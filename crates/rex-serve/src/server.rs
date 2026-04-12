@@ -21,6 +21,16 @@ pub struct AppState {
 }
 
 pub async fn run(config: Config, project_root: PathBuf) {
+    // Bind the port early so we fail fast if it's already in use
+    let addr = format!("{}:{}", config.server.host, config.server.port);
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("error: cannot bind to {addr}: {e}");
+            std::process::exit(1);
+        }
+    };
+
     let routes_dir = project_root.join(&config.routes.dir);
     let db_path = project_root.join(&config.db.path);
 
@@ -102,12 +112,8 @@ pub async fn run(config: Config, project_root: PathBuf) {
         .fallback(crate::handler::handle_request)
         .with_state(state.clone());
 
-    let addr = format!("{}:{}", state.config.server.host, state.config.server.port);
     tracing::info!("listening on http://{addr}");
     tracing::info!("live reload WebSocket at ws://{addr}/__reload");
-
-    let listener = tokio::net::TcpListener::bind(&addr).await
-        .expect("failed to bind");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -248,8 +254,8 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
 
     let mut ns_json = OpcodeNamespace { methods: vec![("parse", "jp"), ("stringify", "js")], tag_opcode: None };
     let mut ns_log = OpcodeNamespace { methods: vec![("info", "li"), ("warning", "lw"), ("error", "le")], tag_opcode: None };
-    let mut ns_kv = OpcodeNamespace { methods: vec![("get", "kg"), ("set", "ks"), ("delete", "kd"), ("keys", "kk"), ("incr", "ki"), ("publish", "kp")], tag_opcode: None };
-    let mut ns_db = OpcodeNamespace { methods: vec![("get", "dg"), ("set", "ds"), ("delete", "dd"), ("list", "dl"), ("cas", "dc")], tag_opcode: None };
+    let mut ns_kv = OpcodeNamespace { methods: vec![("get", "kg"), ("set", "ks"), ("del", "kd"), ("keys", "kk"), ("incr", "ki"), ("publish", "kp")], tag_opcode: None };
+    let mut ns_db = OpcodeNamespace { methods: vec![("get", "dg"), ("set", "ds"), ("del", "dd"), ("list", "dl"), ("cas", "dc")], tag_opcode: None };
     let mut ns_time = OpcodeNamespace { methods: vec![("now", "tn"), ("uuid", "tu")], tag_opcode: None };
     let mut ns_cas = OpcodeNamespace { methods: vec![("put", "cp"), ("get", "cg"), ("has", "cx")], tag_opcode: None };
     let mut ns_git = OpcodeNamespace { methods: vec![("decode", "gd"), ("children", "gc"), ("verify", "gv"), ("is-ancestor", "ga"), ("encode", "ge"), ("encode-blob", "gB")], tag_opcode: None };

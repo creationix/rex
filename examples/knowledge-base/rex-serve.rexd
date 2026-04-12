@@ -3,7 +3,7 @@
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-type Headers = {*: str & [str]}
+type Headers = {*: str}
 type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD"
 type FileMeta = {size: int, modified: int}
 type FetchOptions = {method: HttpMethod, headers: {*: str}, body: str}
@@ -17,11 +17,11 @@ extern req: {
   // HTTP method (GET, POST, etc.)
   method: HttpMethod
   // URL path (e.g. "/api/users/123")
-  path: str & [str]
+  path: str
   // Request headers as a case-insensitive map
   headers: Headers
   // Parsed query string parameters
-  query: {*: str & [str]}
+  query: {*: str}
   // Parsed cookie values
   cookies: {*: str}
   // Client IP address
@@ -31,33 +31,33 @@ extern req: {
   // Host/domain from the Host header
   domain: str
   // Route parameters from [param] segments (e.g. {slug: "hello-world"})
-  params: {*: str & [str]}
+  params: {*: str}
 }
 
 // Short aliases for common request fields
 // HTTP method
-extern method: HttpMethod
+extern "M" method: HttpMethod
 // URL path
-extern path: str & [str]
+extern "P" path: str
 // Request headers
-extern headers: Headers
+extern "H" headers: Headers
 // Parsed query parameters
-extern query: {*: str & [str]}
+extern "Q" query: {*: str}
 // Parsed cookies
-extern cookies: {*: str}
+extern "K" cookies: {*: str}
 // Request body
 extern body: str
 // Route parameters
-extern params: {*: str & [str]}
+extern "PA" params: {*: str}
 
 // ── Response (mutable) ─────────────────────────────────────────────────
 
 // HTTP response. Per-field mutability — set status and headers to control the response.
-extern res: {
+extern "S" res: {
   // Response status code (default: 200)
   mut status: int
   // Response headers
-  mut headers: {mut *: str & [str]}
+  mut headers: {mut *: str}
 }
 
 // Response status code (shorthand for res.status)
@@ -74,11 +74,11 @@ extern secrets: {*: str}
 // ── Logging ────────────────────────────────────────────────────────────
 
 // Log an informational message
-extern log.info(message: some)
+extern "li" log.info(message: some)
 // Log a warning
-extern log.warning(message: some)
+extern "lw" log.warning(message: some)
 // Log an error
-extern log.error(message: some)
+extern "le" log.error(message: some)
 
 // ── Response Control ───────────────────────────────────────────────────
 
@@ -92,50 +92,50 @@ extern res.proxy(url: str) -> some
 // ── JSON ───────────────────────────────────────────────────────────────
 
 // Parse a JSON string into a value
-extern json.parse(text: str) -> some
+extern "jp" json.parse(text: str) -> some
 // Serialize a value to a JSON string
-extern json.stringify(value: some) -> str
+extern "js" json.stringify(value: some) -> str
 
 // ── Database (KV) ──────────────────────────────────────────────────────
 
 // Get a value by key. Returns none if not found.
-extern db.get(key: str) -> str | none
+extern "dg" db.get(key: str) -> str | none
 // Set a key-value pair. Returns the value.
-extern db.set(key: str, value: str) -> str
+extern "ds" db.set(key: str, value: str) -> str
 // Delete a key. Returns the old value if found, none if not.
-extern db.delete(key: str) -> str | none
+extern "dd" db.del(key: str) -> str | none
 // List entries matching a key prefix.
-extern db.list(prefix: str) -> [DbEntry]
+extern "dl" db.list(prefix: str) -> [DbEntry]
 
 // ── Filesystem (read-only, sandboxed to project root) ──────────────────
 
 // Read a file's contents as a string. Path is relative to project root.
-extern fs.read(path: str) -> str | none
+extern "fr" fs.read(path: str) -> str | none
 // List files matching a glob pattern relative to project root.
-extern fs.glob(pattern: str) -> [str]
+extern "fg" fs.glob(pattern: str) -> [str]
 // Get file metadata (size in bytes, modified as unix timestamp ms).
-extern fs.meta(path: str) -> FileMeta
+extern "fm" fs.meta(path: str) -> FileMeta
 
 // ── Content Transformation ─────────────────────────────────────────────
 
 // Render markdown text to HTML
-extern markdown.render(text: str) -> str
+extern "mr" markdown.render(text: str) -> str
 // Render a mustache-style template with data. {{key}} escapes HTML, {{{key}}} is raw.
-extern template.render(template: str, data: some) -> str
+extern "tr" template.render(template: str, data: some) -> str
 
 // ── HTML ───────────────────────────────────────────────────────────────
 
 // Escape HTML entities in a string
-extern html.escape(text: str) -> str
+extern "he" html.escape(text: str) -> str
 // Syntax-highlight Rex source code as HTML with Tokyo Night theme
-extern html.highlight(source: str) -> str
+extern "hl" html.highlight(source: str) -> str
 // Syntax-highlight HTML source code as HTML with Tokyo Night theme
-extern html.highlight-html(source: str) -> str
+extern "hh" html.highlight-html(source: str) -> str
 // Mark a string as pre-rendered HTML (skip escaping in html`` templates)
-extern html.raw(html: str) -> str
+extern "hr" html.raw(html: str) -> str
 // Tagged template: auto-escapes interpolated values, static HTML passes through
 // Usage: html`<p>${user-input}</p>`
-extern html(parts: [str], ...values: some) -> str
+extern "ht" html(parts: [str], ...values: some) -> str
 
 // ── WebSocket Events ──────────────────────────────────────────────────
 
@@ -148,15 +148,15 @@ extern event: {
 // ── Utilities ──────────────────────────────────────────────────────────
 
 // Current time as unix timestamp in milliseconds
-extern time.now() -> int
+extern "tn" time.now() -> int
 // Generate a UUIDv7 string
-extern time.uuid() -> str
+extern "tu" time.uuid() -> str
 // Hash data with the given algorithm (e.g. "sha256"). Returns hex string.
-extern crypto.hash(algorithm: str, data: str) -> str
+extern "ch" crypto.hash(algorithm: str, data: str) -> str
 // HMAC with the given algorithm, key, and data. Returns hex string.
-extern crypto.hmac(algorithm: str, key: str, data: str) -> str
+extern "cm" crypto.hmac(algorithm: str, key: str, data: str) -> str
 // Generate random bytes. Returns hex string.
-extern crypto.random(bytes: int) -> str
+extern "cr" crypto.random(bytes: int) -> str
 // Make an HTTP request. Returns response with status, headers, and body.
 // @param url - the URL to fetch
 // @param options.method - HTTP method (default: "GET")

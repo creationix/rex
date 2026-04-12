@@ -58,15 +58,18 @@ items = [json.parse(a.value) for a in articles]
 
 ### Type checking catches real bugs
 
-The type checker runs on startup and on every file save via hot reload. Running `rex check` against the `.rexd` domain interface caught genuine issues that visual testing missed. The per-field `mut` declarations precisely express which parts of the response a handler can write to:
+The type checker runs on startup and on every file save via hot reload. Running `rex check` against the `.rexd` domain interface caught genuine issues that visual testing missed — including a string escaping bug (`\\"` terminating a string early) that was only detectable because the checker flagged the resulting variable as unused. The per-field `mut` declarations precisely express which parts of the response a handler can write to:
 
 ```rex
-extern res = {
-  mut status: integer
-  mut headers: {mut *: string | [string]}
-  body: string          /* read-only */
+extern "S" res: {
+  mut status: int
+  mut headers: {mut *: str}
 }
 ```
+
+### Explicit shortcodes give the compiler enough info
+
+The `.rexd` shortcode strings (`extern "jp" json.parse(...)`) let the compiler rewrite dotted calls directly to opcodes at compile time. This eliminates the runtime namespace indirection — no more HostObjects returning `"%jp"` strings. The trade-off is manual maintenance: the shortcode must match the runtime's opcode registry exactly.
 
 ## Language Evolution During Development
 
@@ -82,7 +85,22 @@ Every original pain point was resolved during the project:
 | **No type checking**                  | `rex check` validates against `.rexd` — integrated into hot reload        |
 | **Separate when/unless bytecode**     | Unified into variadic `?` cond                                            |
 | **Binary and/or**                     | Now variadic — `a and b and c` is a single `&(a b c)`                     |
+| **Intersection types too complex**    | Removed `str & [str]` from `.rexd` — just `str` everywhere               |
+
+## Current Rough Edges
+
+### Hyphenated identifiers break inside function arguments
+
+The lexer matches `my-var` as a single token, but inside call parentheses the parser treats `-` as subtraction. `html.highlight(my-var)` silently computes `html.highlight(my - var)`. Variables passed as function arguments must avoid hyphens — use underscores or camelCase instead. Variables used only in assignments and top-level expressions are fine.
+
+### Keywords can't be method names
+
+`db.delete(key)` doesn't compile — `delete` is a keyword. The parser accepts keywords after `.` in navigation reads, but the lowerer's Call structure doesn't match the shortcode rewrite pattern. Renamed to `db.del()`. Any host API method named after a keyword needs a workaround.
+
+### Shortcode refs shadow mutable variables
+
+`extern "B" body: str` rewrites every `body` reference to a read-only ref. But handler scripts routinely reassign `body` to build HTML. The ref makes the assignment silently no-op — the page renders empty with no error. Bindings that user code might shadow should not use shortcode refs.
 
 ## Status
 
-All pain points have been resolved. The platform is fully functional with no remaining workarounds or known issues.
+The platform is fully functional. The type checker catches real bugs and the explicit shortcode system works. The remaining friction is lexical — hyphens as both identifier chars and operators, keywords blocking method names — rather than architectural.

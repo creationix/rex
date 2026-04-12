@@ -1,5 +1,9 @@
 /* Single article: GET, PUT, DELETE */
 slug = params.slug
+unless slug do
+  res.status = 400
+  return { ok: false error: "missing_slug" }
+end
 
 when method == "GET" do
   record = db.get("article:" + slug)
@@ -32,7 +36,7 @@ when method == "PUT" do
 end
 
 when method == "DELETE" do
-  db.delete("article:" + slug)
+  db.del("article:" + slug)
   return { ok: true deleted: slug }
 end
 
