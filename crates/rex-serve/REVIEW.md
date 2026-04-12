@@ -89,10 +89,6 @@ Every original pain point was resolved during the project:
 
 ## Current Rough Edges
 
-### Hyphenated identifiers break inside function arguments
-
-The lexer matches `my-var` as a single token, but inside call parentheses the parser treats `-` as subtraction. `html.highlight(my-var)` silently computes `html.highlight(my - var)`. Variables passed as function arguments must avoid hyphens — use underscores or camelCase instead. Variables used only in assignments and top-level expressions are fine.
-
 ### Keywords can't be method names
 
 `db.delete(key)` doesn't compile — `delete` is a keyword. The parser accepts keywords after `.` in navigation reads, but the lowerer's Call structure doesn't match the shortcode rewrite pattern. Renamed to `db.del()`. Any host API method named after a keyword needs a workaround.
@@ -103,4 +99,4 @@ The lexer matches `my-var` as a single token, but inside call parentheses the pa
 
 ## Status
 
-The platform is fully functional. The type checker catches real bugs and the explicit shortcode system works. The remaining friction is lexical — hyphens as both identifier chars and operators, keywords blocking method names — rather than architectural.
+The platform is fully functional. The type checker catches real bugs and the explicit shortcode system works. The remaining friction is lexical — keywords blocking method names, shortcode ref shadowing — rather than architectural.

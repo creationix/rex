@@ -127,15 +127,13 @@ read-only ref <code>^M</code> instead of a variable lookup. The trade-off is tha
 the shortcode strings are manually maintained and must match the runtime's opcode
 registry — there's no auto-derivation, so a mismatch fails silently.</p>
 
-<h3>Hyphenated identifiers break inside function arguments</h3>
+<h3>Hyphens and digits don't mix in identifiers</h3>
 <p>Rex supports hyphens in identifiers: <code>my-var = 42</code> works because the
-lexer greedily matches <code>my-var</code> as a single token. But inside function call
-parentheses, the parser treats <code>-</code> as subtraction. So
-<code>f(my-var)</code> parses as <code>f(my - var)</code>, silently computing
-the wrong thing. This bit us with variables like <code>snippet-1</code> passed to
-<code>html.highlight()</code> — the fix was renaming to <code>snippet1</code>.
-The workaround is to avoid hyphens in names that appear inside argument lists,
-which undermines the feature.</p>
+lexer greedily matches <code>my-var</code> as a single token. But identifiers like
+<code>snippet-1</code> are ambiguous — the lexer sees <code>snippet</code> then
+<code>-1</code> (a negative number literal). In practice, using numbered variable
+names with hyphens doesn't work: <code>snippet-1</code> becomes <code>snippet</code>
+minus <code>1</code>. The fix was renaming to <code>snippet1</code>.</p>
 
 <h3>Keywords can't be method names</h3>
 <p>Rex reserves <code>delete</code> as a keyword (unary operator). This means
@@ -191,9 +189,9 @@ This is the part of the DX that feels most polished.</p>
 <p>Rex's core language semantics — existence-based logic, unified navigation,
 type predicates, comprehensions — are genuinely well-suited for edge function
 scripting. Many early pain points (lazy eval, pointer dedup, namespace wiring)
-have been fixed or improved. The remaining friction is in the language's lexical
-ambiguities (hyphens as both identifier chars and subtraction, keywords blocking
-method names) and the manual nature of shortcode maintenance. The type checker
+have been fixed or improved. The remaining friction is in lexical edge cases
+(keywords blocking method names, identifier-digit ambiguity) and the manual
+nature of shortcode maintenance. The type checker
 now catches real bugs — optional access without narrowing, unused variables from
 broken string escaping — which is a genuine improvement over untyped scripting.</p>`
 
