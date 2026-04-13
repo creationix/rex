@@ -26,7 +26,14 @@ impl AppState {
         let routes_dir = project_root.join(&config.routes.dir);
         let db_path = project_root.join(&config.db.path);
 
-        // Init database
+        // Init database — fall back to /tmp if configured path is read-only (e.g. Vercel)
+        let db_path = if std::fs::OpenOptions::new().write(true).create(true).open(&db_path).is_ok() {
+            db_path
+        } else {
+            let tmp_path = std::path::PathBuf::from("/tmp/rex-serve-data.db");
+            tracing::info!("db path {} not writable, using {}", db_path.display(), tmp_path.display());
+            tmp_path
+        };
         let conn = crate::opcodes::init_db(&db_path);
         let db = Arc::new(std::sync::Mutex::new(conn));
 
