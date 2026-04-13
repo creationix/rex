@@ -3,6 +3,10 @@ name = "rex-serve"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "rex_serve"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rex-serve"
 path = "src/main.rs"
