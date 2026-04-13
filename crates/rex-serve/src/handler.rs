@@ -66,6 +66,17 @@ pub async fn handle_request(
         }
     };
 
+    // Built-in favicon — served for any Rex app that doesn't provide its own
+    if (path == "/favicon.ico" || path == "/favicon.png") && handler_bytecode.is_none() && static_file.is_none() {
+        static FAVICON: &[u8] = include_bytes!("favicon.png");
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "image/png")
+            .header("cache-control", "public, max-age=86400")
+            .body(Body::from(FAVICON))
+            .unwrap();
+    }
+
     if handler_bytecode.is_none() && static_file.is_none() {
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
