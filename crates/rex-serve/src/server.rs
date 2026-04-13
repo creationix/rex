@@ -2,23 +2,9 @@ use axum::Router;
 use axum::routing::get;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast};
-
-use crate::config::Config;
-use crate::router::RouteTable;
-
-pub struct AppState {
-    pub config: Config,
-    pub route_table: RwLock<RouteTable>,
-    pub db: Arc<std::sync::Mutex<rusqlite::Connection>>,
-    pub project_root: PathBuf,
-    /// Broadcast channel for file change notifications (for WebSocket clients)
-    pub reload_tx: broadcast::Sender<String>,
-    /// In-memory KV store with pub/sub
-    pub kv: Arc<std::sync::Mutex<crate::kv::KvStore>>,
-    /// Domain schema source (.rexd) for domain-aware compilation
-    pub domain_source: Option<String>,
-}
+use rex_serve::config::Config;
+use rex_serve::router::RouteTable;
+use rex_serve::state::AppState;
 
 pub async fn run(config: Config, project_root: PathBuf) {
     // Bind the port early so we fail fast if it's already in use
@@ -31,72 +17,18 @@ pub async fn run(config: Config, project_root: PathBuf) {
         }
     };
 
-    let routes_dir = project_root.join(&config.routes.dir);
-    let db_path = project_root.join(&config.db.path);
-
-    // Init database
-    let conn = crate::opcodes::init_db(&db_path);
-    let db = Arc::new(std::sync::Mutex::new(conn));
-
-    // Load domain schema (.rexd) for domain-aware compilation and type checking
-    let domain_source = find_rexd(&project_root);
-    let schema = domain_source.as_ref().map(|src| {
-        // Type-check the .rexd file itself
-        let diags = rex_core::typecheck::check_source(src, &rex_core::typecheck::DomainSchema::default());
-        let rexd_errors: Vec<_> = diags.iter()
-            .filter(|d| d.kind == rex_core::typecheck::DiagnosticKind::Error)
-            .collect();
-        if !rexd_errors.is_empty() {
-            for d in &rexd_errors {
-                tracing::error!(".rexd: {}", d.message);
-            }
-            eprintln!("error: .rexd has {} type error(s), aborting", rexd_errors.len());
+    let state = match AppState::build(config, project_root) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
-        tracing::info!("domain-aware compilation enabled (found .rexd)");
-        rex_core::typecheck::parse_rexd(src)
-    });
+    };
 
-    // Build route table with type checking and domain-aware compilation
-    tracing::info!("scanning routes in {}", routes_dir.display());
-    let (table, type_errors) = RouteTable::build_with_domain(&routes_dir, domain_source.as_deref(), schema.as_ref());
-    if type_errors > 0 {
-        eprintln!("error: {} type error(s) in routes, aborting", type_errors);
-        std::process::exit(1);
-    }
-    tracing::info!(
-        "loaded {} routes, {} middlewares, {} static files",
-        table.routes.len(),
-        table.middlewares.len(),
-        table.static_files.len(),
-    );
+    let routes_dir = state.project_root.join(&state.config.routes.dir);
 
-    for route in &table.routes {
-        let pattern: Vec<String> = route.segments.iter().map(|s| match s {
-            crate::router::Segment::Static(s) => s.clone(),
-            crate::router::Segment::Param(n) => format!(":{n}"),
-            crate::router::Segment::CatchAll(n) => format!("*{n}"),
-        }).collect();
-        let path = if pattern.is_empty() { "/".into() } else { format!("/{}", pattern.join("/")) };
-        tracing::info!("  route: {path} ← {}", route.source_path.display());
-    }
-
-    for mw in &table.middlewares {
-        tracing::info!("  middleware: {}** ← {}", mw.prefix, mw.source_path.display());
-    }
-
-    for sf in &table.static_files {
-        tracing::info!("  static: {} ← {}", sf.url_path, sf.fs_path.display());
-    }
-
-    // Broadcast channel for live reload notifications
-    let (reload_tx, _) = broadcast::channel::<String>(16);
-
-    // In-memory KV store
-    let kv = Arc::new(std::sync::Mutex::new(crate::kv::KvStore::new()));
-
-    // Background TTL eviction
-    let kv_evict = kv.clone();
+    // Background TTL eviction for in-memory KV store
+    let kv_evict = state.kv.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -104,16 +36,6 @@ pub async fn run(config: Config, project_root: PathBuf) {
                 store.evict_expired();
             }
         }
-    });
-
-    let state = Arc::new(AppState {
-        config,
-        route_table: RwLock::new(table),
-        db,
-        project_root,
-        reload_tx,
-        kv,
-        domain_source,
     });
 
     // Start file watcher for hot reload
@@ -126,7 +48,7 @@ pub async fn run(config: Config, project_root: PathBuf) {
     let app = Router::new()
         .route("/__reload", get(ws_reload_handler))
         .route("/__ws/{channel}", get(ws_pubsub_handler))
-        .fallback(crate::handler::handle_request)
+        .fallback(rex_serve::handler::handle_request)
         .with_state(state.clone());
 
     tracing::info!("listening on http://{addr}");
@@ -138,8 +60,8 @@ pub async fn run(config: Config, project_root: PathBuf) {
         .expect("server error");
 }
 
-/// WebSocket handler for live reload notifications.
-/// Clients connect and receive file paths as they change.
+// ── WebSocket handlers (standalone server only) ──────────────────────
+
 async fn ws_reload_handler(
     ws: axum::extract::WebSocketUpgrade,
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
@@ -169,7 +91,6 @@ async fn ws_reload_connection(
                 }
             }
             msg = socket.recv() => {
-                // Client closed or sent a message (ignore messages)
                 match msg {
                     Some(Ok(_)) => {}
                     _ => break,
@@ -180,15 +101,11 @@ async fn ws_reload_connection(
     tracing::debug!("live reload client disconnected");
 }
 
-/// WebSocket handler for pub/sub channels.
-/// Clients connect to /__ws/{channel} and send/receive JSON messages.
-/// If `routes/_ws/{channel}.rex` exists, each message is transformed through it.
 async fn ws_pubsub_handler(
     ws: axum::extract::WebSocketUpgrade,
     axum::extract::Path(channel): axum::extract::Path<String>,
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::response::Response {
-    // Check for a channel-specific Rex transform script
     let transform = {
         let table = state.route_table.read().await;
         table.ws_transforms.get(&channel).cloned()
@@ -204,7 +121,6 @@ async fn ws_pubsub_connection(
 ) {
     use axum::extract::ws::Message;
 
-    // Subscribe to the channel
     let mut rx = {
         let mut store = state.kv.lock().unwrap();
         store.subscribe(&channel)
@@ -214,7 +130,6 @@ async fn ws_pubsub_connection(
 
     loop {
         tokio::select! {
-            // Broadcast message from channel → send to client
             msg = rx.recv() => {
                 match msg {
                     Ok(data) => {
@@ -228,7 +143,6 @@ async fn ws_pubsub_connection(
                     Err(_) => break,
                 }
             }
-            // Client message → transform via Rex (if script exists) → publish
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
@@ -250,18 +164,14 @@ async fn ws_pubsub_connection(
     tracing::debug!("pub/sub client disconnected from channel: {channel}");
 }
 
-/// Run a Rex transform script on a WebSocket message.
-/// The script receives `event.data` (the raw message string).
-/// Returns the transformed message string, or None to suppress.
 fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<String> {
     use rex_core::heap::{Value, Heap};
     use rex_core::interpret::Context;
-    use crate::refs::OpcodeNamespace;
+    use rex_serve::refs::OpcodeNamespace;
     use std::collections::HashMap;
 
     let mut heap = Heap::new();
 
-    // Build event object
     let k_data = heap.intern("data");
     let v_data = heap.intern_value(data);
     let event_obj = heap.alloc_object(vec![(k_data, v_data)]);
@@ -287,7 +197,7 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
     vars.insert("git".into(), Value::host(6));
     vars.insert("crypto".into(), Value::host(7));
 
-    let opcodes = crate::opcodes::build_opcodes(
+    let opcodes = rex_serve::opcodes::build_opcodes(
         state.db.clone(),
         state.project_root.clone(),
         state.kv.clone(),
@@ -297,14 +207,14 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
         refs: HashMap::new(),
         vars,
         host_objects: vec![
-            &mut ns_json,   // 0
-            &mut ns_log,    // 1
-            &mut ns_kv,     // 2
-            &mut ns_db,     // 3
-            &mut ns_time,   // 4
-            &mut ns_cas,    // 5
-            &mut ns_git,    // 6
-            &mut ns_crypto, // 7
+            &mut ns_json,
+            &mut ns_log,
+            &mut ns_kv,
+            &mut ns_db,
+            &mut ns_time,
+            &mut ns_cas,
+            &mut ns_git,
+            &mut ns_crypto,
         ],
         opcodes,
         gas_limit: state.config.server.gas_limit,
@@ -320,10 +230,10 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
             } else if let Some(s) = v.as_str(heap) {
                 Some(s.to_string())
             } else if v.is_object() || v.is_array() {
-                let json = crate::refs::value_to_json(v, heap);
+                let json = rex_serve::refs::value_to_json(v, heap);
                 Some(json.to_string())
             } else {
-                Some(crate::refs::value_to_string(v, heap))
+                Some(rex_serve::refs::value_to_string(v, heap))
             }
         }
         Err(e) => {
@@ -336,7 +246,6 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
 async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
     use notify::{Watcher, RecursiveMode, Event, EventKind};
 
-    // Parse domain schema for type checking on hot reload
     let schema = state.domain_source.as_ref()
         .map(|src| rex_core::typecheck::parse_rexd(src));
 
@@ -359,7 +268,6 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
     tracing::info!("watching {} for changes", routes_dir.display());
 
     while rx.recv().await.is_some() {
-        // Debounce: wait briefly then drain queued events
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let mut changed_paths: Vec<PathBuf> = Vec::new();
         while let Ok(paths) = rx.try_recv() {
@@ -382,7 +290,6 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
         );
         *state.route_table.write().await = new_table;
 
-        // Notify WebSocket clients of changed files
         for path in &changed_paths {
             let rel = path.strip_prefix(&routes_dir)
                 .unwrap_or(path)
@@ -391,20 +298,6 @@ async fn watch_routes(routes_dir: PathBuf, state: Arc<AppState>) {
             let _ = state.reload_tx.send(rel);
         }
     }
-}
-
-/// Load the domain schema from *.rexd files in the project root.
-/// Find and read the first .rexd file in the project root.
-fn find_rexd(project_root: &std::path::Path) -> Option<String> {
-    if let Ok(entries) = std::fs::read_dir(project_root) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "rexd") && path.is_file() {
-                return std::fs::read_to_string(&path).ok();
-            }
-        }
-    }
-    None
 }
 
 async fn shutdown_signal() {
