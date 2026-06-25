@@ -7,8 +7,16 @@ use std::time::Duration;
 
 use serde_json::Value as JsonValue;
 
-const REST_URL_ENV: &str = "UPSTASH_REDIS_REST_URL";
-const REST_TOKEN_ENV: &str = "UPSTASH_REDIS_REST_TOKEN";
+// Accept both the Upstash-native variable names and the ones Vercel's Upstash /
+// KV marketplace integration injects (`KV_REST_API_*`). First match wins.
+const REST_URL_ENVS: &[&str] = &["UPSTASH_REDIS_REST_URL", "KV_REST_API_URL"];
+const REST_TOKEN_ENVS: &[&str] = &["UPSTASH_REDIS_REST_TOKEN", "KV_REST_API_TOKEN"];
+
+fn first_env(names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find_map(|n| std::env::var(n).ok().filter(|v| !v.trim().is_empty()))
+}
 
 pub struct UpstashClient {
     url: String,
@@ -23,25 +31,35 @@ impl UpstashClient {
     /// partial configuration so deployments fail loudly instead of silently
     /// falling back to ephemeral SQLite.
     pub fn from_env() -> Result<Option<Self>, String> {
-        let url = std::env::var(REST_URL_ENV).ok().filter(|v| !v.trim().is_empty());
-        let token = std::env::var(REST_TOKEN_ENV).ok().filter(|v| !v.trim().is_empty());
+        let url = first_env(REST_URL_ENVS);
+        let token = first_env(REST_TOKEN_ENVS);
 
         match (url, token) {
             (None, None) => Ok(None),
             (Some(url), Some(token)) => {
-                let client = reqwest::blocking::Client::builder()
-                    .timeout(Duration::from_secs(5))
-                    .build()
-                    .map_err(|e| format!("failed to create Upstash client: {e}"))?;
+                // Build the blocking client on a dedicated thread. reqwest::blocking
+                // creates and drops an internal runtime while building, which panics
+                // when done inside the async runtime that drives the server (this
+                // `from_env` runs during async startup).
+                let client = std::thread::spawn(|| {
+                    reqwest::blocking::Client::builder()
+                        .timeout(Duration::from_secs(5))
+                        .build()
+                })
+                .join()
+                .map_err(|_| "Upstash client builder thread panicked".to_string())?
+                .map_err(|e| format!("failed to create Upstash client: {e}"))?;
                 Ok(Some(Self {
                     url: url.trim_end_matches('/').to_string(),
                     token,
                     client,
                 }))
             }
-            _ => Err(format!(
-                "Upstash requires both {REST_URL_ENV} and {REST_TOKEN_ENV}"
-            )),
+            _ => Err(
+                "Upstash requires both a REST URL (UPSTASH_REDIS_REST_URL or KV_REST_API_URL) \
+                 and token (UPSTASH_REDIS_REST_TOKEN or KV_REST_API_TOKEN)"
+                    .to_string(),
+            ),
         }
     }
 
