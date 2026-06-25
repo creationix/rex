@@ -10,6 +10,15 @@ use std::sync::Arc;
 use crate::refs::*;
 use crate::state::AppState;
 
+/// Default `Cache-Control` for static assets (and the built-in favicon).
+///
+/// Lets Vercel's CDN edge-cache the response (`s-maxage`, purged on each deploy)
+/// while keeping the browser cache short (`max-age`) since asset URLs are not
+/// content-hashed. A handler or middleware that sets its own `cache-control`
+/// always takes precedence.
+const STATIC_CACHE_CONTROL: &str =
+    "public, max-age=600, s-maxage=31536000, stale-while-revalidate=86400";
+
 pub async fn handle_request(
     State(state): State<Arc<AppState>>,
     req: Request,
@@ -72,7 +81,7 @@ pub async fn handle_request(
         return Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "image/png")
-            .header("cache-control", "public, max-age=86400")
+            .header("cache-control", STATIC_CACHE_CONTROL)
             .body(Body::from(FAVICON))
             .unwrap();
     }
@@ -399,6 +408,12 @@ async fn serve_static_file(
             let mut builder = Response::builder()
                 .status(StatusCode::OK)
                 .header("content-type", &static_file.content_type);
+            // Default cache-control so Vercel's CDN edge-caches the response.
+            // Skip if middleware already supplied one — axum's `.header()` appends
+            // rather than replaces, so this avoids a duplicate header.
+            if !extra_headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("cache-control")) {
+                builder = builder.header("cache-control", STATIC_CACHE_CONTROL);
+            }
             for (k, v) in extra_headers {
                 builder = builder.header(k.as_str(), v.as_str());
             }
