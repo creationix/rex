@@ -9,10 +9,12 @@ use crate::refs::value_to_string;
 /// Build the opcodes map for a handler invocation.
 pub fn build_opcodes(
     db: Arc<Mutex<rusqlite::Connection>>,
+    upstash: Option<Arc<crate::storage::UpstashClient>>,
     project_root: PathBuf,
     kv: Arc<std::sync::Mutex<crate::kv::KvStore>>,
 ) -> HashMap<String, fn(&[Value], &mut Heap) -> Result<Value, RexError>> {
     DB_CONN.with(|cell| { *cell.borrow_mut() = Some(db); });
+    UPSTASH.with(|cell| { *cell.borrow_mut() = upstash; });
     let canonical = project_root.canonicalize().unwrap_or_else(|_| project_root.clone());
     PROJECT_ROOT.with(|cell| { *cell.borrow_mut() = Some(project_root); });
     PROJECT_ROOT_CANONICAL.with(|cell| { *cell.borrow_mut() = Some(canonical); });
@@ -93,12 +95,18 @@ pub fn build_opcodes(
 thread_local! {
     static DB_CONN: std::cell::RefCell<Option<Arc<Mutex<rusqlite::Connection>>>> =
         const { std::cell::RefCell::new(None) };
+    static UPSTASH: std::cell::RefCell<Option<Arc<crate::storage::UpstashClient>>> =
+        const { std::cell::RefCell::new(None) };
     static PROJECT_ROOT: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
     static PROJECT_ROOT_CANONICAL: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
     static KV_STORE: std::cell::RefCell<Option<Arc<std::sync::Mutex<crate::kv::KvStore>>>> =
         const { std::cell::RefCell::new(None) };
+}
+
+fn upstash() -> Option<Arc<crate::storage::UpstashClient>> {
+    UPSTASH.with(|cell| cell.borrow().clone())
 }
 
 fn with_db<F, R>(f: F) -> Result<R, RexError>
@@ -173,90 +181,94 @@ fn op_log_error(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
 
 fn op_db_get(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
     let key = arg_str(args, 0, heap)?.to_string();
-    with_db(|conn| {
-        let mut stmt = conn.prepare_cached("SELECT value FROM kv WHERE key = ?1")
-            .map_err(|e| RexError::HostError(format!("db.get: {e}")))?;
-        let result: Result<String, _> = stmt.query_row([&key], |row| row.get(0));
-        match result {
-            Ok(_) => Ok(()),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(()),
-            Err(e) => Err(RexError::HostError(format!("db.get: {e}"))),
-        }
-    })?;
-    // Re-run to get value (need heap access outside with_db)
-    with_db(|conn| {
-        let mut stmt = conn.prepare_cached("SELECT value FROM kv WHERE key = ?1")
-            .map_err(|e| RexError::HostError(format!("db.get: {e}")))?;
-        let result: Result<String, _> = stmt.query_row([&key], |row| row.get(0));
-        match result {
-            Ok(val) => Ok(val),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(String::new()),
-            Err(e) => Err(RexError::HostError(format!("db.get: {e}"))),
-        }
-    }).map(|val| {
-        if val.is_empty() { Value::NONE } else { heap.intern_value(&val) }
-    })
+    let value = if let Some(upstash) = upstash() {
+        upstash.get(&key)
+            .map_err(|e| RexError::HostError(format!("db.get: {e}")))?
+    } else {
+        with_db(|conn| {
+            let mut stmt = conn.prepare_cached("SELECT value FROM kv WHERE key = ?1")
+                .map_err(|e| RexError::HostError(format!("db.get: {e}")))?;
+            let result: Result<String, _> = stmt.query_row([&key], |row| row.get(0));
+            match result {
+                Ok(value) => Ok(Some(value)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(RexError::HostError(format!("db.get: {e}"))),
+            }
+        })?
+    };
+
+    Ok(value.map_or(Value::NONE, |value| heap.intern_value(&value)))
 }
 
 fn op_db_set(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
     let key = arg_str(args, 0, heap)?.to_string();
     let value = args.get(1).map(|v| value_to_string(*v, heap)).unwrap_or_default();
-    with_db(|conn| {
-        conn.execute(
-            "INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)",
-            [&key, &value],
-        ).map_err(|e| RexError::HostError(format!("db.set: {e}")))?;
-        Ok(())
-    })?;
+    if let Some(upstash) = upstash() {
+        upstash.set(&key, &value)
+            .map_err(|e| RexError::HostError(format!("db.set: {e}")))?;
+    } else {
+        with_db(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)",
+                [&key, &value],
+            ).map_err(|e| RexError::HostError(format!("db.set: {e}")))?;
+            Ok(())
+        })?;
+    }
     Ok(heap.intern_value(&value))
 }
 
 fn op_db_delete(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
     let key = arg_str(args, 0, heap)?.to_string();
-    // Fetch old value before deleting — caller already has the key,
-    // but losing access to the value is the interesting part.
-    let old_value: Option<String> = with_db(|conn| {
-        let result: Result<String, _> = conn
-            .prepare_cached("SELECT value FROM kv WHERE key = ?1")
+    let old_value = if let Some(upstash) = upstash() {
+        upstash.delete(&key)
             .map_err(|e| RexError::HostError(format!("db.delete: {e}")))?
-            .query_row([&key], |row| row.get(0));
-        match result {
-            Ok(val) => Ok(Some(val)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(RexError::HostError(format!("db.delete: {e}"))),
-        }
-    })?;
-    if old_value.is_some() {
-        with_db(|conn| {
-            conn.execute("DELETE FROM kv WHERE key = ?1", [&key])
-                .map_err(|e| RexError::HostError(format!("db.delete: {e}")))?;
-            Ok(())
-        })?;
-        Ok(heap.intern_value(&old_value.unwrap()))
     } else {
-        Ok(Value::NONE)
-    }
+        // SQLite lacks GETDEL, so fetch and delete under the same connection lock.
+        with_db(|conn| {
+            let result: Result<String, _> = conn
+                .prepare_cached("SELECT value FROM kv WHERE key = ?1")
+                .map_err(|e| RexError::HostError(format!("db.delete: {e}")))?
+                .query_row([&key], |row| row.get(0));
+            match result {
+                Ok(value) => {
+                    conn.execute("DELETE FROM kv WHERE key = ?1", [&key])
+                        .map_err(|e| RexError::HostError(format!("db.delete: {e}")))?;
+                    Ok(Some(value))
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(RexError::HostError(format!("db.delete: {e}"))),
+            }
+        })?
+    };
+
+    Ok(old_value.map_or(Value::NONE, |value| heap.intern_value(&value)))
 }
 
 fn op_db_list(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
     let prefix = arg_str(args, 0, heap)?.to_string();
-    let rows: Vec<(String, String)> = with_db(|conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT key, value FROM kv WHERE key LIKE ?1 ORDER BY key"
-        ).map_err(|e| RexError::HostError(format!("db.list: {e}")))?;
+    let rows: Vec<(String, String)> = if let Some(upstash) = upstash() {
+        upstash.list(&prefix)
+            .map_err(|e| RexError::HostError(format!("db.list: {e}")))?
+    } else {
+        with_db(|conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT key, value FROM kv WHERE key LIKE ?1 ORDER BY key"
+            ).map_err(|e| RexError::HostError(format!("db.list: {e}")))?;
 
-        let pattern = format!("{prefix}%");
-        let rows: Vec<(String, String)> = stmt.query_map([&pattern], |row| {
-            let key: String = row.get(0)?;
-            let value: String = row.get(1)?;
-            Ok((key, value))
-        })
-        .map_err(|e| RexError::HostError(format!("db.list: {e}")))?
-        .filter_map(|r| r.ok())
-        .collect();
+            let pattern = format!("{prefix}%");
+            let rows: Vec<(String, String)> = stmt.query_map([&pattern], |row| {
+                let key: String = row.get(0)?;
+                let value: String = row.get(1)?;
+                Ok((key, value))
+            })
+            .map_err(|e| RexError::HostError(format!("db.list: {e}")))?
+            .filter_map(|r| r.ok())
+            .collect();
 
-        Ok(rows)
-    })?;
+            Ok(rows)
+        })?
+    };
 
     let k_key = heap.intern("key");
     let k_val = heap.intern("value");
@@ -1067,6 +1079,14 @@ fn op_db_cas(args: &[Value], heap: &mut Heap) -> Result<Value, RexError> {
     let key = arg_str(args, 0, heap)?.to_string();
     let old = arg_str(args, 1, heap)?.to_string();
     let new = arg_str(args, 2, heap)?.to_string();
+    if let Some(upstash) = upstash() {
+        return match upstash.compare_and_swap(&key, &old, &new)
+            .map_err(|e| RexError::HostError(format!("db.cas: {e}")))?
+        {
+            None => Ok(Value::NONE),
+            Some(actual) => Ok(heap.intern_value(&actual)),
+        };
+    }
     with_db(|conn| {
         // Atomic CAS: check current value, update only if it matches old
         let current: Result<String, _> = conn

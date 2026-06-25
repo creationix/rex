@@ -9,6 +9,8 @@ pub struct AppState {
     pub config: Config,
     pub route_table: RwLock<RouteTable>,
     pub db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    /// Optional durable string KV backend. SQLite remains available for CAS/git data.
+    pub upstash: Option<Arc<crate::storage::UpstashClient>>,
     pub project_root: PathBuf,
     /// Broadcast channel for file change notifications (for WebSocket clients)
     pub reload_tx: broadcast::Sender<String>,
@@ -16,6 +18,8 @@ pub struct AppState {
     pub kv: Arc<std::sync::Mutex<crate::kv::KvStore>>,
     /// Domain schema source (.rexd) for domain-aware compilation
     pub domain_source: Option<String>,
+    /// Read-only secrets loaded from environment variables with the configured prefix.
+    pub secrets: serde_json::Value,
 }
 
 impl AppState {
@@ -36,6 +40,26 @@ impl AppState {
         };
         let conn = crate::opcodes::init_db(&db_path);
         let db = Arc::new(std::sync::Mutex::new(conn));
+
+        let upstash = match config.db.backend.as_str() {
+            "sqlite" => None,
+            "auto" => crate::storage::UpstashClient::from_env()?.map(Arc::new),
+            "upstash" => Some(Arc::new(
+                crate::storage::UpstashClient::from_env()?
+                    .ok_or_else(|| "db.backend is upstash but Upstash environment variables are missing".to_string())?,
+            )),
+            backend => return Err(format!("unsupported database backend: {backend}")),
+        };
+        if upstash.is_some() {
+            tracing::info!("using Upstash Redis for db.* string KV operations");
+        } else {
+            tracing::info!("using SQLite for db.* string KV operations");
+        }
+
+        let secrets = load_secrets(&config.secrets.env_prefix);
+        if let Some(values) = secrets.as_object() {
+            tracing::info!("loaded {} secret(s) from the environment", values.len());
+        }
 
         // Load domain schema (.rexd) for domain-aware compilation and type checking
         let domain_source = find_rexd(&project_root);
@@ -104,11 +128,42 @@ impl AppState {
             config,
             route_table: RwLock::new(table),
             db,
+            upstash,
             project_root,
             reload_tx,
             kv,
             domain_source,
+            secrets,
         }))
+    }
+}
+
+fn load_secrets(prefix: &str) -> serde_json::Value {
+    let values = std::env::vars()
+        .filter_map(|(name, value)| secret_name(&name, prefix).map(|key| (key, value.into())))
+        .collect();
+    serde_json::Value::Object(values)
+}
+
+fn secret_name(name: &str, prefix: &str) -> Option<String> {
+    let suffix = name.strip_prefix(prefix)?;
+    if suffix.is_empty() {
+        return None;
+    }
+    Some(suffix.to_ascii_lowercase().replace('_', "-"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::secret_name;
+
+    #[test]
+    fn secret_names_map_to_rex_properties() {
+        assert_eq!(
+            secret_name("REX_SECRET_API_KEY", "REX_SECRET_"),
+            Some("api-key".into())
+        );
+        assert_eq!(secret_name("OTHER_API_KEY", "REX_SECRET_"), None);
     }
 }
 

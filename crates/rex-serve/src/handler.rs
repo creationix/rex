@@ -272,6 +272,7 @@ fn run_rex_program(
     let mut ns_kv = OpcodeNamespace { methods: vec![("get", "kg"), ("set", "ks"), ("del", "kd"), ("keys", "kk"), ("incr", "ki"), ("publish", "kp")], tag_opcode: None };
     let mut ns_html = OpcodeNamespace { methods: vec![("escape", "he"), ("highlight", "hl"), ("highlight-html", "hh"), ("raw", "hr")], tag_opcode: Some("ht") };
     let mut ns_http = OpcodeNamespace { methods: vec![("fetch", "hf")], tag_opcode: None };
+    let mut secrets_obj = JsonHostObject { value: state.secrets.clone() };
 
     let mut refs = HashMap::new();
     refs.insert("M".into(), heap.intern_value(method));
@@ -313,9 +314,11 @@ fn run_rex_program(
     vars.insert("cas".into(), Value::host(15));
     vars.insert("git".into(), Value::host(16));
     vars.insert("http".into(), Value::host(17));
+    vars.insert("secrets".into(), Value::host(18));
 
     let opcodes = crate::opcodes::build_opcodes(
         state.db.clone(),
+        state.upstash.clone(),
         state.project_root.clone(),
         state.kv.clone(),
     );
@@ -342,6 +345,7 @@ fn run_rex_program(
             &mut ns_cas,            // 15
             &mut ns_git,            // 16
             &mut ns_http,           // 17
+            &mut secrets_obj,       // 18
         ],
         opcodes,
         gas_limit: state.config.server.gas_limit,

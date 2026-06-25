@@ -91,7 +91,7 @@ pub async fn pubsub_connection(
 /// message. Returns the transformed payload to publish, or `None` to suppress.
 /// On error, the original payload is passed through unchanged.
 fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<String> {
-    use crate::refs::OpcodeNamespace;
+    use crate::refs::{JsonHostObject, OpcodeNamespace};
     use rex_core::heap::{Heap, Value};
     use rex_core::interpret::Context;
     use std::collections::HashMap;
@@ -113,6 +113,7 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
     let mut ns_cas = OpcodeNamespace { methods: vec![("put", "cp"), ("get", "cg"), ("has", "cx")], tag_opcode: None };
     let mut ns_git = OpcodeNamespace { methods: vec![("decode", "gd"), ("children", "gc"), ("verify", "gv"), ("is-ancestor", "ga"), ("encode", "ge"), ("encode-blob", "gB")], tag_opcode: None };
     let mut ns_crypto = OpcodeNamespace { methods: vec![("hash", "ch"), ("hmac", "cm"), ("random", "cr")], tag_opcode: None };
+    let mut secrets_obj = JsonHostObject { value: state.secrets.clone() };
 
     vars.insert("json".into(), Value::host(0));
     vars.insert("log".into(), Value::host(1));
@@ -122,9 +123,11 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
     vars.insert("cas".into(), Value::host(5));
     vars.insert("git".into(), Value::host(6));
     vars.insert("crypto".into(), Value::host(7));
+    vars.insert("secrets".into(), Value::host(8));
 
     let opcodes = crate::opcodes::build_opcodes(
         state.db.clone(),
+        state.upstash.clone(),
         state.project_root.clone(),
         state.kv.clone(),
     );
@@ -141,6 +144,7 @@ fn run_ws_transform(bytecode: &str, data: &str, state: &AppState) -> Option<Stri
             &mut ns_cas,
             &mut ns_git,
             &mut ns_crypto,
+            &mut secrets_obj,
         ],
         opcodes,
         gas_limit: state.config.server.gas_limit,
