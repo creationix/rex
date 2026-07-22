@@ -8,7 +8,7 @@ end
 when method == "POST" do
   input = json.parse(body)
 
-  unless input and input.slug and input.title and input.body do
+  unless input.slug and input.title and input.body do
     res.status = 422
     return { ok: false error: "slug_title_body_required" }
   end

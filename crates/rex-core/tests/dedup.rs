@@ -240,3 +240,44 @@ fn dedup_middleware_with_guard_returns() {
     "#);
 }
 
+// ── Schema pointer regression tests ────────────────────────────────
+
+#[test]
+fn dedup_schema_no_double_side_effects() {
+    // When objects share a schema, the schema source's values must not
+    // be evaluated during key extraction. If they were, the counter
+    // would be incremented an extra time.
+    assert_dedup_matches(r#"
+        counter = 0
+        counter = counter + 1
+        a = {x: counter}
+        counter = counter + 1
+        b = {x: counter}
+        [a.x, b.x]
+    "#);
+}
+
+#[test]
+fn dedup_schema_with_mutation_values() {
+    // Ensure shared-schema objects with mutation expressions as values
+    // produce correct results — the schema scan must skip values, not
+    // evaluate them.
+    assert_dedup_matches(r#"
+        n = 0
+        n = n + 1
+        first = {val: n}
+        n = n + 1
+        second = {val: n}
+        first.val + second.val
+    "#);
+}
+
+#[test]
+fn dedup_schema_comprehension_shared_keys_multi() {
+    // Multi-key variant of the original comprehension bug — ensures
+    // schema scanning works with multiple keys.
+    assert_dedup_matches(r#"
+        items = [{name: "a", score: 1}, {name: "b", score: 2}]
+        [{name: item.name, score: item.score} for item in items]
+    "#);
+}

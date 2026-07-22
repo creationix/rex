@@ -350,7 +350,17 @@ fn check_format(source: &str, line: usize) -> Option<String> {
     let formatted = formatted.trim();
     let source = source.trim();
     if formatted != source {
-        Some(format!("line {line}: format mismatch\n  source:    {source}\n  formatted: {formatted}"))
+        let indent = |s: &str| -> String {
+            s.lines()
+                .map(|l| format!("  {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Some(format!(
+            "line {line}: format mismatch\n\x1b[31m  source:\x1b[0m\n{}\n\x1b[32m  formatted:\x1b[0m\n{}",
+            indent(source),
+            indent(formatted),
+        ))
     } else {
         None
     }
@@ -484,7 +494,8 @@ fn run_test(test: &SpecTest) -> Vec<String> {
 // ── JSON conversion ───────────────────────────────────────────────────
 
 fn value_to_json(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> serde_json::Value {
-    if v.is_none() || v.is_null() { return serde_json::Value::Null; }
+    if v.is_none() { return serde_json::Value::Null; } // should not normally be called for none
+    if v.is_null() { return serde_json::Value::Null; }
     if let Some(b) = v.as_bool() { return serde_json::Value::Bool(b); }
     if let Some(n) = v.as_i64() { return serde_json::json!(n); }
     // Preserve sig*10^exp representation for decimals
@@ -495,6 +506,7 @@ fn value_to_json(v: rex_core::heap::Value, heap: &rex_core::heap::Heap) -> serde
                 return serde_json::from_str(&s).unwrap_or_else(|_| serde_json::json!(0));
             }
             rex_core::heap::FloatValue::Float(f) => return serde_json::json!(f),
+            rex_core::heap::FloatValue::Blob(id) => return serde_json::json!(format!("<blob {} bytes>", heap.blobs[*id].len())),
         }
     }
     if let Some(s) = v.as_str(heap) { return serde_json::Value::String(s.to_string()); }
@@ -521,6 +533,7 @@ fn vars_to_json(vars: &HashMap<String, rex_core::heap::Value>, heap: &rex_core::
     let mut map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
     for key in keys {
         if let Some(&value) = vars.get(key) {
+            if value.is_none() { continue; } // none = absence, not a value
             map.insert(key.clone(), value_to_json(value, heap));
         }
     }

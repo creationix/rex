@@ -1,9 +1,3 @@
-mod config;
-mod handler;
-mod kv;
-mod opcodes;
-mod refs;
-mod router;
 mod server;
 
 use clap::Parser;
@@ -32,7 +26,7 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let mut config = config::Config::load(&project_root);
+    let mut config = rex_serve::config::Config::load(&project_root);
 
     if let Some(port) = cli.port {
         config.server.port = port;

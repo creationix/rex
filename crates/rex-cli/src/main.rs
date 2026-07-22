@@ -457,12 +457,29 @@ fn cmd_run(
 
     let t = Instant::now();
 
-    // Compile with or without domain
-    let bytecode = match &domain {
-        Some(d) => {
-            let domain_src = std::fs::read_to_string(d)?;
-            rex_core::compile_with_domain(&source, &domain_src)
+    // Type-check before running — undefined variables, type mismatches, etc.
+    let domain_src = match &domain {
+        Some(d) => Some(std::fs::read_to_string(d)?),
+        None => input.as_ref().and_then(|p| find_rexd(p)).and_then(|p| std::fs::read_to_string(p).ok()),
+    };
+    let schema = match &domain_src {
+        Some(src) => rex_core::typecheck::parse_rexd(src),
+        None => rex_core::typecheck::DomainSchema::default(),
+    };
+    let diags = rex_core::typecheck::check_source(&source, &schema);
+    let errors: Vec<_> = diags.iter().filter(|d| d.kind == rex_core::typecheck::DiagnosticKind::Error).collect();
+    if !errors.is_empty() {
+        for d in &errors {
+            let (line, col) = offset_to_line_col(&source, d.span.start);
+            let label = input.as_ref().map_or("<expr>".to_string(), |p| p.display().to_string());
+            eprintln!("{}:{}:{}: {} {}", label, line, col, red("error:"), d.message);
         }
+        std::process::exit(1);
+    }
+
+    // Compile with or without domain
+    let bytecode = match &domain_src {
+        Some(src) => rex_core::compile_with_domain(&source, src),
         None => rex_core::compile(&source),
     };
 
@@ -630,6 +647,7 @@ fn write_value(w: &mut dyn std::io::Write, value: rex_core::heap::Value, heap: &
         match &heap.floats[id as usize] {
             FloatValue::Float(n) => { let _ = write!(w, "{}", yellow(&format!("{n}"))); }
             FloatValue::Decimal { sig, exp } => { let _ = write!(w, "{}", yellow(&format!("{sig}e{exp}"))); }
+            FloatValue::Blob(blob_id) => { let _ = write!(w, "{}", dim(&format!("<blob {} bytes>", heap.blobs[*blob_id].len()))); }
         }
         return;
     }
@@ -999,6 +1017,24 @@ fn cmd_check(input: PathBuf, domain: Option<PathBuf>) -> io::Result<()> {
 
     for file in &files {
         let source = std::fs::read_to_string(file)?;
+
+        // Parse errors (same as LSP)
+        let tokens = rex_core::lexer::lex(&source);
+        let (_, parse_errors) = rex_core::parser::parse(&source, &tokens);
+        for e in &parse_errors {
+            let (line, col) = offset_to_line_col(&source, e.span.start);
+            eprintln!(
+                "{}:{}:{}: {} {}",
+                file.display(),
+                line,
+                col,
+                red("error:"),
+                e.message
+            );
+        }
+        total_errors += parse_errors.len();
+
+        // Type-check errors and warnings
         let diags = typecheck::check_source(&source, &schema);
 
         for d in &diags {

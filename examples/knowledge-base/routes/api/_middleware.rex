@@ -6,7 +6,7 @@ api-key = headers.authorization
 
 unless api-key do
   res.status = 401
-  return { ok: falseerror: "missing_api_key"hint: "Add Authorization header. Seed a key: sqlite3 data.db \"INSERT INTO kv VALUES('keys:demo','1')\"" }
+  return { ok: false error: "missing_api_key" hint: "Add Authorization header. Seed a key: sqlite3 data.db \"INSERT INTO kv VALUES('keys:demo','1')\"" }
 end
 
 key-valid = db.get("keys:" + api-key)
