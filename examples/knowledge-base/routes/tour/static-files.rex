@@ -1,7 +1,7 @@
 /* Tour Stop 1: Static Files
    This page demonstrates tagged template literals — the html tag
    auto-escapes interpolated values, preventing XSS. */
-res.headers.content-type = "text/html"
+res.headers.content-type = "text/html; charset=utf-8"
 layout = fs.read("routes/_layouts/page.html")
 unless layout do
   status = 500
@@ -49,8 +49,8 @@ The <code>html</code> tag auto-escapes all interpolated values, preventing XSS.
 Static HTML passes through unchanged, and quotes don't need escaping.</p>`
 
 /* Show the before/after comparison using highlighted Rex snippets */
-old-way = "body = body + \"<a href=\\"\" + url + \"\\">\" + title + \"</a>\""
-new-way = "body = html`<a href=\"${url}\">${title}</a>`"
+old-way = 'body = body + "<a href=" + url + ">" + title + "</a>"'
+new-way = 'body = html`<a href="${url}">${title}</a>`'
 body = body + "<p>Instead of string concatenation with escaped quotes:</p>"
 body = body + "<pre>" + html.highlight(old-way) + "</pre>"
 body = body + "<p>You write:</p>"

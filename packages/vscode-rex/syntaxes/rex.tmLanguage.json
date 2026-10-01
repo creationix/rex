@@ -184,7 +184,7 @@
 			"name": "storage.modifier.rex"
 		},
 		"support-type": {
-			"match": "\\b(str|int|num|bool|some|unknown|never)\\b",
+			"match": "\\b(str|int|num|bool|blob|some|unknown|never)\\b",
 			"name": "support.type.rex"
 		},
 		"logical-operator": {
@@ -231,7 +231,7 @@
 			}
 		},
 		"type-annotation-primitive": {
-			"match": "(?<=: )(int|num|bool|str|null|none|some|unknown|never|type)\\b",
+			"match": "(?<=: )(int|num|bool|str|blob|null|none|some|unknown|never|type)\\b",
 			"name": "support.type.primitive.rex"
 		},
 		"type-annotation-user": {

@@ -1,5 +1,5 @@
 /* Tour Stop 5: JSON API */
-res.headers.content-type = "text/html"
+res.headers.content-type = "text/html; charset=utf-8"
 layout = fs.read("routes/_layouts/page.html")
 unless layout do
   status = 500
@@ -74,7 +74,7 @@ The database file is created automatically on first run.</p>
 <ul>
 <li><code>db.get(key)</code> — returns the value or <code>none</code></li>
 <li><code>db.set(key, value)</code> — upserts a string value</li>
-<li><code>db.delete(key)</code> — removes a key</li>
+<li><code>db.del(key)</code> — removes a key</li>
 <li><code>db.list(prefix)</code> — returns all entries matching a prefix</li>
 </ul>
 

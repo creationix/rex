@@ -161,6 +161,28 @@ Parentheses make the key an expression:
 | `{ name:1 }` | `{4,name2+}` |
 | `{ (x):1 }`  | `{x$2+}`     |
 
+```rex
+extern db: { *: { *: str } }
+extern key: str
+res = db.(key + ".html").prop
+```
+
+```csv types
+text                   , type             , line, col
+db                     , { *: { *: str } }, 1   , 8
+str                    , str              , 1   , 22
+key                    , str              , 2   , 8
+str                    , str              , 2   , 13
+res                    , str | none       , 3   , 1
+db                     , { *: { *: str } }, 3   , 7
+"db.(key + "".html"").prop", str | none       , 3   , 7
+key                    , str              , 3   , 11
+```
+
+```rext
+=res$(db$(ad%key$5,.html)4,prop)
+```
+
 ## Spread
 
 `...expr` inside arrays and objects splices the contents of `expr` into the
@@ -470,25 +492,23 @@ tim-color = db.tim.color
 ```
 
 ```csv types
-text        , type                                                           , line, col
-db          , { bob: { name: str color: int } tim: { name: str color: int } }, 1   , 1
-bob         , { name: str color: int }                                       , 2   , 3
-name        , str                                                            , 2   , 9
-"""Bob"""   , str                                                            , 2   , 14
-color       , int                                                            , 2   , 20
-0x44ff44    , int                                                            , 2   , 26
-tim         , { name: str color: int }                                       , 3   , 3
-name        , str                                                            , 3   , 9
-"""Tim"""   , str                                                            , 3   , 14
-color       , int                                                            , 3   , 20
-0x0088ff    , int                                                            , 3   , 26
-first-name  , { name: str color: int }                                       , 6   , 1
-db          , { bob: { name: str color: int } tim: { name: str color: int } }, 6   , 14
-db.bob      , { name: str color: int }                                       , 6   , 14
-tim-color   , int                                                            , 7   , 1
-db          , { bob: { name: str color: int } tim: { name: str color: int } }, 7   , 13
-db.tim      , { name: str color: int }                                       , 7   , 13
-db.tim.color, int                                                            , 7   , 13
+text        , type                                                               , line, col
+db          , "{ bob: { name: ""Bob"" color: int } tim: { name: ""Tim"" color: int } }", 1   , 1
+bob         , "{ name: ""Bob"" color: int }"                                     , 2   , 3
+name        , """Bob"""                                                          , 2   , 9
+color       , int                                                                , 2   , 20
+0x44ff44    , int                                                                , 2   , 26
+tim         , "{ name: ""Tim"" color: int }"                                     , 3   , 3
+name        , """Tim"""                                                          , 3   , 9
+color       , int                                                                , 3   , 20
+0x0088ff    , int                                                                , 3   , 26
+first-name  , "{ name: ""Bob"" color: int }"                                     , 6   , 1
+db          , "{ bob: { name: ""Bob"" color: int } tim: { name: ""Tim"" color: int } }", 6   , 14
+db.bob      , "{ name: ""Bob"" color: int }"                                     , 6   , 14
+tim-color   , int                                                                , 7   , 1
+db          , "{ bob: { name: ""Bob"" color: int } tim: { name: ""Tim"" color: int } }", 7   , 13
+db.tim      , "{ name: ""Tim"" color: int }"                                     , 7   , 13
+db.tim.color, int                                                                , 7   , 13
 ```
 
 ```rext
@@ -518,14 +538,12 @@ name        , str                            , 1   , 12
 str         , str                            , 1   , 18
 color       , int                            , 1   , 22
 int         , int                            , 1   , 29
-bob         , { name: str color: int }       , 2   , 3
-name        , str                            , 2   , 9
-"""Bob"""   , str                            , 2   , 14
+bob         , "{ name: ""Bob"" color: int }" , 2   , 3
+name        , """Bob"""                      , 2   , 9
 color       , int                            , 2   , 20
 0x44ff44    , int                            , 2   , 26
-tim         , { name: str color: int }       , 3   , 3
-name        , str                            , 3   , 9
-"""Tim"""   , str                            , 3   , 14
+tim         , "{ name: ""Tim"" color: int }" , 3   , 3
+name        , """Tim"""                      , 3   , 9
 color       , int                            , 3   , 20
 0x0088ff    , int                            , 3   , 26
 first-name  , { name: str color: int } | none, 6   , 1
@@ -574,14 +592,12 @@ bob         , { name: str color: int }                                       , 3
 Person      , { name: str color: int }                                       , 3   , 12
 tim         , { name: str color: int }                                       , 3   , 19
 Person      , { name: str color: int }                                       , 3   , 24
-bob         , { name: str color: int }                                       , 4   , 3
-name        , str                                                            , 4   , 9
-"""Bob"""   , str                                                            , 4   , 14
+bob         , "{ name: ""Bob"" color: int }"                                 , 4   , 3
+name        , """Bob"""                                                      , 4   , 9
 color       , int                                                            , 4   , 20
 0x44ff44    , int                                                            , 4   , 26
-tim         , { name: str color: int }                                       , 5   , 3
-name        , str                                                            , 5   , 9
-"""Tim"""   , str                                                            , 5   , 14
+tim         , "{ name: ""Tim"" color: int }"                                 , 5   , 3
+name        , """Tim"""                                                      , 5   , 9
 color       , int                                                            , 5   , 20
 0x0088ff    , int                                                            , 5   , 26
 first-name  , { name: str color: int }                                       , 8   , 1
@@ -812,10 +828,7 @@ String concatenation uses `+`:
 ```
 
 ```json types
-[
-  {"text":"\"hello\"", "type":"str","line":1,"col":1},
-  {"text":"\" world\"","type":"str","line":1,"col":11}
-]
+[]
 ```
 
 ```rext
@@ -949,6 +962,82 @@ true, bool        , 1   , 31
 [2, null]
 ```
 
+```rex
+b = true
+n = null
+ban = b and n
+i = 42
+d = 1.23
+iad = i and d
+banaiad = ban and iad
+```
+
+```csv types
+text   , type       , line, col
+b      , bool       , 1   , 1
+true   , bool       , 1   , 5
+n      , null       , 2   , 1
+null   , null       , 2   , 5
+ban    , null       , 3   , 1
+b      , bool       , 3   , 7
+n      , null       , 3   , 13
+i      , int        , 4   , 1
+42     , int        , 4   , 5
+d      , num        , 5   , 1
+1.23   , num        , 5   , 5
+iad    , num        , 6   , 1
+i      , int        , 6   , 7
+d      , num        , 6   , 13
+banaiad, num        , 7   , 1
+ban    , null       , 7   , 11
+iad    , num        , 7   , 19
+```
+
+```rext
+(%=b$t'=n$n'=ban$&(b$n$)=i$1k+=d$3*3S+=iad$&(i$d$)=banaiad$&(ban$iad$))
+```
+
+```json
+1.23
+```
+
+```rex
+a = 100
+b = "hi"
+c: int | none = 200
+d: str | none = "wow"
+x = a or b
+y = c or d
+```
+
+```csv types
+text, type            , line, col
+a   , int             , 1   , 1
+100 , int             , 1   , 5
+b   , """hi"""        , 2   , 1
+c   , int | none      , 3   , 1
+int , int             , 3   , 4
+none, none            , 3   , 10
+200 , int             , 3   , 17
+d   , str | none      , 4   , 1
+str , str             , 4   , 4
+none, none            , 4   , 10
+x   , int             , 5   , 1
+a   , int             , 5   , 5
+b   , never           , 5   , 10
+y   , int | str | none, 6   , 1
+c   , int | none      , 6   , 5
+d   , str | none      , 6   , 10
+```
+
+```rext
+(%=a$38+=b$2,hi=c$6g+=d$3,wow=x$|(a$b$)=y$|(c$d$))
+```
+
+```json
+200
+```
+
 ---
 
 # Control Flow
@@ -971,17 +1060,15 @@ end
 ```
 
 ```csv types
-text   , type      , line, col
-x      , int       , 1   , 8
-int    , int       , 1   , 11
-a      , str       , 2   , 1
-c      , int | none, 2   , 10
-x      , int       , 2   , 14
-5      , int       , 2   , 18
-b      , str       , 3   , 3
-"""big""", str       , 3   , 7
-c      , str       , 5   , 3
-"""small""", str       , 5   , 7
+text, type           , line, col
+x   , int            , 1   , 8
+int , int            , 1   , 11
+a   , """big"" | ""small""", 2   , 1
+c   , int | none     , 2   , 10
+x   , int            , 2   , 14
+5   , int            , 2   , 18
+b   , """big"""      , 3   , 3
+c   , """small"""    , 5   , 3
 ```
 
 ```rext
@@ -1067,15 +1154,13 @@ end
 ```
 
 ```csv types
-text        , type      , line, col
-res         , never     , 1   , 1
-c           , int | none, 1   , 12
-1           , int       , 1   , 16
-2           , int       , 1   , 20
-"""impossible""", str       , 2   , 10
-42          , never     , 3   , 3
-"""likely""", str       , 5   , 10
-56          , never     , 6   , 3
+text, type      , line, col
+res , never     , 1   , 1
+c   , int | none, 1   , 12
+1   , int       , 1   , 16
+2   , int       , 1   , 20
+42  , never     , 3   , 3
+56  , never     , 6   , 3
 ```
 
 ```rext
@@ -1154,6 +1239,41 @@ for k of { a:1 b:2 } do k end
 "b"
 ```
 
+Iterating over a typed array narrows the loop variable to the element type:
+
+```rex
+users: [{ name: str score: int }] = [
+  { name:"Ada" score:95 }
+  { name:"Ben" score:72 }
+]
+scores = { (u.name):u.score for u in users }
+```
+
+```csv types
+text   , type                      , line, col
+users  , [{ name: str score: int }], 1   , 1
+name   , str                       , 1   , 11
+str    , str                       , 1   , 17
+score  , int                       , 1   , 21
+int    , int                       , 1   , 28
+name   , """Ada"""                 , 2   , 5
+score  , int                       , 2   , 16
+95     , int                       , 2   , 22
+name   , """Ben"""                 , 3   , 5
+score  , int                       , 3   , 16
+72     , int                       , 3   , 22
+scores , { *: int }                , 5   , 1
+u      , { name: str score: int }  , 5   , 13
+u.name , str                       , 5   , 13
+u      , { name: str score: int }  , 5   , 21
+u.score, int                       , 5   , 21
+users  , [{ name: str score: int }], 5   , 38
+```
+
+```json
+{"Ada": 95, "Ben": 72}
+```
+
 ## `while` Loops
 
 ```rex
@@ -1164,6 +1284,30 @@ while x < 3 do x += 1 end
 ```json
 3
 ```
+
+### for..in variables properly narrow
+
+<!-- TODO: type-checker doesn't yet track span types inside for..in loop bodies.
+     The csv types check is omitted until the checker emits spans for loop body
+     expressions. The aspirational output would show `v` narrowed to `int`
+     inside `when v do`. See KNOWN-ISSUES.md. -->
+
+```rex
+for v in [ 1, none, 3 ] do
+  when v do
+    v + 1
+  end
+end
+```
+
+```rext
+>([2+no'6+]v$?(v$7(ad%v$2+)))
+```
+
+```json
+4
+```
+
 
 ## `break` / `continue`
 
@@ -1258,6 +1402,117 @@ Return the value if it matches the type, `none` otherwise:
 ```
 
 ---
+
+# Lazy Evaluation and None Propagation
+
+This section tests that expressions are only evaluated when they should be and
+that the type system provides accurate types for short-circuiting operators.
+
+## And/Or Short-Circuiting
+
+```rex
+a: int | none = 100
+b: str | none = "hello"
+c = (e1 = a) and (e2 = b)
+```
+
+```csv types
+text, type      , line, col
+a   , int | none, 1   , 1
+int , int       , 1   , 4
+none, none      , 1   , 10
+100 , int       , 1   , 17
+b   , str | none, 2   , 1
+str , str       , 2   , 4
+none, none      , 2   , 10
+c   , str | none, 3   , 1
+e1  , int | none, 3   , 6
+a   , int | none, 3   , 11
+e2  , str | none, 3   , 19
+b   , str | none, 3   , 24
+```
+
+```rext
+(%=a$38+=b$5,hello=c$&(=e1$a$=e2$b$))
+```
+
+```json vars
+{"a":100,"b":"hello","c":"hello","e1":100,"e2":"hello"}
+```
+
+### none and
+
+Now try again with `a` set to `none`:
+
+```rex
+a = none
+b = "hello"
+c = (e1 = a) and (e2 = b)
+```
+
+```csv types
+text, type   , line, col
+a   , none   , 1   , 1
+none, none   , 1   , 5
+b   , """hello""", 2   , 1
+c   , none   , 3   , 1
+e1  , none   , 3   , 6
+a   , none   , 3   , 11
+e2  , never  , 3   , 19
+b   , never  , 3   , 24
+```
+
+```json vars
+{"b":"hello"}
+```
+
+### some and
+
+```rex
+a = 100
+b = "hello"
+c = (e1 = a) and (e2 = b)
+```
+
+```csv types
+text, type   , line, col
+a   , int    , 1   , 1
+100 , int    , 1   , 5
+b   , """hello""", 2   , 1
+c   , """hello""", 3   , 1
+e1  , int    , 3   , 6
+a   , int    , 3   , 11
+e2  , """hello""", 3   , 19
+b   , """hello""", 3   , 24
+```
+
+```rext
+(%=a$38+=b$5,hello=c$&(=e1$a$=e2$b$))
+```
+
+```json vars
+{"a":100,"b":"hello","c":"hello","e1":100,"e2":"hello"}
+```
+
+### none or
+
+```rex
+a = none
+b = "hello"
+c = (e1 = a) or (e2 = b)
+```
+
+```csv types
+text, type   , line, col
+a   , none   , 1   , 1
+none, none   , 1   , 5
+b   , """hello""", 2   , 1
+c   , """hello""", 3   , 1
+e1  , none   , 3   , 6
+a   , none   , 3   , 11
+e2  , """hello""", 3   , 18
+b   , """hello""", 3   , 23
+```
 
 # Host Environment
 

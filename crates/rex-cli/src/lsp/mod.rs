@@ -78,6 +78,7 @@ fn format_type_with_aliases(
             Type::Int => "int".to_string(),
             Type::Num => "num".to_string(),
             Type::Str => "str".to_string(),
+            Type::Blob => "blob".to_string(),
             Type::LiteralStr(s) => format!("\"{s}\""),
             Type::Array(elem) => format!("[{}]", format_inner(elem, aliases, false)),
             Type::Object { fields, wildcard } => {

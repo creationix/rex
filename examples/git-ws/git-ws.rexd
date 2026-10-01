@@ -1,0 +1,149 @@
+// Git WebSocket Server — Domain Type Interface
+// Extends rex-serve with git object storage, ref management, and WebSocket binary framing.
+
+// ── Base Types (from rex-serve) ───────────────────────────────────────
+
+type Headers = {*: str & [str]}
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD"
+type DbEntry = {key: str, value: str}
+type FetchOptions = {method: HttpMethod, headers: {*: str}, body: str}
+type FetchResult = {status: int, headers: Headers, body: str}
+
+// ── Git Object Types ──────────────────────────────────────────────────
+
+type GitIdent = {name: str, email: str, time: int, tz: str}
+type GitCommit = {type: "commit", tree: str, parents: [str], message: str, author: GitIdent, committer: GitIdent}
+type GitTree = {type: "tree", entries: [{name: str, mode: str, hash: str}]}
+type GitBlob = {type: "blob", size: int}
+type GitTag = {type: "tag", object: str, tag-type: str, tag: str, tagger: GitIdent, message: str}
+type GitObject = GitCommit | GitTree | GitBlob | GitTag
+
+// ── Request (read-only) ───────────────────────────────────────────────
+
+extern req: {
+  method: HttpMethod
+  path: str & [str]
+  headers: Headers
+  query: {*: str & [str]}
+  cookies: {*: str}
+  ip: str
+  body: str
+  domain: str
+  params: {*: str & [str]}
+}
+
+extern method: HttpMethod
+extern path: str & [str]
+extern headers: Headers
+extern query: {*: str & [str]}
+extern cookies: {*: str}
+extern body: str
+extern params: {*: str & [str]}
+
+// ── Response (mutable) ────────────────────────────────────────────────
+
+extern res: {
+  mut status: int
+  mut headers: {mut *: str & [str]}
+}
+extern mut status: int
+
+// ── Config & Secrets ──────────────────────────────────────────────────
+
+extern config: unknown
+extern secrets: {*: str}
+
+// ── Logging ───────────────────────────────────────────────────────────
+
+extern log.info(message: some)
+extern log.warning(message: some)
+extern log.error(message: some)
+
+// ── Response Control ──────────────────────────────────────────────────
+
+extern res.rewrite(url: str) -> never
+extern res.redirect(url: str, status: int) -> never
+
+// ── JSON ──────────────────────────────────────────────────────────────
+
+extern json.parse(text: str) -> some
+extern json.stringify(value: some) -> str
+
+// ── Database (KV) ─────────────────────────────────────────────────────
+
+extern db.get(key: str) -> str | none
+// Set a key-value pair. Returns the value.
+extern db.set(key: str, value: str) -> str
+// Delete a key. Returns the old value if found, none if not.
+extern db.delete(key: str) -> str | none
+extern db.list(prefix: str) -> [DbEntry]
+
+// Compare-and-swap. Returns none on success, actual current value on conflict.
+extern db.cas(key: str, old: str, new: str) -> str | none
+
+// ── Content-Addressable Store ─────────────────────────────────────────
+
+// Store bytes, return hash
+extern cas.put(data: blob) -> str
+// Retrieve by hash, none if missing
+extern cas.get(hash: str) -> blob | none
+// Return hash if exists, none if missing
+extern cas.has(hash: str) -> str | none
+
+// ── Git Objects ───────────────────────────────────────────────────────
+
+// Decode raw git object bytes into a typed structure
+extern git.decode(data: blob) -> GitObject
+// Extract referenced child hashes from a git object
+extern git.children(data: blob) -> [str]
+// Verify hash matches content. Returns hash on match, none on mismatch.
+extern git.verify(hash: str, data: blob) -> str | none
+
+// Encode a structured git object (commit, tree, or tag) back to blob.
+// Mirrors git.decode — same object shape in, blob out.
+extern git.encode(obj: GitCommit | GitTree | GitTag) -> blob
+// Wrap raw bytes in git blob format (blobs lose content on decode, so this stays separate)
+extern git.encode-blob(data: blob) -> blob
+
+// Graph traversal — returns descendant hash if ancestor, none otherwise
+extern git.is-ancestor(ancestor: str, descendant: str) -> str | none
+
+// ── WebSocket ─────────────────────────────────────────────────────────
+
+// WebSocket transform scripts receive event data via this binding
+extern event: {data: str}
+
+// Connection-scoped identifier
+extern ws.id: str
+// Add hash to expect set, returns hash
+extern ws.expect(id: some, hash: str) -> str
+// Count of remaining expected hashes
+extern ws.expect-remaining(id: some) -> int
+// Send binary object frame, none on failure
+extern ws.send-object(hash: str) -> str | none
+// Send binary want frame, none on failure
+extern ws.send-want(hashes: [str]) -> [str] | none
+
+// ── KV (ephemeral / pub-sub) ──────────────────────────────────────────
+
+extern kv.get(key: str) -> str | none
+// Set a key-value pair. Returns the value.
+extern kv.set(key: str, value: str) -> str
+extern kv.incr(key: str) -> int
+// Publish a message to a channel. Returns the number of subscribers reached.
+extern kv.publish(channel: str, message: str) -> int
+
+// ── Utilities ─────────────────────────────────────────────────────────
+
+extern time.now() -> int
+extern time.uuid() -> str
+extern crypto.hash(algorithm: str, data: str) -> str
+extern crypto.hmac(algorithm: str, key: str, data: str) -> str
+extern crypto.random(bytes: int) -> str
+
+// ── HTML & Templates ──────────────────────────────────────────────────
+
+extern html.escape(text: str) -> str
+extern html.raw(html: str) -> str
+extern html(parts: [str], ...values: some) -> str
+extern template.render(template: str, data: some) -> str

@@ -38,8 +38,8 @@ impl KvStore {
         self.data.insert(key, KvEntry { value, expires_at });
     }
 
-    pub fn delete(&mut self, key: &str) -> bool {
-        self.data.remove(key).is_some()
+    pub fn delete(&mut self, key: &str) -> Option<String> {
+        self.data.remove(key).map(|e| e.value)
     }
 
     pub fn keys(&self, prefix: &str) -> Vec<String> {

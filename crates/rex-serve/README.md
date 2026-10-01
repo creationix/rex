@@ -114,8 +114,18 @@ gas_limit = 1_000_000
 dir = "routes"
 
 [db]
+backend = "sqlite" # "sqlite", "upstash", or "auto"
 path = "data.db"
 ```
+
+`auto` uses Upstash Redis when both `UPSTASH_REDIS_REST_URL` and
+`UPSTASH_REDIS_REST_TOKEN` are present, otherwise SQLite. `upstash` requires
+both variables and fails startup if either is missing. The `db.*` string KV
+operations use the selected backend; CAS/git object storage remains local.
+
+Environment variables prefixed with `REX_SECRET_` are exposed read-only through
+the Rex `secrets` object. For example, `REX_SECRET_API_KEY` is available as
+`secrets.api-key`.
 
 ## Type Checking
 
